@@ -1417,7 +1417,7 @@
     "bootloader/patches/local.patch": "d64dfabecbfccd3685aa53409087ea7bab68bdcafe9c39cf0f77ce1d9bbfd3c0",
     "checks/battery-spi.c": "5b785f97592da1bc9ae999d2a73b8dc57a12354e8ba6f705c95164fb938f2767",
     "checks/battery-spi.py": "23c92728e05d85c0c4be604991fbcfa2d9880acf7ef5e8e546ef60b942de3461",
-    "checks/boot-arguments.py": "df32988e2cd76d2cfda1249dcb7d0667ac11a757a1cef7c4cb28359a0d7b4532",
+    "checks/boot-arguments.py": "38631a54a92caea5b0da1db2eb94a668ecd7a13ac647b06d36557f78b1d9a11d",
     "checks/build-inputs.py": "ba78f8db7ed63261fbc7d762652201c9e071781a0c0e791ef1bdf426c8443e30",
     "checks/display-queue.py": "cc493d739d108f7c8ce60fec6ef4a6d4a595168475c72d30786c729f23d7e98a",
     "checks/display-snapshot.py": "b0e2dd233c9c764f6c8eb6892c04623db14c28e12f8b7f7249eff8ce3a933bb4",

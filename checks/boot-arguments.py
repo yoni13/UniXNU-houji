@@ -8,15 +8,14 @@ source = (ROOT / 'uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorag
 base = re.search(r'BaseBootArgs = L"([^"]+)";', source).group(1)
 capacity = int(re.search(r'CHAR16 BootArgs\[(\d+)\];', source).group(1))
 template = re.search(r'UnicodeSPrint\(BootArgs,sizeof\(BootArgs\),L"([^"]+)"', source).group(1)
-for mhz in (231, 500, 680, 903):
-    candidate = re.sub(r'gpu_max_mhz=\d+', f'gpu_max_mhz={mhz}', base)
-    assert candidate != base or mhz == 903
-    for touch in (0, 1):
-        command = template % (candidate, touch)
-        assert len(command.encode('ascii')) + 1 <= min(capacity, 608)
-        options = [word.split('=', 1)[0] for word in command.split()]
-        assert len(options) == len(set(options)), 'duplicate boot argument'
-        assert f'gpu_max_mhz={mhz}' in command.split()
-        assert command.endswith(f'houji_touch={touch}')
+# yoni13 fork: this kernel's GPU governor takes houji_gpu_maxlevel, not upstream's gpu_max_mhz, so the base line carries no
+# ceiling; the budget, duplicate and touch-handoff checks are unchanged.
+assert 'gpu_max_mhz=' not in base
+for touch in (0, 1):
+    command = template % (base, touch)
+    assert len(command.encode('ascii')) + 1 <= min(capacity, 608)
+    options = [word.split('=', 1)[0] for word in command.split()]
+    assert len(options) == len(set(options)), 'duplicate boot argument'
+    assert command.endswith(f'houji_touch={touch}')
 assert 'StrLen(BaseBootArgs) + StrLen(L" houji_touch=1") >= ARRAY_SIZE(BootArgs)' in source
-print('PASS: UEFI GPU ceiling and touch handoff fit the 608-byte Darwin 22 command line')
+print('PASS: UEFI boot line and touch handoff fit the 608-byte Darwin 22 command line')
