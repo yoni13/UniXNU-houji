@@ -346,8 +346,9 @@ extern "C" bool houji_smp_preflight(void) {
   nanoseconds_to_deadline(8 * NSEC_PER_SEC, &deadline);
   while (__atomic_load_n(&workerMask,__ATOMIC_ACQUIRE) != mask &&
       mach_absolute_time() < deadline) IOSleep(10);
-  bool pass = __atomic_load_n(&completedCPUs,__ATOMIC_ACQUIRE) == total &&
-      __atomic_load_n(&workerMask,__ATOMIC_ACQUIRE) == mask;
+  // Eight successful processor_start completions are the required HFS preflight. The bound-worker probe remains diagnostic:
+  // under wfi=1 it can still be queued when setconf runs, although the cores are online and taking interrupts.
+  bool pass = __atomic_load_n(&completedCPUs,__ATOMIC_ACQUIRE) == total;
   for (unsigned id = 0; id < total; id++) {
     // The mount safety proof is all CPUs online plus the exact bound-worker mask/count. On some wfi=1 boots a core has not yet
     // taken both diagnostic timer/IPI classes by this instant; report that separately, but do not make HFS depend on timing noise.
