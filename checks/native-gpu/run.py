@@ -45,11 +45,11 @@ with tempfile.TemporaryDirectory(prefix='houji-submit-') as temporary:
                                           'NativeAdrenoUserClient.cpp', 'NativeAdrenoTimer.cpp']]
         sources += [SMMU / 'NativeAdrenoRing.cpp', tmp / 'memory.cpp']
         subprocess.run(['clang++', '-std=c++17', '-Wno-c99-designator', *flags, '-DTEST_CPU_PAGE=' + str(page),
-                        *map(str, sources), str(tmp / 'submit.cpp'), str(HERE / 'submit.cpp'),
+                        *map(str, sources), str(tmp / 'submit.cpp'), str(HERE / 'submit.cpp'), str(HERE / 'surface-stubs.cpp'),
                         *objects, '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True, timeout=60)
         pool_binary = tmp / ('pool-' + str(page))
         subprocess.run(['clang++', '-std=c++17', *flags, '-DTEST_CPU_PAGE=' + str(page),
-                        str(tmp / 'memory.cpp'), str(HERE / 'pool.cpp'), '-o', str(pool_binary)], check=True)
+                        str(tmp / 'memory.cpp'), str(HERE / 'pool.cpp'), str(HERE / 'surface-stubs.cpp'), '-o', str(pool_binary)], check=True)
         for scenario in ['invalid', 'reserve-fail', 'reserve-retain', 'wc-fail', 'metadata', 'reassert', 'basic']:
             subprocess.run([str(pool_binary), scenario], check=True, timeout=60)
