@@ -72,6 +72,14 @@ GPU power collapse, DDR/CX votes left by the boot firmware, copying only the cha
   `houji_spi=0` restores polling for everything; `houji_spi_mask` (bit 0 IPCC, 1 RSC, 2 MSI; default 1) selects lines.
 - Idle with the screen off after both: 2.4-2.5 W, CPU about 47.5 C (wfi=1 alone: 2.5-2.8 W, about 52 C).
 
+## System apps and userland geometry — installed, cold-boot verification pending
+- All 32 original 20H392 system apps moved from the staged directory to `/Applications`; one-shot Launch Services registrar
+  installed in launchd's cache. Kernel AMFI `@`-path and TCC media-library policies are active.
+- `HoujiKeyboardGeometry.dylib` installed and weak-linked into 189 APPL executables, with original entitlements preserved.
+- Metal bundle rebuilt with measured texture-limit publication (`NativeDeviceLimits.h`).
+- Block readback passed and HFS+ fsck returns 0. The phone has not reached userland after installation yet: repeated warm reboots
+  stop in the pre-userland GPU power handoff; a full power-off is required before runtime/visual tests.
+
 ## Buttons — implemented, not yet pressed on hardware
 `iokit/Kernel/houji-buttons/HoujiButtons.cpp`: power (PMK8550 PON pwrkey), volume down (resin), volume up (PM8550 GPIO 6) read
 every 20 ms through the SPMI observer (read only) and sent to SweetHID. Verified: both peripherals found, no read errors, idle state

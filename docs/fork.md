@@ -70,3 +70,15 @@ lock; it predates working display power and is being removed (with it set, iOS n
 
 Nothing here identifies a particular phone: GPT identities, log allocations, firmware and partition contents stay local.
 Hardware claims in peripherals.md come from tests on one Xiaomi 14 (OS3.0.303.0.WNCTWXM firmware).
+
+## Root-image changes installed on the test phone (2026-11-04)
+
+- Restored all 32 original Apple apps from `/private/var/staged_system_apps` to `/Applications`; installed the one-shot
+  `houji-system-apps` Launch Services registrar and its launchd cache entry. The kernel AMFI/TCC policy is in this repository.
+- Built `/usr/lib/HoujiKeyboardGeometry.dylib`; added its absolute weak load command to 189 APPL main executables and ad-hoc
+  re-signed them with their original entitlements. This implements the upstream keyboard and status-bar geometry rules.
+- Rebuilt `NativeAdrenoMetal.bundle` with `NativeDeviceLimits.h`, which publishes the measured 2D texture width/height in
+  `_MTLDevice`'s limits record for Photos and other direct readers.
+- Every write was a 4 KiB block patch to the offline-pulled HFSX image, immediately read back from UFS; the resulting HFS+
+  volume passes `fsck.hfsplus` (0). Runtime verification is pending a complete power-off: repeated warm resets leave UEFI's GPU
+  power handoff not ready before userland.
