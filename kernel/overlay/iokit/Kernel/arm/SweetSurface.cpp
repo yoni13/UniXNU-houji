@@ -35,6 +35,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/system.h>
+#include <pexpert/pexpert.h>
 #include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSNumber.h>
@@ -183,6 +184,119 @@ sweet_surface_copy(uint32_t id)
 	}
 	IOLockUnlock(sweet_surface_lock);
 	return s;
+}
+
+/* GPU publish dirty tracking. Only the kernel unlock trap bumps a surface's
+ * seed (the state page is read-only to users), so an unchanged seed means no
+ * CPU write unlock since the GPU side last cleaned the surface's lines. */
+extern "C" int
+houji_surface_seed_skip_enabled(void)
+{
+	static int enabled = -1;
+	if (enabled < 0) {
+		int value = 1;
+		PE_parse_boot_argn("houji_gpu_seed_skip", &value, sizeof(value));
+		enabled = value ? 1 : 0;
+	}
+	return enabled;
+}
+
+/* Retained surface whose pixel memory starts on this physical page, or NULL. */
+extern "C" void *
+houji_surface_retain_for_physical(uint64_t physical)
+{
+	SweetSurface *found = NULL;
+	if (sweet_surface_lock == NULL) {
+		return NULL;
+	}
+	IOLockLock(sweet_surface_lock);
+	for (uint32_t id = 1; id < SWEET_SURFACE_MAX_ID && found == NULL; id++) {
+		SweetSurface *s = sweet_surface_table[id];
+		if (s == NULL || s->memory == NULL || s->state == NULL) {
+			continue;
+		}
+		IOByteCount length = 0;
+		addr64_t page = s->memory->getPhysicalSegment(0, &length, kIOMemoryMapperNone);
+		if (page != 0 && (page & ~0xfffULL) == (physical & ~0xfffULL)) {
+			s->retain();
+			found = s;
+		}
+	}
+	IOLockUnlock(sweet_surface_lock);
+	return found;
+}
+
+extern "C" uint32_t
+houji_surface_seed_of(void *surface)
+{
+	return *(volatile uint32_t *)sweet_surface_seed((SweetSurface *)surface);
+}
+
+/* Lazy GPU acquire (houji_gpu_lazy_acquire=1, default): a completed GPU job only marks the imported surfaces it may have
+ * written; the CPU caches over the surface are cleaned and invalidated when a client next locks it for CPU access, instead of
+ * after every job for every render target (about 1.5-1.9 ms per job under the GPU lock). */
+extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
+static uint64_t houji_surface_lazy_stats[3];   /* marks, lock-time acquires, bytes */
+extern "C" int
+houji_surface_lazy_acquire_enabled(void)
+{
+	static int enabled = -1;
+	if (enabled < 0) {
+		int value = 1;
+		PE_parse_boot_argn("houji_gpu_lazy_acquire", &value, sizeof(value));
+		enabled = value ? 1 : 0;
+	}
+	return enabled;
+}
+
+extern "C" void
+houji_surface_mark_gpu_dirty(void *surface)
+{
+	__atomic_store_n(&((SweetSurface *)surface)->gpuDirty, 1u, __ATOMIC_RELEASE);
+	__atomic_fetch_add(&houji_surface_lazy_stats[0], 1ull, __ATOMIC_RELAXED);
+}
+
+static void
+sweet_surface_acquire_gpu_writes(SweetSurface *s)
+{
+	if (s->memory == NULL || !__atomic_exchange_n(&s->gpuDirty, 0u, __ATOMIC_ACQ_REL)) {
+		return;
+	}
+	const IOByteCount total = s->memory->getLength();
+	IOByteCount offset = 0;
+	while (offset < total) {
+		IOByteCount length = 0;
+		addr64_t physical = s->memory->getPhysicalSegment(offset, &length, kIOMemoryMapperNone);
+		if (physical == 0 || length == 0) {
+			break;
+		}
+		if (length > total - offset) {
+			length = total - offset;
+		}
+		while (length) {
+			unsigned chunk = length > (1u << 30) ? (1u << 30) : (unsigned)length;
+			flush_dcache64(physical, chunk, TRUE);
+			physical += chunk; offset += chunk; length -= chunk;
+		}
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	__atomic_fetch_add(&houji_surface_lazy_stats[1], 1ull, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&houji_surface_lazy_stats[2], (uint64_t)total, __ATOMIC_RELAXED);
+}
+
+extern "C" void
+houji_surface_lazy_report(void)
+{
+	IOLog("HOUJI SURFACE LAZY ACQUIRE: marks=%llu lock-acquires=%llu bytes=%llu; live\n",
+	    __atomic_load_n(&houji_surface_lazy_stats[0], __ATOMIC_RELAXED),
+	    __atomic_load_n(&houji_surface_lazy_stats[1], __ATOMIC_RELAXED),
+	    __atomic_load_n(&houji_surface_lazy_stats[2], __ATOMIC_RELAXED));
+}
+
+extern "C" void
+houji_surface_release(void *surface)
+{
+	((SweetSurface *)surface)->release();
 }
 
 /* The table lock; the framebuffer may publish a surface before the root starts. */
@@ -882,6 +996,7 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
 	if (s == NULL) {
 		return kIOReturnNotFound;
 	}
+	sweet_surface_acquire_gpu_writes(s);   /* CPU access begins: see the GPU's writes, not stale lines */
 	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
 	s->release();
 	return ret;

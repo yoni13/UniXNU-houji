@@ -30,6 +30,8 @@
  * first swap) switches the console to serial, which also hides panics.
  */
 #include "SweetSurface.h"
+class IOService;
+extern "C" void houji_backlight_start(IOService *provider);   /* houji-buttons/HoujiScreen.cpp */
 extern "C" void houji_surface_use_report(void);
 #include "HoujiSurfaceAcquire.h"
 #include <IOKit/IOBufferMemoryDescriptor.h>
@@ -51,8 +53,6 @@ extern "C" int houji_console_muted;
 #include <kern/thread.h>
 #include "HoujiFrameQueue.h"
 #include <sys/proc.h>
-#include "HoujiBacklight.inc"
-#include "HoujiDisplayTiming.inc"
 
 enum {
 	kSweetFBGetLayerDefaultSurface  = 3,
@@ -232,6 +232,7 @@ extern "C" unsigned houji_framebuffer_snapshot(char *out,unsigned capacity) {
 extern "C" int native_adreno_present_begin_frame(uint32_t);
 extern "C" uint32_t native_adreno_present_capture_fence(void);
 static uint64_t houji_fb_last_wait_id,houji_fb_last_wait_mode,houji_fb_last_wait_ns;
+static uint64_t houji_fb_wait_ticks;   /* total time SwapWait blocked */
 struct HoujiDisplayFrame {
  uint8_t rec[SWEET_FB_SWAP_REC_SIZE]{};
  SweetSurface *surfaces[SWEET_FB_LAYERS]{};
@@ -262,6 +263,8 @@ class IOMobileFramebuffer : public IOService {
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
 
 class IOMobileFramebufferUserClient;
+class AppleCLCD;
+static AppleCLCD *gHoujiPanel;
 
 class AppleCLCD : public IOMobileFramebuffer {
 	OSDeclareDefaultStructors(AppleCLCD);
@@ -270,11 +273,14 @@ class AppleCLCD : public IOMobileFramebuffer {
 	IOTimerEventSource *fVsync;
 	IOWorkLoop         *fCopyWorkLoop;
 	IOInterruptEventSource *fCopyEvent;
+	IOTimerEventSource *fCopyRetry;   /* GPU not done yet: retry soon, not next tick */
 	uint64_t            fVsyncCount;
 	uint64_t            fVsyncPeriod, fNextVsync;
 
 	static void vsyncFired(OSObject *owner, IOTimerEventSource *sender);
 	static void copyFired(OSObject *owner, IOInterruptEventSource *sender, int count);
+	static void copyRetryFired(OSObject *owner, IOTimerEventSource *sender);
+	void copyQueued(void);
 
 public:
 	uint64_t      fPhys;
@@ -288,7 +294,7 @@ public:
 	uint32_t      fSwapID;
 	bool          fConsolePaused;
 	HoujiFrameQueue<HoujiDisplayFrame,8> fFrames;
-	int           fGpuSync=0,fGpuCache=0;
+	int           fGpuSync=0,fGpuCache=0,fImmediate=1;
 	uint32_t      fCacheLine=64;
 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
 	SweetSurface *fScanout;
@@ -356,6 +362,7 @@ AppleCLCD::start(IOService *provider)
 	fScanout = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
 	fSurface = sweet_surface_create_buffer(HOUJI_LOGICAL_W,HOUJI_LOGICAL_H,(HOUJI_LOGICAL_W*4+63)&~63u,SWEET_FB_FORMAT_BGRA);
 	fPixels = fScanout != NULL ? fScanout->kernelAddress() : 0;
+	gHoujiPanel=this;
 	fWorkLoop = IOWorkLoop::workLoop();
 	if (fLock == NULL || fClients == NULL || fPixels == 0 || fWorkLoop == NULL || !fSurface) {
 		IOLog("SWEET FB: setup failed\n");
@@ -378,6 +385,14 @@ AppleCLCD::start(IOService *provider)
 		return false;
 	}
 	fCopyEvent->enable();
+	fCopyRetry = IOTimerEventSource::timerEventSource(this, &AppleCLCD::copyRetryFired);
+	if (!fCopyRetry || fCopyWorkLoop->addEventSource(fCopyRetry) != kIOReturnSuccess) {
+		IOLog("HOUJI FB: copy retry timer setup failed\n");
+		return false;
+	}
+	/* Copy each frame as soon as it is queued. The notification timer is not
+	 * panel vblank, so waiting for its tick only added up to one period. */
+	PE_parse_boot_argn("houji_fb_immediate",&fImmediate,sizeof(fImmediate));
 	PE_parse_boot_argn("houji_fb_gpu_sync",&fGpuSync,sizeof(fGpuSync));
 	PE_parse_boot_argn("houji_fb_gpu_cache",&fGpuCache,sizeof(fGpuCache));
 	uint64_t ctr=0;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
@@ -440,6 +455,32 @@ AppleCLCD::start(IOService *provider)
 	return true;
 }
 
+/* Grayscale thumbnail of the panel for unattended UI checks over the USB debug console: one hex digit (4-bit luminance) per
+ * cell, printed as SHOT rows. Reads the scanout memory only. */
+extern "C" void houji_framebuffer_shot_region(unsigned x0,unsigned y0,unsigned w,unsigned h,unsigned cols,unsigned rows)
+{
+ AppleCLCD *fb=gHoujiPanel;
+ if(!fb || !fb->fPixels || !cols || !rows || cols>300 || rows>700 || !w || !h || x0+w>fb->fWidth || y0+h>fb->fHeight){printf("HOUJI SHOT: unavailable\n");return;}
+ printf("HOUJI SHOT BEGIN %u %u panel=%ux%u region=%u,%u,%u,%u\n",cols,rows,fb->fWidth,fb->fHeight,x0,y0,w,h);
+ char line[320];
+ for(unsigned r=0;r<rows;r++){
+  const uint32_t y=y0+(uint32_t)(((uint64_t)r*h+h/rows/2)/rows);
+  for(unsigned c=0;c<cols;c++){
+   const uint32_t x=x0+(uint32_t)(((uint64_t)c*w+w/cols/2)/cols);
+   const uint8_t *p=(const uint8_t *)(fb->fPixels+(uint64_t)y*fb->fRowBytes+(uint64_t)x*4);
+   const unsigned l=(p[2]*3u+p[1]*6u+p[0])/10u;
+   line[c]="0123456789abcdef"[l>>4];
+  }
+  line[cols]=0;printf("SHOT %03u %s\n",r,line);
+ }
+ printf("HOUJI SHOT END\n");
+}
+extern "C" void houji_framebuffer_shot(unsigned cols,unsigned rows)
+{
+ AppleCLCD *fb=gHoujiPanel;
+ if(fb)houji_framebuffer_shot_region(0,0,fb->fWidth,fb->fHeight,cols,rows);
+}
+
 void
 AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 {
@@ -485,30 +526,41 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 void
 AppleCLCD::copyFired(OSObject *owner, __unused IOInterruptEventSource *sender, __unused int count)
 {
- AppleCLCD *fb=(AppleCLCD *)owner;
+ ((AppleCLCD *)owner)->copyQueued();
+}
+
+void
+AppleCLCD::copyRetryFired(OSObject *owner, __unused IOTimerEventSource *sender)
+{
+ ((AppleCLCD *)owner)->copyQueued();
+}
+
+/* Runs only on fCopyWorkLoop. Drains the queue in order; a frame whose GPU
+ * work is unfinished stays queued and is retried after 500 us. */
+void
+AppleCLCD::copyQueued(void)
+{
+ AppleCLCD *fb=this;
  __atomic_add_fetch(&houji_fb_copy_wakes,1ull,__ATOMIC_RELAXED);
- IOLockLock(fb->fLock);
- const HoujiDisplayFrame *head=fb->fFrames.front();
- if(!head){IOLockUnlock(fb->fLock);return;}
- HoujiDisplayFrame frame=*head; /* queue retains every surface until real copy completion */
- IOLockUnlock(fb->fLock);
  const uint64_t began=mach_absolute_time();
- bool more=false;
- if(fb->present(frame)){
+ for(unsigned n=0;n<8;n++){
+  IOLockLock(fb->fLock);
+  const HoujiDisplayFrame *head=fb->fFrames.front();
+  if(!head){IOLockUnlock(fb->fLock);break;}
+  HoujiDisplayFrame frame=*head; /* queue retains every surface until real copy completion */
+  IOLockUnlock(fb->fLock);
+  if(!fb->present(frame)){if(fb->fImmediate)fb->fCopyRetry->setTimeoutUS(500);break;}
   IOLockLock(fb->fLock);
   const bool retired=fb->fFrames.finish(frame.id);
   if(retired){__atomic_fetch_add(&houji_fb_retired,1ull,__ATOMIC_RELAXED);IOLockWakeup(fb->fLock,&fb->fFrames,false);}
-  more=retired && fb->fFrames.count() && fb->fFlushTicks==1;
   IOLockUnlock(fb->fLock);
   if(retired)for(auto *surface:frame.surfaces)if(surface)surface->release();
+  if(!retired)break;
  }
  const uint64_t elapsed=mach_absolute_time()-began;
  __atomic_fetch_add(&houji_fb_copy_worker_ticks,elapsed,__ATOMIC_RELAXED);
  uint64_t maximum=__atomic_load_n(&houji_fb_copy_worker_max_ticks,__ATOMIC_RELAXED);
  while(elapsed>maximum && !__atomic_compare_exchange_n(&houji_fb_copy_worker_max_ticks,&maximum,elapsed,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED)){}
- // Interrupt events coalesce. Do not strand the next accepted frame until
- // another notification tick when several swaps arrived during this copy.
- if(more)fb->fCopyEvent->interruptOccurred(nullptr,nullptr,0);
 }
 
 void
@@ -538,6 +590,32 @@ get32(const uint8_t *p, uint32_t off)
 	return v;
 }
 
+/* Intervals between consecutive SwapEnd calls: <10, 10-14, 14-20 (60 fps), 20-25, 25-36 (30 fps), 36-50, >=50 ms (idle gap).
+ * Gaps under 50 ms count as animation; their total time gives the frame rate while something moves. */
+static uint64_t houji_fb_interval_hist[7],houji_fb_anim_frames,houji_fb_anim_ticks,houji_fb_last_swap;
+extern "C" void native_adreno_hitch_snapshot(uint64_t out[16]);
+static uint32_t houji_fb_hitch_logged;
+/* SwapEnd is serialized per client; backboardd is the only one, so the previous snapshot needs no lock. */
+static void houjiNoteSwapInterval(void){
+ const uint64_t now=mach_absolute_time(),last=__atomic_exchange_n(&houji_fb_last_swap,now,__ATOMIC_RELAXED);
+ static uint64_t previous[16];uint64_t snap[16];
+ native_adreno_hitch_snapshot(snap);
+ if(!last){memcpy(previous,snap,sizeof(snap));return;}
+ uint64_t ns=0;absolutetime_to_nanoseconds(now-last,&ns);const uint64_t ms10=ns/100000; /* 0.1 ms */
+ static uint64_t previousWait;const uint64_t waitNow=__atomic_load_n(&houji_fb_wait_ticks,__ATOMIC_RELAXED);
+ uint64_t waitNs=0;absolutetime_to_nanoseconds(waitNow-previousWait,&waitNs);previousWait=waitNow;
+ if(ms10>=200 && ms10<500 && houji_fb_hitch_logged<40){
+  IOLog("HOUJI HITCH SWAP: gap-ms=%llu.%llu swapwait-us=%llu\n",ms10/10,ms10%10,waitNs/1000);
+  ++houji_fb_hitch_logged;uint64_t d[16];for(unsigned i=0;i<16;i++)d[i]=snap[i]-previous[i];
+  IOLog("HOUJI HITCH: gap-ms=%llu.%llu gate n=%llu us=%llu wait=%llu audit=%llu GPU level=%llu busy-us=%llu | map n=%llu us=%llu free n=%llu us=%llu submit n=%llu us=%llu alloc=%llu fence-wait-us=%llu full=%llu depth=%llu\n",
+   ms10/10,ms10%10,d[0],d[1],d[2],d[3],snap[4],d[5],d[6],d[7],d[8],d[9],d[10],d[11],d[12],d[13],d[14],d[15]);
+ }
+ memcpy(previous,snap,sizeof(snap));
+ static const uint64_t edge[6]={100,140,200,250,360,500};
+ unsigned b=0;while(b<6 && ms10>=edge[b])++b;
+ __atomic_fetch_add(&houji_fb_interval_hist[b],1ull,__ATOMIC_RELAXED);
+ if(b<6){__atomic_fetch_add(&houji_fb_anim_frames,1ull,__ATOMIC_RELAXED);__atomic_fetch_add(&houji_fb_anim_ticks,now-last,__ATOMIC_RELAXED);}
+}
 static uint32_t sweet_fb_swaps_logged;
 extern "C" void houji_framebuffer_history_report(void) {
  houjiReportColours();
@@ -593,8 +671,20 @@ extern "C" void houji_framebuffer_report(void)
 	    __atomic_load_n(&houji_fb_missed_timer_ticks, __ATOMIC_RELAXED));
 	uint64_t cacheNs=0;absolutetime_to_nanoseconds(__atomic_load_n(&houji_fb_cache_ticks,__ATOMIC_RELAXED),&cacheNs);
 	IOLog("HOUJI DISPLAY SYNC: deferred=%llu cache-bytes=%llu cache-us=%llu cache-denied=%llu; completed-GPU surface reads\n",__atomic_load_n(&houji_fb_sync_deferred,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_cache_bytes,__ATOMIC_RELAXED),cacheNs/1000,__atomic_load_n(&houji_fb_cache_denied,__ATOMIC_RELAXED));
+	{
+	 static uint64_t prevHist[7],prevFrames,prevTicks;uint64_t h[7],frames,ticks,ns=0;
+	 for(unsigned i=0;i<7;i++){h[i]=__atomic_load_n(&houji_fb_interval_hist[i],__ATOMIC_RELAXED);}
+	 frames=__atomic_load_n(&houji_fb_anim_frames,__ATOMIC_RELAXED);ticks=__atomic_load_n(&houji_fb_anim_ticks,__ATOMIC_RELAXED);
+	 absolutetime_to_nanoseconds(ticks-prevTicks,&ns);
+	 IOLog("HOUJI FRAME PACE: <10=%llu 10-14=%llu 14-20=%llu 20-25=%llu 25-36=%llu 36-50=%llu idle=%llu animating-fps-milli=%llu animating-ms=%llu; SwapEnd intervals this window\n",
+	  h[0]-prevHist[0],h[1]-prevHist[1],h[2]-prevHist[2],h[3]-prevHist[3],h[4]-prevHist[4],h[5]-prevHist[5],h[6]-prevHist[6],
+	  ns?(frames-prevFrames)*1000000000000ULL/ns:0,ns/1000000);
+	 for(unsigned i=0;i<7;i++)prevHist[i]=h[i];prevFrames=frames;prevTicks=ticks;
+	 houji_fb_hitch_logged=0;
+	}
 	houji_surface_use_report();
 	houjiReportRects();
+	{uint64_t ns=0;absolutetime_to_nanoseconds(__atomic_load_n(&houji_fb_wait_ticks,__ATOMIC_RELAXED),&ns);IOLog("HOUJI SWAP WAIT: blocked-us=%llu\n",ns/1000);}
 	IOLog("HOUJI FRAME LIFE: retired=%llu waits=%llu blocked=%llu wait-timeout=%llu queue-full=%llu peak=%llu wait-id=%llu wait-mode=%llu wait-ns=%llu; real CPU copy/store completion, not panel vblank\n",__atomic_load_n(&houji_fb_retired,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_waits,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_wait_blocked,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_wait_timeout,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_queue_full,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_queue_peak,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_last_wait_id,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_last_wait_mode,__ATOMIC_RELAXED),__atomic_load_n(&houji_fb_last_wait_ns,__ATOMIC_RELAXED));
 	previousTime = now; previousPresents = presents; previousSwaps = swaps;
 	previousTicks = ticks; previousBytes = bytes;
@@ -630,11 +720,10 @@ AppleCLCD::swap(const uint8_t *rec)
  if(depth>__atomic_load_n(&houji_fb_queue_peak,__ATOMIC_RELAXED))__atomic_store_n(&houji_fb_queue_peak,(uint64_t)depth,__ATOMIC_RELAXED);
  IOLockUnlock(fLock);
  if(!queued){for(auto *surface:frame.surfaces)if(surface)surface->release();return kIOReturnTimeout;}
- // SwapEnd already supplies the producer's fence. At full copy rate, wake
- // the consumer now instead of adding up to a whole software-vsync interval.
- // The timer still retries GPU-pending heads and paces explicit lower rates.
- if(fFlushTicks==1)fCopyEvent->interruptOccurred(nullptr,nullptr,0);
- __atomic_fetch_add(&sweet_fb_swap_count,1ull,__ATOMIC_RELAXED);return kIOReturnSuccess;
+ __atomic_fetch_add(&sweet_fb_swap_count,1ull,__ATOMIC_RELAXED);
+ houjiNoteSwapInterval();
+ if(fImmediate)fCopyEvent->interruptOccurred(nullptr,nullptr,0);
+ return kIOReturnSuccess;
 }
 
 IOReturn
@@ -655,6 +744,7 @@ AppleCLCD::waitSwap(uint32_t id,uint64_t timeoutRaw)
   if(IOLockSleepDeadline(fLock,&fFrames,deadline,THREAD_ABORTSAFE)!=THREAD_AWAKENED)break;
  }
  bool done=fFrames.complete(id);IOLockUnlock(fLock);
+ if(blocked)__atomic_fetch_add(&houji_fb_wait_ticks,mach_absolute_time()-(deadline-ticks),__ATOMIC_RELAXED);
  if(!done)__atomic_fetch_add(&houji_fb_wait_timeout,1ull,__ATOMIC_RELAXED);
  return done?kIOReturnSuccess:kIOReturnTimeout;
 }
@@ -763,7 +853,7 @@ AppleCLCD::present(const HoujiDisplayFrame &frame)
 	}
  __asm__ volatile("dsb sy":::"memory"); /* all scanout stores before retirement */
 	uint64_t elapsed = mach_absolute_time() - started;
-	if(__atomic_add_fetch(&houji_fb_present_count,1ull,__ATOMIC_RELAXED)==1)HoujiDisplayTiming::start();
+	__atomic_add_fetch(&houji_fb_present_count,1ull,__ATOMIC_RELAXED);
 	__atomic_add_fetch(&houji_fb_copy_bytes, copied, __ATOMIC_RELAXED);
 	__atomic_add_fetch(&houji_fb_present_ticks, elapsed, __ATOMIC_RELAXED);
 	uint64_t maximum = __atomic_load_n(&houji_fb_max_present_ticks, __ATOMIC_RELAXED);
@@ -842,6 +932,7 @@ IOMobileFramebufferUserClient::notify(uint32_t type, const uint64_t *values, uin
 }
 
 static uint64_t sweet_fb_logged;        /* selectors already logged (< 64) */
+extern "C" void houji_screen_power(int on);   /* houji-buttons/HoujiScreen.cpp */
 
 IOReturn
 IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
@@ -874,6 +965,11 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		ret=fFB->swap(rec);
 		break;
 	}
+	case 12:   /* display power from backboardd: scalar 0 off, 1 on (every power-key sleep/wake and auto-lock) */
+		if (args->scalarInputCount >= 1) {
+			houji_screen_power(args->scalarInput[0] != 0);
+		}
+		break;
 	case kSweetFBGetID:
 		out[0] = 0;
 		outCount = 1;
@@ -920,6 +1016,30 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	}
 	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
 		bzero(args->structureOutput, args->structureOutputSize);
+	}
+	/* Display power and other state changes: a call whose scalars or struct size differ from that selector's last one is logged
+	 * (the frame path, selectors 3-6, excluded). */
+	if (selector < 96 && (selector < 3 || selector > 6)) {
+		static uint64_t lastSig[96];
+		uint64_t sig = 0x9e3779b97f4a7c15ULL * (args->scalarInputCount + 1) ^ args->structureInputSize;
+		for (uint32_t i = 0; i < args->scalarInputCount && i < 4; i++) sig = (sig ^ args->scalarInput[i]) * 0x100000001b3ULL;
+		if (args->structureInput && args->structureInputSize >= 4 && args->structureInputSize <= 16) {
+			uint32_t w; memcpy(&w, args->structureInput, 4); sig = (sig ^ w) * 0x100000001b3ULL;
+		}
+		if (lastSig[selector] != sig) {
+			const bool first = !lastSig[selector];
+			lastSig[selector] = sig;
+			if (!first || selector >= 64 || (sweet_fb_logged & (1ULL << selector))) {
+				char name[32];
+				proc_selfname(name, sizeof(name));
+				uint32_t w = 0;
+				if (args->structureInput && args->structureInputSize >= 4) memcpy(&w, args->structureInput, 4);
+				IOLog("SWEET FB CHANGE: %s sel %u scalars %u [%llx %llx %llx %llx] struct %u first-word %x\n", name, selector,
+				    args->scalarInputCount, args->scalarInputCount > 0 ? args->scalarInput[0] : 0,
+				    args->scalarInputCount > 1 ? args->scalarInput[1] : 0, args->scalarInputCount > 2 ? args->scalarInput[2] : 0,
+				    args->scalarInputCount > 3 ? args->scalarInput[3] : 0, args->structureInputSize, w);
+			}
+		}
 	}
 	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector))) {
 		if (selector < 64) {

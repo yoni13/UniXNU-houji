@@ -38,6 +38,7 @@ public:
 	IOMemoryDescriptor       *memory;       /* pixels (buffer or physical) */
 	IOOptionBits              mapCache;     /* cache mode for user mappings */
 	IOBufferMemoryDescriptor *state;        /* shared state page, read-only for users */
+	volatile uint32_t         gpuDirty;     /* GPU wrote since the CPU caches were last invalidated */
 	IOMemoryMap              *kernelMap;    /* lazily created for kernel copies */
 
 	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }

@@ -60,7 +60,7 @@ class NativeAdrenoRing final {
     size_t ring_bytes_=0,fence_bytes_=0;
     uint64_t ring_iova_=0,fence_iova_=0;
     uint32_t next_=0,rptr_shadow_=0,seqno_=0,completed_=0,submissions_=0;
-    bool attached_=false,poisoned_=false,reset_pending_=false;
+    bool attached_=false,poisoned_=false,reset_pending_=false,light_next_=false;
     IOReturn poison();
     IOReturn readRptr(uint32_t *);
     IOReturn emitPrologue(uint32_t at,bool reset,uint32_t *end);
@@ -98,6 +98,9 @@ public:
     /* The next framed submission starts with the A7XX context entry of a6xx_set_pagetable() (BR/BV counters, on-chip
      * timestamps and resource table cleared between thread syncs); a new user client requests it, as Linux does per context. */
     void requestContextReset() {reset_pending_=true;}
+    /* The next framed submission may omit the GPU cache flush/invalidate and wait-for-idle (same length, CP_NOP instead): only
+     * while the page tables are unchanged since the previous submission; a context reset always takes the full prologue. */
+    void requestLightPrologue(bool light) {light_next_=light;}
     /* Polls the CP-written timestamp after invalidating the fence page. Never
      * writes registers and never advances the ring. Timeout is not poison. */
     NativeAdrenoRingFence wait(uint32_t fence,const NativeAdrenoRingClock *,
@@ -111,6 +114,13 @@ public:
     uint32_t outstanding() const {return seqno_-completed_;}
     uint32_t lastSubmitted() const {return seqno_;}      /* the newest fence number handed out */
     uint32_t completedFence() const {return completed_;}
+    /* Read-only peek at the GPU-written fence for lock-free polling. Never
+     * poisons or retires; 0 when unavailable. Callers recheck under the lock. */
+    uint32_t peekCompleted() const {
+        if(!attached_ || poisoned_ || !fence_)return 0;
+        if(cache_.acquire && cache_.acquire(cache_.cookie,fence_,fence_bytes_))return 0;
+        return fence_[1];
+    }
     uint32_t submissions() const {return submissions_;}
     uint32_t readPointer() const {return rptr_shadow_;}
 };

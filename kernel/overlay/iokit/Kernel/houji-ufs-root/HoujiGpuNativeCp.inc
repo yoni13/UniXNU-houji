@@ -23,19 +23,33 @@ static bool houjiCpReadAllowed(uint32_t a){
  const uint32_t addresses[]={0x3d02600,0x3d02604,0x3d00058,0x3d0005c,0x3d0f114,0x3d0f118,0x3d02800,0x3d3e00c,0x3d3e000,0x3d3e004,0x3d3e008,0x3d02000,0x3d02004,0x3d02008,0x3d02010,0x3d02014,0x3d02018,0x3d0201c,0x3d02020,0x3d02a60,0x3d02a64,0x3d00840,0x3d00804,0x3d02084,0x3d8ec30,0x3d8ec4c};
  for(auto x:addresses)if(a==x)return true;return false;
 }
+/* The register half of the lease (power gates, configuration, GMU state, stream routes, table roots: 20+ slow MMIO reads, about
+ * 90 us) is static while the owner runs; it was repeated five or more times per submission and on every fence poll. A passed
+ * check is reused for 2 ms. The software state above it, and houjiCpGuard's fault registers, are still checked on every call. */
+static uint64_t gHoujiLeaseValidUntil;
+static volatile uint64_t gHoujiLeaseStats[2];   /* full register checks, reuses */
 static bool houjiCpBusLease(void){
- auto&c=gHoujiCp;auto&p=gHoujiFull;if(!c.active || !p.active || p.lost || p.stage!=FHR_PRE_CP_BOUNDARY || p.held!=FHG_ALL || !p.zero_held || !p.record_published || !houjiFullConfig() || !houjiFullPower())return false;
+ auto&c=gHoujiCp;auto&p=gHoujiFull;if(!c.active || !p.active || p.lost || p.stage!=FHR_PRE_CP_BOUNDARY || p.held!=FHG_ALL || !p.zero_held || !p.record_published){gHoujiLeaseValidUntil=0;return false;}
+ const uint64_t now=mach_absolute_time();
+ /* Never reused while the CP is being stopped or is isolated: that sequence changes exactly this state. */
+ if(c.stopping || c.isolated)gHoujiLeaseValidUntil=0;
+ else if(now<__atomic_load_n(&gHoujiLeaseValidUntil,__ATOMIC_ACQUIRE)){gHoujiLeaseStats[1]=gHoujiLeaseStats[1]+1;return true;}
+ gHoujiLeaseStats[0]=gHoujiLeaseStats[0]+1;
+ if(!houjiFullConfig() || !houjiFullPower()){gHoujiLeaseValidUntil=0;return false;}
  uint32_t v=0;uint64_t q=0;
- if(houjiFullRaw32(0x3d7e340,&v) || (v&3) || houjiFullRaw32(0x3d8ec40,&v) || v)return false;
- for(unsigned i=0;i<3;i++){const uint32_t smr=i?0x80000000u+(i-1):0x80000005u;if(houjiFullRaw32(0x3da0800+4*i,&v) || v!=smr || houjiFullRaw32(0x3da0c00+4*i,&v) || v!=(i?0u:2u))return false;}
+ if(houjiFullRaw32(0x3d7e340,&v) || (v&3) || houjiFullRaw32(0x3d8ec40,&v) || v){gHoujiLeaseValidUntil=0;return false;}
+ for(unsigned i=0;i<3;i++){const uint32_t smr=i?0x80000000u+(i-1):0x80000005u;if(houjiFullRaw32(0x3da0800+4*i,&v) || v!=smr || houjiFullRaw32(0x3da0c00+4*i,&v) || v!=(i?0u:2u)){gHoujiLeaseValidUntil=0;return false;}}
  const uint32_t roots[]={0x3dc0020,0x3dc0028,0x3dc2020,0x3dc2028};const uint64_t wanted[]={p.gpu_fields[5],p.gpu_fields[6],p.stock.encoded[5],p.stock.encoded[6]};
- for(unsigned i=0;i<4;i++)if(houjiFullRaw64(roots[i],&q) || q!=wanted[i])return false;
+ for(unsigned i=0;i<4;i++)if(houjiFullRaw64(roots[i],&q) || q!=wanted[i]){gHoujiLeaseValidUntil=0;return false;}
+ uint64_t window=0;nanoseconds_to_absolutetime(2000000,&window);
+ __atomic_store_n(&gHoujiLeaseValidUntil,now+window,__ATOMIC_RELEASE);
  return true;
 }
+extern "C" void houji_cp_lease_report(void){IOLog("HOUJI CP LEASE: full-checks=%llu reused=%llu; live\n",gHoujiLeaseStats[0],gHoujiLeaseStats[1]);}
 static int houjiCpGuard(void*){
  auto&c=gHoujiCp;uint32_t v=0;if(!houjiCpBusLease() || c.stopping || c.isolated)return 1;
- if(!c.enabled && (houjiFullRaw32(0x3d8ec30,&v) || (v&(1u<<23))))return 1;
- const uint32_t faults[]={0x3da0048,0x3dc0058,0x3dc2058};for(unsigned i=0;i<3;i++)if(houjiFullRaw32(faults[i],&v) || (v&(i?0xc00001feu:0xffffffffu)))return 1;
+ if(!c.enabled && (houjiFullRaw32(0x3d8ec30,&v) || (v&(1u<<23)))){gHoujiLeaseValidUntil=0;return 1;}
+ const uint32_t faults[]={0x3da0048,0x3dc0058,0x3dc2058};for(unsigned i=0;i<3;i++)if(houjiFullRaw32(faults[i],&v) || (v&(i?0xc00001feu:0xffffffffu))){gHoujiLeaseValidUntil=0;return 1;}
  return 0;
 }
 static int houjiCpRead(void*,uint32_t a,uint32_t*v){if(!v || !houjiCpReadAllowed(a) || houjiCpGuard(nullptr))return 1;++gHoujiCp.reads;return houjiFullRaw32(a,v);}

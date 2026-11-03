@@ -38,7 +38,6 @@ extern const uint8_t verified_root_key[];
 #include "TransferPoll.h"
 #include "GiuliaSmmuTakeover.h"
 #include "HoujiCpuFrequency.h"
-#include "HoujiBatterySurvey.inc"
 
 static UfsRootDiagnostics gRootDiagnostic;
 static bool gRootDiagnosticEnabled;
@@ -127,6 +126,27 @@ static void smmuBypassStream (uint16_t stream, OSSharedPtr<IOMemoryMap> &keep, u
   report[0] = index | (bank << 16);
   report[1] = cbar;
   report[2] = sctlr;
+}
+
+/* Same proven bypass route as UFS, for another stream whose controller is
+ * already halted (debug USB). Never panics; returns null or the refusal. */
+extern "C" const char *houji_smmu_route_stream(uint16_t stream, uint64_t dma, uint64_t bytes, uint32_t report[3])
+{
+  static OSSharedPtr<IOMemoryMap> keep;
+  report[0] = report[1] = report[2] = 0;
+  uintptr_t smmu = keep ? static_cast<uintptr_t>(keep->getVirtualAddress()) : mapPhys(0x15000000ULL, 0xd0000, keep);
+  if (!smmu) return "SMMU map failed";
+  auto rd = [smmu](unsigned offset) { return read32(smmu, offset); };
+  UfsSmmuPlan plan = planUfsSmmu(stream, dma, bytes, rd);
+  if (plan.error) { report[0] = plan.slot; report[1] = plan.smr; report[2] = plan.s2cr; return plan.error; }
+  const char *failure = configureUfsSmmu(plan, stream, rd, [smmu](unsigned offset, uint32_t value) {
+    write32(smmu, offset, value);
+    __asm__ volatile ("dsb sy" ::: "memory");
+  });
+  report[0] = plan.slot | (plan.bank << 16);
+  report[1] = read32(smmu, 0x1000 + 4 * plan.bank);
+  report[2] = read32(smmu, (plan.pages + plan.bank) * 4096);
+  return failure;
 }
 
 static bool houjiNativeGpuFsAllowed(void);
@@ -318,8 +338,6 @@ static bool hostBringUp (const char **why)
 #include "HoujiLogFile.h"
 #include "HoujiLogCommit.h"
 #include "HoujiRootWindow.h"
-#include "HoujiFirmwareUfs.inc"
-#include "HoujiFirmwareProbe.inc"
 
 extern "C" bool bsd_log_lock(bool);
 extern "C" void bsd_log_unlock(void);
@@ -363,18 +381,8 @@ static IOReturn flushLog(void) {
   return r;
 }
 extern "C" unsigned houji_gpu_cached_timing(char *,unsigned);
-extern "C" unsigned houji_framebuffer_snapshot(char *,unsigned);
-extern "C" unsigned houji_display_timing_snapshot(char *,unsigned);
-extern "C" unsigned houji_sample_snapshot(char *,unsigned);
-extern "C" unsigned houji_network_stack_snapshot(char *,unsigned);
-extern "C" unsigned houji_cpu_dvfs_snapshot(char *,unsigned);
-extern "C" unsigned houji_adsp_snapshot(char *,unsigned);
 static const char *saveNativeLog(void) {
   static uint8_t metadata[7*4096],image[65536];
-  constexpr unsigned gpuCapacity=20480,displayCapacity=4096,sampleCapacity=12800;
-  constexpr unsigned networkCapacity=512,cpuCapacity=1024,batteryCapacity=2048,panelCapacity=4096;
-  static_assert(sizeof(gNativeText)+gpuCapacity+displayCapacity+sampleCapacity+
-    networkCapacity+cpuCapacity+batteryCapacity+panelCapacity+128<sizeof(image)-4096,"snapshot prefixes exceed existing log file");
   nativeStage("logfs metadata read");
   for(unsigned i=0;i<7;i++)
     if(hostRead4k(0,4096+i,1,metadata+i*4096)!=kIOReturnSuccess) return "log metadata read failed";
@@ -388,17 +396,7 @@ static const char *saveNativeLog(void) {
   bzero(image,sizeof(image));
   unsigned used=gNativeTextBytes;
   memcpy(image+4096,gNativeText,used);
-  used+=houji_gpu_cached_timing(reinterpret_cast<char *>(image+4096+used),gpuCapacity);
-  used+=houji_framebuffer_snapshot(reinterpret_cast<char *>(image+4096+used),displayCapacity);
-  used+=houji_display_timing_snapshot(reinterpret_cast<char *>(image+4096+used),panelCapacity);
-  used+=houji_sample_snapshot(reinterpret_cast<char *>(image+4096+used),sampleCapacity);
-  used+=houji_network_stack_snapshot(reinterpret_cast<char *>(image+4096+used),networkCapacity);
-  used+=houji_cpu_dvfs_snapshot(reinterpret_cast<char *>(image+4096+used),cpuCapacity);
-  unsigned batteryUsed=houjiBatterySurveySnapshot(reinterpret_cast<char *>(image+4096+used),batteryCapacity);
-  used+=batteryUsed;
-  unsigned fwUsed=houjiFwProbeSnapshot(reinterpret_cast<char *>(image+4096+used),batteryCapacity-batteryUsed);
-  used+=fwUsed;batteryUsed+=fwUsed;
-  used+=houji_adsp_snapshot(reinterpret_cast<char *>(image+4096+used),batteryCapacity-batteryUsed);
+  used+=houji_gpu_cached_timing(reinterpret_cast<char *>(image+4096+used),8192);
   static const char marker[]="\n--- XNU kernel message buffer (tail; NULs removed) ---\n";
   memcpy(image+4096+used,marker,sizeof(marker)-1);used+=sizeof(marker)-1;
   used+=copyKernelMessages(reinterpret_cast<char *>(image+4096+used),sizeof(image)-4096-used);
@@ -619,7 +617,6 @@ extern "C" void houji_ufs_root_attach(void) {
   houji_ufs_checkpoint("before CPU factory EPSS governor initialization; SMP proof complete",0);
   houji_cpu_dvfs_start();
   houji_ufs_checkpoint("after CPU factory EPSS governor initialization",0);
-  houjiBatterySurvey();
   int frequencyProbe=0;
   PE_parse_boot_argn("houji_cpu_freq_probe",&frequencyProbe,sizeof(frequencyProbe));
   if (frequencyProbe==1) {
@@ -676,7 +673,6 @@ extern "C" void houji_ufs_root_attach(void) {
     // Touch startup can save its preflight log; wait for qualified GPU/UFS coexistence.
     if(!houjiNativeGpuFsAllowed())panic("HOUJI TOUCH: live GPU coexistence not ready");
     houjiTouchStart();
-    houjiFwProbeStart();
     return;
   }
   houjiGpuStockFirmwareProbeOnce(); // enabled attempt always terminates via retained no-FS PSCI
@@ -685,3 +681,57 @@ extern "C" void houji_ufs_root_attach(void) {
 }
 
 #endif
+
+/* Read-only partition access for firmware loaders (the ADSP image in modem_a): a GPT name lookup over the six LUNs and block reads
+ * confined to a partition found that way. No writes, no other ranges. */
+namespace {
+inline uint64_t partLe64(const uint8_t *p){uint64_t v=0;for(int i=7;i>=0;i--)v=(v<<8)|p[i];return v;}
+inline uint32_t partLe32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+}
+extern "C" int native_ufs_part_find(const char *name, uint32_t *lun, uint64_t *first, uint64_t *blocks)
+{
+  if (!name || !lun || !first || !blocks || !gHost.ready) return 0;
+  static uint8_t block[4096];
+  static IOLock *lock;
+  if (!__atomic_load_n(&lock, __ATOMIC_ACQUIRE)) {IOLock *made = IOLockAlloc(), *none = nullptr; if (!made) return 0; if (!__atomic_compare_exchange_n(&lock, &none, made, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) IOLockFree(made);}
+  IOLockLock(lock);
+  int found = 0;
+  for (uint32_t l = 1; l < 6 && !found; l++) {
+    if (hostRead4k((uint8_t)l, 1, 1, block) != kIOReturnSuccess || memcmp(block, "EFI PART", 8)) continue;
+    const uint64_t entriesLba = partLe64(block + 72);
+    const uint32_t count = partLe32(block + 80), size = partLe32(block + 84);
+    if (size != 128 || count > 256 || entriesLba != 2) continue;
+    for (uint32_t i = 0; i < count && !found; i++) {
+      if (i % 32 == 0 && hostRead4k((uint8_t)l, entriesLba + i / 32, 1, block) != kIOReturnSuccess) break;
+      const uint8_t *e = block + (i % 32) * 128;
+      bool match = true;
+      for (unsigned c = 0; c < 36; c++) {
+        const char want = name[c];
+        const uint16_t have = (uint16_t)(e[56 + 2 * c] | (e[57 + 2 * c] << 8));
+        if (have != (uint16_t)(uint8_t)want) { match = false; break; }
+        if (!want) break;
+      }
+      if (!match) continue;
+      const uint64_t a = partLe64(e + 32), b = partLe64(e + 40);
+      if (!a || b < a) continue;
+      *lun = l; *first = a; *blocks = b - a + 1;
+      bool granted = false;
+      for (unsigned g = 0; g < gHoujiPartGrantCount; g++)
+        if (gHoujiPartGrants[g].lun == l && gHoujiPartGrants[g].first == a) granted = true;
+      if (!granted && gHoujiPartGrantCount < 8) gHoujiPartGrants[gHoujiPartGrantCount++] = {l, a, b - a + 1};
+      found = 1;
+    }
+  }
+  IOLockUnlock(lock);
+  return found;
+}
+extern "C" int native_ufs_part_read(uint32_t lun, uint64_t lba, uint32_t blocks, void *dst)
+{
+  if (!dst || !blocks || blocks > 32) return 0;
+  bool granted = false;
+  for (unsigned i = 0; i < gHoujiPartGrantCount; i++) {
+    const HoujiPartGrant &g = gHoujiPartGrants[i];
+    if (g.lun == lun && lba >= g.first && lba - g.first + blocks <= g.blocks) granted = true;
+  }
+  return granted && hostRead4k((uint8_t)lun, lba, blocks, dst) == kIOReturnSuccess;
+}

@@ -8,22 +8,11 @@ import tempfile
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+# yoni13 fork: checks of upstream subsystems this kernel does not ship (upstream's battery/ADSP stack, backlight, network-stack stub,
+# display timing, CPU/GPU governor and thermal policies, sample cache) are retired; see docs/fork.md.
 APPLE_CHECKS = ('gpu-stage-trace.py', 'gpu-cpu-profile.py', 'metal-surface-use.py', 'metal-async.py', 'metal-trace-id.py', 'metal-command-dictionary.py', 'statusbar-geometry.py')
 CHECKS = (
-    'cpu-lut.py',
-    'gpu-input-prewarm.py',
-    'cpu-snapshot.py',
-    'backlight-properties.py',
-    'battery-survey.py',
-    'battery-sparse-survey.py',
-    'battery-protocol.py',
-    'battery-startup.py',
-    'battery-firmware.py',
-    'battery-cmd-db.py',
-    'battery-spi.py',
-    'battery-adsp-codecs.py',
-    'battery-adsp-policy.py',
-    'battery-publisher.py',
+    'battery-spi.py',   # yoni13: HoujiSpi (GIC SPI routing) is shipped; the name is upstream's
     'turnip-bo-retire.py',
     'turnip-bo-cache.py',
     'native-gpu/run.py',
@@ -52,14 +41,12 @@ CHECKS = (
     'metal-surface-use.py',
     'display-queue.py',
     'display-snapshot.py',
-    'display-timing.py',
     'boot-arguments.py',
     'build-inputs.py',
     'recovery-logs.py',
     'userland-logs.py',
     'metal-async.py',
     'metal-trace-id.py',
-    'network-stack.py',
     'system-apps.py',
     'system-app-dyld.py',
     'tcc-media-compatibility.py',
@@ -86,11 +73,7 @@ def main():
     if suite != 'apple':
         with tempfile.TemporaryDirectory(prefix='houji-check-') as temporary:
             for filename, compiler, standard in [
-                ('gpu-governor.cpp', 'clang++', 'c++17'),
                 ('gpu-hfi.c', 'clang', 'c11'),
-                ('cpu-governor.cpp', 'clang++', 'c++17'),
-                ('power-display.cpp', 'clang++', 'c++17'),
-                ('sample-retention.c', 'clang', 'c11'),
             ]:
                 binary = Path(temporary) / Path(filename).stem
                 subprocess.run([compiler, '-std=' + standard, '-Wall', '-Wextra', '-Werror', str(ROOT / 'checks' / filename), '-o', str(binary)], check=True)

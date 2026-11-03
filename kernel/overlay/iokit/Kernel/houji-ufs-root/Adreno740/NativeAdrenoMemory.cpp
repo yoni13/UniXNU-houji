@@ -10,6 +10,12 @@ extern "C" {volatile uint32_t native_adreno_trace_stage;}
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <kern/task.h>
+extern "C" int houji_surface_seed_skip_enabled(void);
+extern "C" void *houji_surface_retain_for_physical(uint64_t physical);
+extern "C" uint32_t houji_surface_seed_of(void *surface);
+extern "C" void houji_surface_release(void *surface);
+extern "C" int houji_surface_lazy_acquire_enabled(void);
+extern "C" void houji_surface_mark_gpu_dirty(void *surface);
 
 static bool outputWidth(unsigned bits)
 {return bits==32 || bits==36 || bits==40 || bits==42 || bits==44 || bits==48;}
@@ -275,6 +281,8 @@ IOReturn NativeAdrenoMemory::release()
         if(status) {quarantined_=true;return status;}
         write_combined_=false;
     }
+    if(surface_) {houji_surface_release(surface_);surface_=nullptr;}
+    surface_state_=seed_valid_=0;seed_skips_=0;
     if(imported_) {
         if(prepared_) {
             IOReturn status=imported_->complete();
@@ -329,6 +337,39 @@ IOReturn NativeAdrenoMemory::publishForDevice(size_t offset,size_t bytes,bool wr
     if(!cpu_page_bytes_ || end>owned_bytes_ || end<=begin)return kIOReturnBadArgument;
     return NativeAdrenoMaintainOwnedPages(static_cast<unsigned char *>(mapping_)+begin,end-begin,
         writes?NativeAdrenoCleanInvalidate:NativeAdrenoClean);
+}
+IOReturn NativeAdrenoMemory::publishTracked(bool writes,bool include_write_combined,bool *skipped)
+{
+    *skipped=false;
+    if(imported_ && !write_combined_ && houji_surface_seed_skip_enabled()) {
+        if(!surface_state_ && owned_spans_ && owned_span_count_) {
+            surface_=houji_surface_retain_for_physical(owned_spans_[0].physical);
+            surface_state_=surface_?1:2;
+        }
+        if(surface_state_==1) {
+            /* Read the seed before cleaning: a write unlock after this read
+             * changes it, so the next publish cleans again. */
+            const uint32_t seed=houji_surface_seed_of(surface_);
+            if(seed_valid_ && seed==surface_seed_ && ++seed_skips_<32) {*skipped=true;return kIOReturnSuccess;}
+            seed_skips_=0;
+            const IOReturn status=publishForDevice(0,bytes_,writes,include_write_combined);
+            if(!status) {surface_seed_=seed;seed_valid_=1;}
+            return status;
+        }
+    }
+    return publishForDevice(0,bytes_,writes,include_write_combined);
+}
+IOReturn NativeAdrenoMemory::acquireTracked(bool *deferred)
+{
+    *deferred=false;
+    if(imported_ && houji_surface_lazy_acquire_enabled()) {
+        if(!surface_state_ && owned_spans_ && owned_span_count_) {
+            surface_=houji_surface_retain_for_physical(owned_spans_[0].physical);
+            surface_state_=surface_?1:2;
+        }
+        if(surface_state_==1) {houji_surface_mark_gpu_dirty(surface_);*deferred=true;return kIOReturnSuccess;}
+    }
+    return acquireDeviceWrites(0,bytes_);
 }
 IOReturn NativeAdrenoMemory::acquireDeviceWrites(size_t offset,size_t bytes)
 {

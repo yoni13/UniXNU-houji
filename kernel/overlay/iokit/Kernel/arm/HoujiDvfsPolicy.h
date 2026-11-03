@@ -2,25 +2,19 @@
 #ifndef HOUJI_DVFS_POLICY_H
 #define HOUJI_DVFS_POLICY_H
 #include <stdint.h>
-/* Interaction headroom for houji's four validated domains. A global touch
- * or render stream must not pin every performance domain at its factory cap:
- * r242 reached the CPU thermal limit while that policy was active. Keep a
- * 60% floor only during touch/render activity on recently busy domains,
- * and release it after 12 quiet samples (240 ms). Without an interaction,
- * use measured load alone: the old unconditional 50% performance-domain
- * floor kept background work at high frequency after all UI hints expired.
- * Stock houji perf profiles distinguish bounded launch/resume and scroll
- * hints; this is the same separation, not a port of Android's WALT/EAS or
- * Xiaomi's PMIC-based skin-temperature policy (see docs/stock-power.md).
- * Actual demand can still select the full factory range.
+/* Sheng's interaction policy, adapted to houji's four validated domains.
+ * A sustained render stream holds 45% for 300 ms after its last activity;
+ * P cores use a 65% touch floor and a 30% floor until quiet.
  * This chooses indices only; board code still validates and votes the LUT. */
+/* Floors in percent of each domain's maximum: [0] rendering, [1] touch (P cores), [2] recent activity (P cores).
+ * Boot argument houji_cpuf=FRAME,TOUCH,RECENT overrides them (the CPU governor's start parses it). */
+static unsigned houjiDvfsFloors[3]={45,65,30};
 static inline unsigned houjiDvfsInteractiveFloor(const uint32_t *khz,unsigned n,
  unsigned busy,bool performance,bool touch,bool frame,unsigned *quiet) {
  if(!n)return 0;
  *quiet=busy<100?(*quiet<12?*quiet+1:12):0;
- bool active=*quiet<12;
- unsigned pct=frame && active?60:0;
- if(performance && active && touch)pct=60;
+ unsigned pct=frame?houjiDvfsFloors[0]:0;
+ if(performance){if(touch && pct<houjiDvfsFloors[1])pct=houjiDvfsFloors[1];else if(*quiet<12 && pct<houjiDvfsFloors[2])pct=houjiDvfsFloors[2];}
  unsigned floor=0;while(floor+1<n && (uint64_t)khz[floor]*100<(uint64_t)khz[n-1]*pct)++floor;
  return floor;
 }

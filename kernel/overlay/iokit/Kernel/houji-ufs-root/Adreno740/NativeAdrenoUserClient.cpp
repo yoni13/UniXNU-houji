@@ -551,7 +551,7 @@ IOReturn NativeAdrenoUserClient::dispatch(uint32_t method,const void *input,
         break;
     }
     case NativeAdrenoMethodSubmit: {
-        NativeAdrenoAbiSubmit request{};
+        static NativeAdrenoAbiSubmit request;request={};   /* serialized by the issuer lock; off the kernel stack */
         memcpy(&request,input,sizeof(request));
         NativeAdrenoAbiSubmitReply reply{};
         status=submit(&request,&reply,clock);

@@ -1,3 +1,9 @@
+> **yoni13 fork.** This is a fork of [lonzzi/UniXNU-houji](https://github.com/lonzzi/UniXNU-houji) (upstream, forked at
+> `99beb10`). It adds Wi-Fi, battery charging, buttons, display power and brightness, idle-power and interrupt work, GPU
+> coherence in its own kernel, and modem/GPS and camera bring-up. English documentation: [docs/fork.md](docs/fork.md)
+> (sources, differences, building) and [docs/peripherals.md](docs/peripherals.md) (per-peripheral status). The rest of this
+> README is upstream's.
+
 <div align="center">
 
 # UniXNU · houji

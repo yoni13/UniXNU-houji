@@ -25,7 +25,8 @@ static inline int huc_token(const char *s, unsigned n, const char *wanted)
 static inline int huc_board(const char *compatible, unsigned n,
                             const char *target, unsigned target_n)
 {
-    return target_n==6 && huc_token(target,target_n,"houji") &&
+    /* The GUI ADT presents iPhone10,3 (target D22) but keeps the board tokens. */
+    return (huc_token(target,target_n,"houji") || huc_token(target,target_n,"D22")) &&
            huc_token(compatible,n,"xiaomi,houji") &&
            huc_token(compatible,n,"qcom,sm8650");
 }

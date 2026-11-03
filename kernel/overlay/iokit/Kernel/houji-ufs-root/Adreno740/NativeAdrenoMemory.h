@@ -53,6 +53,12 @@ class NativeAdrenoMemory final {
     size_t owned_bytes_=0,owned_span_count_=0,owned_span_capacity_=0,cpu_page_bytes_=0;
     uint32_t device_references_=0;
     bool prepared_=false,quarantined_=false,write_combined_=false;
+    /* Imported IOSurface dirty tracking (kernel only): retained surface, its
+     * seed at the last publish, and skips since the last forced publish. */
+    void *surface_=nullptr;
+    uint32_t surface_seed_=0;
+    uint8_t surface_state_=0,seed_valid_=0;   /* state: 0 unresolved, 1 surface, 2 none */
+    uint16_t seed_skips_=0;
     bool pooled_=false;
     size_t pool_offset_=0;
     IOReturn maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation);
@@ -113,6 +119,12 @@ public:
      * for a client whose view turned out to be cacheable after all (NativeAdrenoVm::distrustWriteCombined). */
     IOReturn publishForDevice(size_t offset,size_t bytes,bool device_writes,bool include_write_combined=false);
     IOReturn acquireDeviceWrites(size_t offset,size_t bytes);
+    /* publishForDevice over the whole object, except an imported IOSurface
+     * whose seed has not moved since its last publish (*skipped set). */
+    IOReturn publishTracked(bool device_writes,bool include_write_combined,bool *skipped);
+    /* After GPU completion: acquireDeviceWrites over the whole object, except a known IOSurface, which is only marked for
+     * invalidation at its next CPU lock (*deferred set). */
+    IOReturn acquireTracked(bool *deferred);
     bool quarantined() const {return quarantined_;}
     uint32_t deviceReferences() const {return device_references_;}
     size_t bytes() const {return bytes_;}

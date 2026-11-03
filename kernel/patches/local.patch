@@ -31,7 +31,7 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 index 4427401..06abb0f 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -103,7 +103,13 @@ bsd/dev/dtrace/fasttrap.c		optional config_dtrace
+@@ -103,7 +103,14 @@ bsd/dev/dtrace/fasttrap.c		optional config_dtrace
  
  bsd/dev/random/randomdev.c		standard
  
@@ -39,6 +39,7 @@ index 4427401..06abb0f 100644
 +bsd/dev/houji_usb_debug.c			standard
 +bsd/dev/houji_ram_upload.c		standard
 +bsd/dev/houji_upload_test_target.c	standard
++bsd/dev/houji_route_probe.c		standard
  bsd/dev/memdev.c			standard
 +bsd/dev/houji_ram_root.c		standard
 +bsd/dev/houji_ram_root_xnu.c	standard
@@ -2051,16 +2052,11 @@ diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
 index 2b14eda..d0e79a1 100644
 --- a/iokit/KernelConfigTables.cpp
 +++ b/iokit/KernelConfigTables.cpp
-@@ -34,6 +34,55 @@
+@@ -34,6 +34,50 @@
  
  const char * gIOKernelConfigTables =
      "("
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
-+    "   {"
-+    "     'IOClass'         = IONetworkStack;"
-+    "     'IOProviderClass' = IOResources;"
-+    "     'IOMatchCategory' = IONetworkStack;"
-+    "   },"
 +    "   {"
 +    "     'IOClass'         = SweetPlatformExpert;"
 +    "     'IOProviderClass' = IOPlatformExpertDevice;"
@@ -2131,7 +2127,7 @@ diff --git a/iokit/conf/files b/iokit/conf/files
 index 5fb0a52..68a64fa 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
-@@ -148,3 +148,32 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
+@@ -148,3 +148,51 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
  
  # Skywalk
  iokit/bsddev/skywalk/IOSkywalkSupport.cpp		optional iokitcpp skywalk
@@ -2164,10 +2160,30 @@ index 5fb0a52..68a64fa 100644
 +iokit/Kernel/houji-ufs-root/Adreno740/NativeAdrenoTimer.cpp optional iokitcpp
 +iokit/Kernel/houji-ufs-root/Adreno740/NativeAdrenoPublish.cpp optional iokitcpp
 +iokit/Kernel/houji-ufs-root/Adreno740/HoujiNativeAccelerator.cpp optional iokitcpp
++
++iokit/Kernel/houji-adsp/HoujiAdsp.cpp optional iokitcpp
++iokit/Kernel/houji-adsp/ShengBattery.cpp optional iokitcpp
++iokit/Kernel/houji-adsp/AdspFirmware.c optional iokit
++iokit/Kernel/houji-adsp/FatVolume.c optional iokit
++iokit/Kernel/houji-adsp/QcomGlink.c optional iokit
++iokit/Kernel/houji-adsp/QcomMdt.c optional iokit
++iokit/Kernel/houji-adsp/QcomQmp.c optional iokit
++iokit/Kernel/houji-adsp/QcomQrtr.c optional iokit
++iokit/Kernel/houji-adsp/QcomRpmh.c optional iokit
++iokit/Kernel/houji-adsp/QcomSmem.c optional iokit
++iokit/Kernel/houji-adsp/QcomSmp2p.c optional iokit
++iokit/Kernel/houji-adsp/ShengBattmgr.c optional iokit
++iokit/Kernel/houji-adsp/ShengQrtr.c optional iokit
++iokit/Kernel/houji-wifi/HoujiWifi.cpp optional iokitcpp
++iokit/Kernel/houji-wifi/WifiNet.cpp optional iokitcpp
++iokit/Kernel/houji-buttons/HoujiButtons.cpp optional iokitcpp
++iokit/Kernel/houji-buttons/HoujiScreen.cpp optional iokitcpp
++iokit/Kernel/houji-camera/HoujiCamera.cpp optional iokitcpp
 diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index f731d43..da6c812 100644
 --- a/iokit/conf/files.arm64
 +++ b/iokit/conf/files.arm64
-@@ -5,3 +5,32 @@
+@@ -5,3 +5,17 @@ iokit/Kernel/IOPMrootDomain.cpp    					optional iokitcpp
  
  # SMP
  iokit/Kernel/arm/AppleARMSMP.cpp    					optional iokitcpp
@@ -2181,21 +2197,6 @@ diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
 +iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
 +iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
 +iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
-+iokit/Kernel/arm/HoujiNetworkStack.cpp                           optional iokitcpp
-+iokit/Kernel/houji-ufs-root/battery/QcomSmem.c                   optional iokit
-+iokit/Kernel/houji-ufs-root/battery/QcomSmp2p.c                  optional iokit
-+iokit/Kernel/houji-ufs-root/battery/FatVolume.c                  optional iokit
-+iokit/Kernel/houji-ufs-root/battery/QcomMdt.c                    optional iokit
-+iokit/Kernel/houji-ufs-root/battery/HoujiFirmware.cpp            optional iokitcpp
-+iokit/Kernel/houji-ufs-root/battery/HoujiAdsp.cpp            optional iokitcpp
-+iokit/Kernel/houji-ufs-root/battery/HoujiAdspTransport.cpp optional iokitcpp
-+iokit/Kernel/houji-ufs-root/battery/HoujiBattery.cpp optional iokitcpp
-+iokit/Kernel/houji-ufs-root/battery/HoujiQrtr.c optional iokit
-+iokit/Kernel/houji-ufs-root/battery/HoujiBattmgr.c optional iokit
-+iokit/Kernel/houji-ufs-root/battery/QcomGlink.c optional iokit
-+iokit/Kernel/houji-ufs-root/battery/QcomQmp.c optional iokit
-+iokit/Kernel/houji-ufs-root/battery/QcomQrtr.c optional iokit
-+iokit/Kernel/houji-ufs-root/battery/QcomRpmh.c            optional iokit
 +iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
 +iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
 +iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
@@ -3188,6 +3189,7 @@ index 133b07f..e01c124 100644
  
  /* I-Cache. */
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index c40c6ea..2b01a76 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
 @@ -32,6 +32,7 @@
@@ -3198,7 +3200,7 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
  #include <arm/trap.h> /* for IS_ARM_GDB_TRAP() et al */
  #include <arm64/proc_reg.h>
  #include <arm64/machine_machdep.h>
-@@ -1855,6 +1856,51 @@
+@@ -1855,6 +1856,51 @@ sleh_irq(arm_saved_state_t *state)
  #endif
  
  
@@ -3250,7 +3252,7 @@ diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
  	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
  
  #if USE_APPLEARMSMP
-@@ -1866,6 +1912,7 @@
+@@ -1866,6 +1912,7 @@ sleh_irq(arm_saved_state_t *state)
  	    cdp->interrupt_nub,
  	    cdp->interrupt_source);
  #endif
@@ -3501,7 +3503,7 @@ diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
 index 809dafa..a919f3f 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
-@@ -820,6 +820,234 @@ exception_triage(
+@@ -820,6 +820,225 @@ exception_triage(
  	return exception_triage_thread(exception, code, codeCnt, thread);
  }
  
@@ -3661,7 +3663,6 @@ index 809dafa..a919f3f 100644
 + * pointer backtrace of every thread of a task, from the saved user state.
 + */
 +void sweet_sample_task(const char *name, int pid, task_t task);
-+extern void houji_sample_record(const char *text, unsigned bytes);
 +
 +void
 +sweet_sample_task(const char *name, int pid, task_t task)
@@ -3703,10 +3704,7 @@ index 809dafa..a919f3f 100644
 +		};
 +	}
 +	task_unlock(task);
-+	char header[160];
-+	int header_bytes = snprintf(header, sizeof(header), "SMP %s[%d] slide 0x%llx mh 0x%llx\n", name, pid, slide, mh);
-+	printf("%s", header);
-+	if (header_bytes > 0 && (unsigned)header_bytes < sizeof(header)) houji_sample_record(header, (unsigned)header_bytes);
++	printf("SMP %s[%d] slide 0x%llx mh 0x%llx\n", name, pid, slide, mh);
 +	for (unsigned tn = 0; tn < count; tn++) {
 +		char line[400];
 +		uint64_t fp = regs[tn].fp;
@@ -3719,14 +3717,9 @@ index 809dafa..a919f3f 100644
 +			if (frame[0] <= fp) break;
 +			fp = frame[0];
 +		}
-+		unsigned bytes = (unsigned)strlen(line);
-+		if (bytes + 1 < sizeof(line)) { line[bytes++] = '\n'; line[bytes] = 0; }
-+		printf("%s", line);
-+		houji_sample_record(line, bytes);
++		printf("%s\n", line);
 +	}
-+	header_bytes = snprintf(header, sizeof(header), "SMP END %s[%d] threads=%u truncated=%u\n", name, pid, count, truncated);
-+	printf("%s", header);
-+	if (header_bytes > 0 && (unsigned)header_bytes < sizeof(header)) houji_sample_record(header, (unsigned)header_bytes);
++	printf("SMP END %s[%d] threads=%u truncated=%u\n", name, pid, count, truncated);
 +	vm_map_deallocate(map);
 +	kfree_data(regs, sizeof(*regs) * MAX_SAMPLE_THREADS);
 +}
@@ -4244,6 +4237,7 @@ index 2927d4b..54edb01 100644
  
  	return kmem_get_nth_free_slot(meta, slot_idx, bitmap);
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 3ad743f..5d5ca9f 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -3,6 +3,7 @@
@@ -4270,7 +4264,7 @@ diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
  
  static uint32_t
  _gic_read32(vm_offset_t addr)
-@@ -50,7 +57,7 @@
+@@ -50,7 +57,7 @@ find_gicr_pe_base()
  	// We only care about aff1 and aff0
  	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
  
@@ -4279,19 +4273,19 @@ diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
  		vm_offset_t gicr_pe_base = gicr_base + offset;
  		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
  		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
-@@ -66,6 +73,11 @@
- 
+@@ -67,6 +74,11 @@ find_gicr_pe_base()
  	panic("%s: cannot find GICR base for core %u", __func__, ml_get_cpu_number(phys_id));
  }
-+
+ 
 +#include "HoujiSmpGic.inc"
 +#if defined(SWEET)
 +#include "HoujiSpi.inc"
 +#endif
- 
++
  void
  pe_init_fiq()
-@@ -96,6 +108,32 @@
+ {
+@@ -96,6 +108,32 @@ pe_init_fiq()
  			panic("%s: incorrect reg property size in GIC DT node; expecting 32 bytes but got %u bytes", __func__, prop_size);
  		}
  
@@ -4324,7 +4318,7 @@ diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
  		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
  
  		uint64_t const gicd_base_prop = ((uint64_t const *) prop)[0];
-@@ -141,11 +179,25 @@
+@@ -141,11 +179,25 @@ pe_init_fiq()
  		}
  	}
  
@@ -4350,7 +4344,7 @@ diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
  
  	// Enable system register access
  	uint64_t icc_sre = __builtin_arm_rsr64("ICC_SRE_EL1");
-@@ -153,8 +205,12 @@
+@@ -153,8 +205,12 @@ pe_init_fiq()
  	__builtin_arm_wsr64("ICC_SRE_EL1", icc_sre);
  	__builtin_arm_isb(ISB_SY);
  
@@ -4363,7 +4357,7 @@ diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
  	__builtin_arm_wsr64("ICC_PMR_EL1", 0xFF);
  
  	// Set EOI mode of this processor
-@@ -162,12 +218,25 @@
+@@ -162,12 +218,25 @@ pe_init_fiq()
  	icc_ctlr &= ~ICC_CTLR_EOIMODE;
  	__builtin_arm_wsr64("ICC_CTLR_EL1", icc_ctlr);
  
@@ -4715,13 +4709,9 @@ index 97028c0..ae73f62 100644
  	int error;
  
 diff --git a/tools/lldbmacros/core/syntax_checker.py b/tools/lldbmacros/core/syntax_checker.py
-index 3ebc295..994c190 100755
+index 3ebc295..174ffef 100755
 --- a/tools/lldbmacros/core/syntax_checker.py
 +++ b/tools/lldbmacros/core/syntax_checker.py
-@@ -1,2 +1,2 @@
--#!/usr/bin/env python
-+#!/usr/bin/env python3
- from __future__ import absolute_import, print_function
 @@ -12,9 +12,6 @@ Usage:
  """
  import sys

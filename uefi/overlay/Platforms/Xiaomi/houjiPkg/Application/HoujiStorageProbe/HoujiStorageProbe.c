@@ -878,7 +878,9 @@ BootNativeUfsProbe (EFI_HANDLE ImageHandle)
   ZeroMem (&Request, sizeof (Request));
   Request.Volume = Self->DeviceHandle;
   Request.KernelPath = L"\\Payloads\\kernel.macho";
-  CONST CHAR16 *BaseBootArgs = L"-v sweetfb_hz=120 serial=1 debug=0x14e keepsyms=1 cpus=8 wfi=1 houji_smp=1 houji_smp_probe=1 houji_native_root=1 houji_ufs_log=1 houji_return_recovery=1 houji_checkpoint_stop=0 sweetsample=backboardd houji_gpu_external_canary_probe=1 houji_gpu_external_nc_probe=1 houji_gpu_fw_mem_probe=1 houji_gpu_scm_probe=1 houji_gpu_stock_probe=8 houji_panic_recovery=1 sweetfb_noconsole=1 houji_fb_gpu_sync=1 houji_fb_gpu_cache=1 houji_dvfs=3 gpu_max_mhz=903 houji_epoch=1792839100 msgbuf=65536 rd=md0 rootrw=1 houji_gpu_runtime=3 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 houji_touch_probe=1";
+  // yoni13 fork: the boot line this kernel runs with (houji_gpu_runtime=4 unbounded desktop, houji_usb=1 USB console, wfi=1,
+  // houji_m2v=cG Metal bridge grouped completions, houji_usb_sdp_ma=900 USB SDP charge limit).
+  CONST CHAR16 *BaseBootArgs = L"-v sweetfb_hz=120 serial=1 debug=0x14e keepsyms=1 houji_smp=1 houji_smp_probe=1 houji_native_root=1 houji_ufs_log=1 houji_return_recovery=1 houji_gpu_external_canary_probe=1 houji_gpu_external_nc_probe=1 houji_gpu_fw_mem_probe=1 houji_gpu_scm_probe=1 houji_gpu_stock_probe=8 houji_panic_recovery=1 sweetfb_noconsole=1 houji_fb_gpu_sync=1 houji_fb_gpu_cache=1 houji_dvfs=3 houji_epoch=1792839100 msgbuf=65536 rd=md0 rootrw=1 houji_gpu_runtime=4 houji_usb=1 wfi=1 houji_m2v=cG houji_usb_sdp_ma=900 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 houji_touch_probe=1";
   CHAR16 BootArgs[608];
   // Darwin 22's command line includes its trailing NUL in this budget.
   // Never silently truncate the final touch handoff when adding options.

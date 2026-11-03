@@ -46,17 +46,24 @@ static int IOLockSleepDeadline(void*,void*,uint64_t,int){return 1;}
 static uint64_t mach_absolute_time(){static uint64_t now=0;return ++now;}
 static void nanoseconds_to_absolutetime(uint64_t ns,uint64_t *out){*out=ns;}
 static uint32_t native_adreno_present_capture_fence(){return 7;}
+static void houjiNoteSwapInterval(){}
+struct IOTimerEventSource {unsigned armed=0;void setTimeoutUS(unsigned){++armed;}};
 static uint32_t get32(const uint8_t *p,uint32_t offset){uint32_t n;memcpy(&n,p+offset,4);return n;}
 class AppleCLCD : public OSObject {
 public:
  void *fLock=nullptr;
  HoujiFrameQueue<HoujiDisplayFrame,8> fFrames;
  unsigned fFlushTicks=1,copies=0;
+ int fImmediate=1;
  bool gpuReady=false;
  IOInterruptEventSource event;
  IOInterruptEventSource *fCopyEvent=&event;
+ IOTimerEventSource retry;
+ IOTimerEventSource *fCopyRetry=&retry;
  IOReturn swap(const uint8_t *);
  static void copyFired(OSObject *,IOInterruptEventSource *,int);
+ static void copyRetryFired(OSObject *,IOTimerEventSource *);
+ void copyQueued(void);
  bool present(const HoujiDisplayFrame &f){assert(f.fence==7);if(!gpuReady)return false;++copies;return true;}
 };
 static int enqueue(AppleCLCD &fb,uint32_t id,uint32_t surface){
@@ -68,25 +75,23 @@ static int enqueue(AppleCLCD &fb,uint32_t id,uint32_t surface){
 unit += functions
 unit += r'''
 int main(){
+ // yoni13 port: SwapEnd wakes the copy worker at once (houji_fb_immediate=1), one wake drains every ready frame in order,
+ // a frame whose GPU work is pending stays queued with its surface retained and the 500 us retry timer armed.
  AppleCLCD fb;
  assert(enqueue(fb,1,1)==kIOReturnSuccess && fb.event.requests==1);
  assert(enqueue(fb,2,2)==kIOReturnSuccess && fb.event.requests==2);
- // Two wakes can coalesce; pending GPU work cannot release either surface.
  AppleCLCD::copyFired(&fb,&fb.event,2);
- assert(fb.copies==0 && fb.fFrames.count()==2 && surfaces[0].refs==1 && surfaces[1].refs==1);
- fb.gpuReady=true;AppleCLCD::copyFired(&fb,&fb.event,1);
- assert(fb.copies==1 && fb.fFrames.complete(1) && !fb.fFrames.complete(2));
- assert(surfaces[0].refs==0 && surfaces[1].refs==1 && fb.event.requests==3);
- AppleCLCD::copyFired(&fb,&fb.event,1);
- assert(fb.copies==2 && fb.fFrames.complete(2) && !surfaces[1].refs && fb.event.requests==3);
- // Explicit decimation remains timer paced, without immediate drain wakes.
- fb.fFlushTicks=2;assert(!enqueue(fb,3,1) && !enqueue(fb,4,2));
- assert(fb.event.requests==3);
- AppleCLCD::copyFired(&fb,&fb.event,1);assert(fb.event.requests==3 && fb.fFrames.count()==1);
- AppleCLCD::copyFired(&fb,&fb.event,1);assert(fb.fFrames.count()==0);
+ assert(fb.copies==0 && fb.fFrames.count()==2 && surfaces[0].refs==1 && surfaces[1].refs==1 && fb.retry.armed==1);
+ fb.gpuReady=true;AppleCLCD::copyRetryFired(&fb,&fb.retry);
+ assert(fb.copies==2 && fb.fFrames.complete(1) && fb.fFrames.complete(2) && fb.fFrames.count()==0);
+ assert(!surfaces[0].refs && !surfaces[1].refs);
+ // Without immediate wakes, swaps only queue; the notification timer paces copies.
+ fb.fImmediate=0;assert(!enqueue(fb,3,1) && !enqueue(fb,4,2));
+ assert(fb.event.requests==2 && fb.fFrames.count()==2);
+ AppleCLCD::copyFired(&fb,&fb.event,1);assert(fb.fFrames.count()==0 && fb.copies==4);
  assert(enqueue(fb,5,99)==kIOReturnBadArgument && fb.fFrames.count()==0);
  assert(!surfaces[0].refs && !surfaces[1].refs);
- puts("PASS: actual display callbacks wake immediately, drain coalesced FIFO work, preserve pending surfaces and timer-paced decimation");
+ puts("PASS: actual display callbacks wake immediately, drain ready frames in one wake, retain pending surfaces with a retry, and obey timer pacing");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='houji-display-') as temporary:

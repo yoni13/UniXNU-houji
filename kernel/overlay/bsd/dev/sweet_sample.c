@@ -18,7 +18,6 @@
 #include <sys/proc_internal.h>
 #include <kern/task.h>
 #include <kern/thread.h>
-#include <kern/locks.h>
 #include <mach/thread_act.h>
 #include <pexpert/pexpert.h>
 /* BSD uses these osfmk counters via declarations, as vm/vm_unix.c does. */
@@ -30,41 +29,6 @@ extern int hz;
 extern void sweet_sample_start(void);
 
 static char sweet_sample_names[128];
-#include "HoujiSampleCache.h"
-static LCK_GRP_DECLARE(houji_sample_group, "houji-samples");
-static LCK_MTX_DECLARE(houji_sample_lock, &houji_sample_group);
-static struct HoujiSampleCache houji_samples;
-static unsigned houji_sample_sequence;
-
-// Dedicated bounded storage survives the final GPU telemetry dump. No stack
-// reads, allocations or device IO occur while this lock is held.
-void houji_sample_record(const char *text, unsigned bytes);
-unsigned houji_sample_snapshot(char *out, unsigned capacity);
-void
-houji_sample_record(const char *text, unsigned bytes)
-{
-	lck_mtx_lock(&houji_sample_lock);
-	houjiSampleAppend(&houji_samples, text, bytes);
-	lck_mtx_unlock(&houji_sample_lock);
-}
-unsigned
-houji_sample_snapshot(char *out, unsigned capacity)
-{
-	lck_mtx_lock(&houji_sample_lock);
-	unsigned used = houjiSampleCopy(&houji_samples, out, capacity);
-	lck_mtx_unlock(&houji_sample_lock);
-	return used;
-}
-static void
-houji_sample_begin(void)
-{
-	char line[64];
-	lck_mtx_lock(&houji_sample_lock);
-	houjiSampleBegin(&houji_samples);
-	int size = snprintf(line, sizeof(line), "SMP CACHE capture=%u\n", ++houji_sample_sequence);
-	if (size > 0 && (unsigned)size < sizeof(line)) houjiSampleAppend(&houji_samples, line, (unsigned)size);
-	lck_mtx_unlock(&houji_sample_lock);
-}
 
 static bool
 sweet_sample_wanted(const char *name)
@@ -95,7 +59,6 @@ sweet_sample_proc(proc_t p, __unused void *arg)
 		task_t task = proc_task(p);
 		if (task != TASK_NULL) {
 			task_reference(task);
-			houji_sample_begin();
 			printf("SMP BEGIN %s[%d]\n", name, proc_pid(p));
 			sweet_sample_task(name, proc_pid(p), task);
 			task_deallocate(task);
@@ -175,12 +138,11 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
 		thread_terminate(current_thread());
 		return;
 	}
-	/* Cover the short interactive trial while preserving bounded snapshots. */
-	(void)tsleep(&chan, PZERO, "sweetsmp", 60 * hz);
+	(void)tsleep(&chan, PZERO, "sweetsmp", 90 * hz);
 	for (int i = 0; i < 40; i++) {
 		printf("SMP --- sample %d\n", i);
 		proc_iterate(PROC_ALLPROCLIST, sweet_sample_proc, NULL, NULL, NULL);
-		(void)tsleep(&chan, PZERO, "sweetsmp", 45 * hz);
+		(void)tsleep(&chan, PZERO, "sweetsmp", 120 * hz);
 	}
 	thread_terminate(current_thread());
 }

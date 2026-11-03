@@ -41,6 +41,7 @@ enum : uint32_t {
     RingCacheInvalidate7 = 0x33,
     RingWaitForIdle = 0x26,
     RingPrologueWords = 11,
+    RingNop = 0x10,           /* CP_NOP */
     /* a6xx_set_pagetable()'s A7XX context entry: CP_RESET_CONTEXT_STATE (0x1f; CLEAR_ON_CHIP_TS, CLEAR_RESOURCE_TABLE,
      * CLEAR_BV_BR_COUNTER, RESET_GLOBAL_LOCAL_TS = bits 0..3) between thread syncs, LRZ_FLUSH_INVALIDATE (0x26), the
      * RBBM_PERFCTR_SRAM_INIT_CMD (0x050e) write and CACHE_INVALIDATE (0x31), after a CP_WAIT_TIMESTAMP on the last fence, then the
@@ -69,6 +70,12 @@ static uint32_t ilog2(size_t value)
 /* The last submissions as the CP will read them: [slot] fence, start index, end index, word count, then the bounded ring words from the start. The board log
  * prints them, so a fence the GPU never wrote can be compared with the packets that should have written it. */
 extern "C" {volatile uint32_t native_adreno_ring_log[4][4+NativeAdrenoRingLogWords];volatile uint32_t native_adreno_ring_log_count;}
+/* Ring write sub-parts for the board's live profile (8 read pointer, 9 commands + record, 10 publish check, 11 barrier + WPTR). */
+extern "C" void native_adreno_submit_part(unsigned part,uint64_t began) __attribute__((weak));
+extern "C" uint64_t native_adreno_submit_part_now(void) __attribute__((weak));
+extern "C" {volatile uint64_t native_adreno_prologue_stats[2];}   /* light, full */
+static uint64_t ringNow(void) {return native_adreno_submit_part_now?native_adreno_submit_part_now():0;}
+static void ringPart(unsigned part,uint64_t began) {if(native_adreno_submit_part)native_adreno_submit_part(part,began);}
 IOReturn NativeAdrenoRing::poison()
 {
     poisoned_=true;return kIOReturnIOError;
@@ -113,9 +120,18 @@ IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
         if(n)n=packet(words,n,RingWaitRegMem,sram,6);
     }
     const uint32_t flush=RingCacheFlush7,invalidate7=RingCacheInvalidate7;
-    if(n)n=packet(words,n,RingFenceOpcode,&flush,1);
-    if(n)n=packet(words,n,RingFenceOpcode,&invalidate7,1);
-    if(n)n=packet(words,n,RingWaitForIdle,nullptr,0);
+    if(!reset && light_next_) {
+        /* Tables unchanged: Turnip invalidates what each command buffer needs, as under Linux, where only a table switch
+         * flushes. A 4-word CP_NOP keeps the prologue's length and the board's validation of it. */
+        const uint32_t nop[4]={0,0,0,0};
+        if(n)n=packet(words,n,RingNop,nop,4);
+        native_adreno_prologue_stats[0]=native_adreno_prologue_stats[0]+1;
+    } else {
+        if(n)n=packet(words,n,RingFenceOpcode,&flush,1);
+        if(n)n=packet(words,n,RingFenceOpcode,&invalidate7,1);
+        if(n)n=packet(words,n,RingWaitForIdle,nullptr,0);
+        native_adreno_prologue_stats[1]=native_adreno_prologue_stats[1]+1;
+    }
     if(n)n=packet(words,n,RingThreadControl,&both,1);
     if(n)n=packet(words,n,RingSetMarker,&marker,1);
     if(n!=count)return poison();
@@ -238,8 +254,11 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     const bool reset=framed && reset_pending_;
     const uint32_t extra=framed?RingPrologueWords+(reset?RingResetWords:0)+RingFramedFenceWords:RingFenceWords;
     if(word_count>size_words-extra-8)return kIOReturnNoResources;
+    uint64_t part=ringNow();
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);
+    ringPart(8,part);
     if(status)return status;
+    part=ringNow();
     const uint32_t used=(next_-rptr)&mask;
     if(word_count+extra+8>size_words-used)return kIOReturnNoResources;
     uint32_t at=next_;
@@ -262,9 +281,12 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
         for(uint32_t i=0;i<NativeAdrenoRingLogWords;++i)record[4+i]=i<total?ring_[(next_+i)&mask]:0;
         native_adreno_ring_log_count=native_adreno_ring_log_count+1;
     }
+    ringPart(9,part);part=ringNow();
     if(cache_.publish(cache_.cookie,ring_,ring_bytes_))return poison();
+    ringPart(10,part);part=ringNow();
     if(io_.barrier(io_.cookie))return poison();
     if(io_.write32(io_.cookie,RingWptr,end))return poison();
+    ringPart(11,part);
     next_=end;*fence=++seqno_;++submissions_;
     if(reset)reset_pending_=false;
     return kIOReturnSuccess;

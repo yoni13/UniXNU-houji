@@ -1,0 +1,11 @@
+houji: the Kiwi v2 firmware (WLAN.HMT.2.0.c2-00035) went to its RAM dump state 300 ms after the heartbeat's HTT extended statistics
+request of type 37, ten seconds into a connection. Keep the type 8 request made at key installation and at a deauthentication (answered
+without trouble); the heartbeat's diagnostic requests are not sent.
+--- a/src/nw_wifi.c
++++ b/src/nw_wifi.c
+@@ -150,4 +150,5 @@
+ void nw_wifi_htt_stats(int type) {
+   if (!g_hw) return;
++  if (type != 8) return;
+   struct ath12k *ar = ath12k_ah_to_ar(g_hw->priv, 0); struct htt_ext_stats_cfg_params cfg = {};
+   int r = ath12k_dp_tx_htt_h2t_ext_stats_req(ar, type, &cfg, (u64)ATH12K_HTT_STATS_MAGIC_VALUE << 32);

@@ -514,6 +514,15 @@ static bool nativeAdrenoNonMutatingGpuMethod(uint32_t method) {
     default:return false;
     }
 }
+extern "C" void houji_gate_hitch_snapshot(uint64_t out[6]);
+extern "C" void houji_surface_lazy_report(void);
+extern "C" void houji_power_report(void);
+extern "C" void houji_cp_lease_report(void);
+extern "C" {extern volatile uint64_t native_adreno_prologue_stats[2];}
+extern "C" {extern volatile uint64_t native_adreno_wptr_stats[4];}
+extern "C" {extern volatile uint64_t native_adreno_dvfs_skips[2];}
+extern "C" {extern volatile uint64_t native_adreno_submit_parts[12][2];}
+extern "C" {extern volatile uint64_t native_adreno_pipeline_stats[5];extern volatile uint64_t native_adreno_tlb_stats[2];}
 static uint64_t nativeAdrenoDispatchPerf[20][4]; // calls, time us, max us, cached path
 /* Issuer-lock protected. A draining mutation keeps its place while asleep,
  * so new submissions cannot refill the GPU ahead of it. Queries, fence polls
@@ -540,7 +549,6 @@ extern "C" uint64_t houji_gpu_submit_activity(void) {
         __atomic_load_n(&nativeAdrenoDispatchPerf[NativeAdrenoMethodSubmitBatch][0],__ATOMIC_RELAXED);
 }
 extern "C" void houji_sandbox_abi_report(void);
-extern "C" unsigned houji_tcc_extension_snapshot(char *,unsigned);
 extern "C" void houji_cpu_scheduler_report(void);
 
 /* Called with no issuer lock held. Keeping this path separate also lets host
@@ -1017,14 +1025,13 @@ extern "C" IOReturn native_adreno_provider_poll(void){if(!g.published || !g.lock
 extern "C" void houji_touch_driver_report(void);
 extern "C" void houji_framebuffer_history_report(void);
 extern "C" void houji_cpu_dvfs_history_report(void);
+extern "C" void houji_usb_report(void);
 extern "C" void houji_gpu_dvfs_history_report(void);
 extern "C" volatile uint32_t native_adreno_client_stats[NativeAdrenoMaxClients+1][6];
 extern "C" volatile uint32_t native_adreno_window_overflow[NativeAdrenoMaxClients][3];
 // Bounded cached observations for the periodic log snapshot, before teardown.
 // Try the existing lock only for copying text; never hold it while printing.
 extern "C" unsigned houji_gpu_dvfs_snapshot(char *,unsigned);
-extern "C" unsigned houji_thermal_snapshot(char *,unsigned);
-extern "C" unsigned houji_backlight_snapshot(char *,unsigned);
 extern "C" unsigned houji_gpu_gate_snapshot(char *,unsigned);
 extern "C" unsigned native_adreno_present_sync_snapshot(char *,unsigned);
 extern "C" unsigned houji_gpu_cached_timing(char *out,unsigned capacity) {
@@ -1035,7 +1042,6 @@ extern "C" unsigned houji_gpu_cached_timing(char *out,unsigned capacity) {
   return n>0?((unsigned)n<capacity?(unsigned)n:capacity-1):0;
  }
  unsigned used=0;out[0]=0;bzero(rows,sizeof rows);bzero(clients,sizeof clients);bool copied=false;
- used+=houji_tcc_extension_snapshot(out,capacity);
  if(g.lock && nativeAdrenoIssuerTryLock(__LINE__)) {
   memcpy(rows,native_adreno_metal_rows,sizeof rows);
   memcpy(clients,native_adreno_client_log,sizeof clients);
@@ -1069,8 +1075,6 @@ extern "C" unsigned houji_gpu_cached_timing(char *out,unsigned capacity) {
  used+=houji_gpu_gate_snapshot(out+used,capacity-used);
  used+=native_adreno_present_sync_snapshot(out+used,capacity-used);
  used+=houji_gpu_dvfs_snapshot(out+used,capacity-used);
- used+=houji_thermal_snapshot(out+used,capacity-used);
- used+=houji_backlight_snapshot(out+used,capacity-used);
  for(const auto &client:clients)if(copied && client.name[0]) {
   unsigned window=client.slot<NativeAdrenoMaxClients?(unsigned)(kClientWindows[client.slot].bytes>>20):0;
   unsigned base=client.slot<NativeAdrenoMaxClients?(unsigned)(kClientWindows[client.slot].start>>20):0;
@@ -1082,6 +1086,51 @@ extern "C" unsigned houji_gpu_cached_timing(char *out,unsigned capacity) {
  return used;
 }
 
+/* One snapshot per displayed frame for the hitch log: [0..5] gate count/total/wait/audit-us, GPU level, GPU busy-us;
+ * [6..13] map/free/submit/alloc calls and us (map n,us, free n,us, submit n,us, alloc n, fence-wait us);
+ * [14] full fallbacks, [15] depth waits. */
+extern "C" void native_adreno_hitch_snapshot(uint64_t out[16]){
+ houji_gate_hitch_snapshot(out);
+ auto load=[](unsigned m,unsigned i){return __atomic_load_n(&nativeAdrenoDispatchPerf[m][i],__ATOMIC_RELAXED);};
+ out[6]=load(NativeAdrenoMethodBoMap,0);out[7]=load(NativeAdrenoMethodBoMap,1);
+ out[8]=load(NativeAdrenoMethodBoFree,0);out[9]=load(NativeAdrenoMethodBoFree,1);
+ out[10]=load(NativeAdrenoMethodSubmit,0);out[11]=load(NativeAdrenoMethodSubmit,1);
+ out[12]=load(NativeAdrenoMethodBoAlloc,0);out[13]=native_adreno_wait_outer[1];
+ out[14]=native_adreno_pipeline_stats[2];out[15]=native_adreno_pipeline_stats[3];
+}
+/* Live profile for the USB log: cumulative per-method cost and the Metal
+ * plugin's own telemetry rows. Reads counters only; no lock, no GPU access. */
+extern "C" void native_adreno_perf_report(void){
+ for(unsigned method=0;method<20;++method){
+  uint64_t v[4];for(unsigned i=0;i<4;++i)v[i]=__atomic_load_n(&nativeAdrenoDispatchPerf[method][i],__ATOMIC_RELAXED);
+  if(v[0])IOLog("HOUJI ABI METHOD: id=%u calls=%llu total-us=%llu max-us=%llu no-drain=%llu; live\n",method,v[0],v[1],v[2],v[3]);
+ }
+ {
+  const char *phases[]={"all","wc-reassert","publish","audit"};
+  for(unsigned phase=0;phase<4;++phase){
+   uint64_t v[3];for(unsigned i=0;i<3;++i)v[i]=__atomic_load_n(&native_adreno_submit_cost[phase*3+i],__ATOMIC_RELAXED);
+   IOLog("HOUJI SUBMIT COST: phase=%s calls=%llu total-us=%llu max-us=%llu; live\n",phases[phase],v[0],v[1],v[2]);
+  }
+  IOLog("HOUJI COHERENT SKIPS: %u/%u/%u/%u wc-trusted-audit=%u/%u/%u/%u reset=%u distrusted=%u; live\n",native_adreno_coherent_skips[0],native_adreno_coherent_skips[1],native_adreno_coherent_skips[2],native_adreno_coherent_skips[3],native_adreno_wc_audit[0],native_adreno_wc_audit[1],native_adreno_wc_audit[2],native_adreno_wc_audit[3],native_adreno_wc_audit[5],native_adreno_wc_distrusted);
+ }
+ {
+  IOLog("HOUJI PIPELINE: light-submits=%llu light-other=%llu full-fallbacks=%llu depth-waits=%llu fault-refusals=%llu TLB-reused=%llu TLB-invalidated=%llu jobs=%lu; live\n",
+   native_adreno_pipeline_stats[0],native_adreno_pipeline_stats[1],native_adreno_pipeline_stats[2],native_adreno_pipeline_stats[3],native_adreno_pipeline_stats[4],
+   native_adreno_tlb_stats[0],native_adreno_tlb_stats[1],g.submit?g.submit->outstanding():0ul);
+ }
+ {
+  const char *names[12]={"retire","acquire-imported","hold","sample","ring","tlb","depth-wait","light-gate","ring-rptr","ring-emit","ring-publish","ring-wptr"};
+  for(unsigned i=0;i<12;i++)IOLog("HOUJI SUBMIT PART: %s n=%llu us=%llu; live\n",names[i],native_adreno_submit_parts[i][0],native_adreno_submit_parts[i][1]);
+ }
+ houji_surface_lazy_report();
+ houji_power_report();
+ houji_cp_lease_report();
+ IOLog("HOUJI PROLOGUE: light=%llu full=%llu; live\n",native_adreno_prologue_stats[0],native_adreno_prologue_stats[1]);
+ IOLog("HOUJI DVFS LOCK: skipped-ticks=%llu retries=%llu; live\n",native_adreno_dvfs_skips[0],native_adreno_dvfs_skips[1]);
+ IOLog("HOUJI WPTR: writes=%llu retried=%llu retries=%llu loop-us=%llu; live\n",native_adreno_wptr_stats[0],native_adreno_wptr_stats[1],native_adreno_wptr_stats[2],native_adreno_wptr_stats[3]);
+ IOLog("HOUJI WAIT OUTER: waits=%llu total-us=%llu pauses=%llu max-us=%llu; live\n",native_adreno_wait_outer[0],native_adreno_wait_outer[1],native_adreno_wait_outer[2],native_adreno_wait_outer[3]);
+ for(unsigned row=0;row<48;row++)if(native_adreno_metal_rows[row][0])IOLog("HOUJI METAL ROW %u: %.95s\n",row,native_adreno_metal_rows[row]);
+}
 static void nativeAdrenoStopDiagnostics(void){
  const char *phases[]={"all","wc-reassert","publish","audit"};
  IOLog("HOUJI CACHE POLICY: coherent=%u skipped=%u/%u/%u/%u wc-reset=%u distrusted=%u dirty=%u stale=%u NC-import-fallbacks=%u; cached observations only\n",native_adreno_io_coherent,native_adreno_coherent_skips[0],native_adreno_coherent_skips[1],native_adreno_coherent_skips[2],native_adreno_coherent_skips[3],native_adreno_wc_audit[5],native_adreno_wc_distrusted,native_adreno_wc_audit[2],native_adreno_wc_audit[3],native_adreno_coherent_import_fallbacks);
@@ -1091,6 +1140,7 @@ static void nativeAdrenoStopDiagnostics(void){
  }
  houji_cpu_scheduler_report();
  houji_cpu_dvfs_history_report();
+ houji_usb_report();
  houji_gpu_dvfs_history_report();
  houji_sandbox_abi_report();
  for(unsigned method=0;method<20;++method) {
@@ -1226,6 +1276,8 @@ extern "C" uint32_t native_adreno_present_capture_fence(void){
 }
 
 extern "C" void houji_gpu_dvfs_tick(void);
+/* Governor ticks skipped because submits held the lock for a whole retry window; live counter. */
+extern "C" {volatile uint64_t native_adreno_dvfs_skips[2];}
 extern "C" IOReturn native_adreno_dvfs_poll(void){
  if(!g.published || !g.lock || g.dying)return kIOReturnNotReady;
  // This dedicated worker may sleep. Queue behind the issuer rather than

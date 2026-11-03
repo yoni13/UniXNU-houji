@@ -31,3 +31,7 @@
 *.tar
 *.tar.gz
 .DS_Store
+
+# Per-phone generated XNU trial bindings (log file allocation and GPU handoff identity); see docs/fork.md
+/kernel/overlay/iokit/Kernel/houji-ufs-root/HoujiLogAllocation.h
+/kernel/overlay/iokit/Kernel/houji-ufs-root/HoujiZapTrial.h

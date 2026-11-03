@@ -12,8 +12,8 @@
  * rather than ignored. */
 enum {
     NativeAdrenoAbiVersion = 1,
-    NativeAdrenoAbiMaxBuffers = 16,
-    NativeAdrenoAbiMaxBatchBuffers = 128,
+    NativeAdrenoAbiMaxBuffers = 32,   /* Turnip submits ~17 IBs per vkQueueSubmit; 16 split each into two kernel submits (this root's userland) */
+    NativeAdrenoAbiMaxBatchBuffers = 128,   /* upstream's batch submission; used only by a userland that calls it */
     NativeAdrenoAbiMaxBoBytesShift = 28, /* 256MiB per object */
     NativeAdrenoMethodQuery = 1,
     NativeAdrenoMethodBoAlloc = 2,
@@ -165,7 +165,7 @@ static_assert(sizeof(NativeAdrenoAbiBoAlloc) == 16, "ABI alloc layout");
 static_assert(sizeof(NativeAdrenoAbiBoMap) == 32, "ABI map layout");
 static_assert(sizeof(NativeAdrenoAbiBoImport) == 16, "ABI import layout");
 static_assert(sizeof(NativeAdrenoAbiSubmitBuffer) == 24, "ABI buffer layout");
-static_assert(sizeof(NativeAdrenoAbiSubmit) == 416, "ABI submit layout");
+static_assert(sizeof(NativeAdrenoAbiSubmit) == 800, "ABI submit layout");
 static_assert(sizeof(NativeAdrenoAbiSubmitBatch) == 3104, "ABI batch submit layout");
 static_assert(__builtin_offsetof(NativeAdrenoAbiSubmitBatch, buffers) == 32, "ABI batch header layout");
 static_assert(__builtin_offsetof(NativeAdrenoAbiSubmit, buffers) == 32, "ABI legacy header layout");

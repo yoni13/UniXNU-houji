@@ -1,0 +1,20 @@
+houji: power save on demand (nw_wifi_ps_set), for an idle screen.
+--- a/src/nw_wifi.c
++++ b/src/nw_wifi.c
+@@ -155,6 +155,16 @@
+     if (arvif->ahvif->vdev_type != WMI_VDEV_TYPE_STA) continue;
+     int r = ath12k_wmi_pdev_set_ps_mode(ar, arvif->vdev_id, WMI_STA_PS_MODE_DISABLED);
+     lx_log(6, "wifi: power save off on vdev %u: %d", arvif->vdev_id, r); } }
++/* houji: power save for an idle screen. on: the inactivity time (ms the radio stays awake after traffic), then the mode; off as above. */
++void nw_wifi_ps_set(int on) {
++  if (!g_hw) return;
++  struct ath12k *ar = ath12k_ah_to_ar(g_hw->priv, 0); struct ath12k_link_vif *arvif;
++  list_for_each_entry(arvif, &ar->arvifs, list) {
++    if (arvif->ahvif->vdev_type != WMI_VDEV_TYPE_STA) continue;
++    int r = 0;
++    if (on) r = ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id, WMI_STA_PS_PARAM_INACTIVITY_TIME, 200);
++    if (!r) r = ath12k_wmi_pdev_set_ps_mode(ar, arvif->vdev_id, on ? WMI_STA_PS_MODE_ENABLED : WMI_STA_PS_MODE_DISABLED);
++    lx_log(6, "wifi: power save %s on vdev %u: %d", on ? "on" : "off", arvif->vdev_id, r); } }
+ /* The firmware's own transmit statistics (HTT extended stats): asked for on demand, every block of the answer is logged with its non-zero words. */
+ void nw_wifi_htt_stats(int type) {
+   if (!g_hw) return;

@@ -17,6 +17,7 @@ extern "C" unsigned native_adreno_provider_probe_result(void);
 extern "C" unsigned native_adreno_provider_probe_started(void);
 extern "C" uint64_t native_adreno_provider_progress_token(void);
 extern "C" void native_adreno_provider_snapshot(void);
+extern "C" void native_adreno_perf_report(void);
 extern "C" int native_adreno_provider_stop(int(*)(void*),void*);
 static struct {
  NativeAdrenoTimer timer;unsigned phase,code,published,registry,rounds,draws,views,closes,publishes;
@@ -103,6 +104,15 @@ extern "C" IOReturn native_adreno_board_quiesce(void){
  a.phase=11;s.published=s.pending=0;s.iteration=s.seq+1;
  return kIOReturnSuccess;
 }
+/* Former pipelined-gate counters, still printed by the GPU reports (the gate was replaced by upstream's guarded dispatch). */
+extern "C" {volatile uint64_t native_adreno_pipeline_stats[5];}
+/* Gate and GPU governor counters for the display's hitch log; plain loads, no lock. */
+extern "C" void houji_gate_hitch_snapshot(uint64_t out[6]){
+ auto load=[](const uint64_t *v){return __atomic_load_n(v,__ATOMIC_RELAXED);};
+ out[0]=load(&gHoujiGatePerf.count);out[1]=load(&gHoujiGatePerf.total);out[2]=load(&gHoujiGatePerf.phase[0]);
+ out[3]=load(&gHoujiGatePerf.phase[2])+load(&gHoujiGatePerf.phase[3])+load(&gHoujiGatePerf.phase[4]);
+ out[4]=gHoujiDvfs.level;out[5]=gHoujiDvfs.busyNs/1000;
+}
 /* Houji still publishes all non-coherent mapped pages, and reasserts WC
  * attributes, before a submission. These operations cannot overlap earlier
  * GPU writes merely because the VM generation is unchanged. Poll first;
@@ -121,7 +131,11 @@ static int houjiProviderPublish(const volatile uint32_t*words,size_t bytes){
  const uint32_t seq=s.ring.lastSubmitted()+1,n=log[3];
  if(!seq || log[0]!=seq || log[1]!=s.end || log[2]>=HHR_WORDS || n<46 || n>NativeAdrenoRingFrameWords+4*NativeAdrenoSubmitMaxBuffers || (n-42)%4 || log[2]!=((s.end+n)&(HHR_WORDS-1)))return 1;
  const uint32_t head[]={hhr_pkt7(0x17,1),0x80000001,hhr_pkt7(0x46,1),0x32,hhr_pkt7(0x46,1),0x33,hhr_pkt7(0x26,0),hhr_pkt7(0x17,1),3,hhr_pkt7(0x65,1),0x101};
- for(unsigned i=0;i<11;i++)if(log[4+i]!=head[i])return 1;
+ /* The light prologue (unchanged tables): the flush, invalidate and wait-for-idle replaced by one 4-word CP_NOP. */
+ const uint32_t light[]={hhr_pkt7(0x17,1),0x80000001,hhr_pkt7(0x10,4),0,0,0,0,hhr_pkt7(0x17,1),3,hhr_pkt7(0x65,1),0x101};
+ bool full=true,lite=true;
+ for(unsigned i=0;i<11;i++){if(log[4+i]!=head[i])full=false;if(log[4+i]!=light[i])lite=false;}
+ if(!full && !lite)return 1;
  const unsigned ibs=(n-42)/4;
  for(unsigned i=0;i<ibs;i++){unsigned at=4+11+4*i;uint64_t va=log[at+1]|((uint64_t)log[at+2]<<32);uint32_t count=log[at+3];
   if(log[at]!=0x70bf8003 || !count || count>0xfffff || (va&3) || va<0x10000000 || va>=HOUJI_GPU_APERTURE || count*4ull>HOUJI_GPU_APERTURE-va)return 1;
@@ -214,12 +228,7 @@ static void houjiDvfsWorker(void*,wait_result_t){
  while(native_adreno_board_running()){(void)native_adreno_dvfs_poll();IOSleep(16);}
  thread_terminate(current_thread());
 }
-static void houjiDvfsStart(){
+static void houjiDvfsStart(){   /* this port's GPU governor (HoujiGpuDvfs.inc, our TSENS caps), not upstream's */
  unsigned flags=0;PE_parse_boot_argn("houji_dvfs",&flags,sizeof(flags));gHoujiDvfs.enabled=(flags&2)!=0;
- unsigned mhz=0;PE_parse_boot_argn("gpu_max_mhz",&mhz,sizeof(mhz));
- unsigned cap=hco_cap_mhz(mhz);
- if(!cap){IOLog("HOUJI GPU DVFS: invalid gpu_max_mhz=%u; using factory 903 MHz ceiling\n",mhz);cap=HCO_DEFAULT_CAP;}
- gHoujiDvfs.cap=cap;houji_thermal_start();
- if(gHoujiDvfs.enabled){thread_t t;if(kernel_thread_start(houjiDvfsWorker,nullptr,&t)==KERN_SUCCESS)thread_deallocate(t);
-  else {gHoujiDvfs.enabled=0;IOLog("HOUJI GPU DVFS: worker unavailable; fixed boot request remains 500 MHz\n");}}
+ if(gHoujiDvfs.enabled){thread_t t;if(kernel_thread_start(houjiDvfsWorker,nullptr,&t)==KERN_SUCCESS)thread_deallocate(t);}
 }

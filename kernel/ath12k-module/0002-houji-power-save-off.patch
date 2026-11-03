@@ -1,0 +1,30 @@
+houji: the firmware dozed between beacons on an idle link (about 105 ms per idle ping); tell it power save is off once the link
+is authorized.
+--- a/src/nw_wifi.c
++++ b/src/nw_wifi.c
+@@ -146,6 +146,15 @@
+   for (int i = 0; i < 4 && o < n; i++) { if (!dp->reo_dst_ring[i].vaddr) continue; struct hal_srng *s = &ab->hal.srng_list[dp->reo_dst_ring[i].ring_id];
+     spin_lock_bh(&s->lock); int w = ath12k_hal_srng_dst_num_free(ab, s, true); spin_unlock_bh(&s->lock); o += snprintf(b + o, n - o, " %d", w); }
+   if (o < n) snprintf(b + o, n - o, "; queued %u, dropped %u", nw_rx_backlog(), nw_rx_dropped()); }
++/* houji: the Kiwi v2 firmware dozed between beacons once a link went idle (about 105 ms for an idle ping, 3 ms under load) although the
++ * vdev was created with power save off; after authorization it is told again, for each station vdev. */
++void nw_wifi_ps_off(void) {
++  if (!g_hw) return;
++  struct ath12k *ar = ath12k_ah_to_ar(g_hw->priv, 0); struct ath12k_link_vif *arvif;
++  list_for_each_entry(arvif, &ar->arvifs, list) {
++    if (arvif->ahvif->vdev_type != WMI_VDEV_TYPE_STA) continue;
++    int r = ath12k_wmi_pdev_set_ps_mode(ar, arvif->vdev_id, WMI_STA_PS_MODE_DISABLED);
++    lx_log(6, "wifi: power save off on vdev %u: %d", arvif->vdev_id, r); } }
+ /* The firmware's own transmit statistics (HTT extended stats): asked for on demand, every block of the answer is logged with its non-zero words. */
+ void nw_wifi_htt_stats(int type) {
+   if (!g_hw) return;
+--- a/src/nw_sta.c
++++ b/src/nw_sta.c
+@@ -394,6 +394,7 @@
+   lx_log(6, "wifi: handshake message 4 %s", acked ? "acknowledged" : "not acknowledged"); if (C.hs_stage == 3) C.m4_done = 1; }
+ static void finish_authorized(void) {
+   if (set_sta_state(IEEE80211_STA_AUTHORIZED)) { connect_done(NW_RES_FAILED); return; }
++  { void nw_wifi_ps_off(void); nw_wifi_ps_off(); }
+   C.state = NW_STA_UP; C.bmiss_at = 0; nw_wifi_stats.stage = 8; C.hb_at = lx_now_ms(); C.hb_frames = nw_wifi_stats.frames; C.hb_beacons = nw_wifi_stats.beacons; C.hb_quiet = 0;
+   lx_log(6, "wifi: connected"); connect_done(NW_RES_OK); }
+ /* Once a second while connected: what arrived. A second with nothing at all is logged with the receive rings and the transmit outcomes, and the

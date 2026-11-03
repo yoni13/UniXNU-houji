@@ -32,10 +32,16 @@ static int houjiSubmitRead(void*,uint32_t reg,uint32_t*v){
  return !v || !yes || houjiSubmitGuard()?1:houjiFullRaw32(0x3d00000+4*reg,v);
 }
 static int houjiSubmitBarrier(void*){if(houjiSubmitGuard())return 1;houjiStockFullBarrier();return 0;}
+/* WPTR writes: [0] writes, [1] writes that needed a retry (fence status bit 0 set), [2] retries, [3] us spent in the write loop. */
+extern "C" {volatile uint64_t native_adreno_wptr_stats[4];}
 static int houjiSubmitWrite(void*,uint32_t reg,uint32_t v){
  auto&s=gHoujiSubmit;if(houjiSubmitGuard() || reg!=0x807 || !s.adopted || !s.published || s.pending || v!=s.expected_end || v>=HHR_WORDS)return 1;
  s.pending=1;
- for(unsigned i=0;i<200;i++){uint32_t fence=0;if(houjiSubmitGuard() || houjiCpStore(0x3d0201c,v) || houjiFullRaw32(0x3d8ec4c,&fence))return 1;if(!(fence&1)){s.end=v;return 0;}IODelay(10);}
+ const uint64_t began=houjiSubmitNow(nullptr);
+ for(unsigned i=0;i<200;i++){uint32_t fence=0;if(houjiSubmitGuard() || houjiCpStore(0x3d0201c,v) || houjiFullRaw32(0x3d8ec4c,&fence))return 1;
+  if(!(fence&1)){s.end=v;native_adreno_wptr_stats[0]=native_adreno_wptr_stats[0]+1;if(i){native_adreno_wptr_stats[1]=native_adreno_wptr_stats[1]+1;native_adreno_wptr_stats[2]=native_adreno_wptr_stats[2]+i;}
+   native_adreno_wptr_stats[3]=native_adreno_wptr_stats[3]+(houjiSubmitNow(nullptr)-began);return 0;}
+  IODelay(10);}
  return 1;
 }
 // The hint reads only this boot's retained, Normal-NC CP completion word.

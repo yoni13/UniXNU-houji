@@ -5,7 +5,7 @@
  */
 #include "HoujiSpi.h"
 struct HoujiSpiEntry {uint32_t id;void (*handler)(void *);void *context;uint64_t count;};
-static struct HoujiSpiEntry houji_spis[2];
+static struct HoujiSpiEntry houji_spis[4];
 static unsigned houji_spi_used,houji_spi_writer,houji_spi_ready;
 static uint64_t houji_spi_boot_affinity;
 static void houji_spi_fence(void) {
@@ -30,13 +30,13 @@ int houji_spi_attach(uint32_t intid,int edge,void (*handler)(void *),void *conte
                      uint32_t *readback,uint64_t *router) {
     if(readback)*readback=0;if(router)*router=0;
     if(!gicd_base || !__atomic_load_n(&houji_spi_ready,__ATOMIC_ACQUIRE))return HoujiSpiNotReady;
-    /* Actual FDT: IPCC SPI 229 (INTID 261), apps RSC SPI 5 (INTID 37). */
-    if(!handler || (intid!=261 && intid!=37) || edge)return HoujiSpiArgument;
+    /* Actual FDT: IPCC SPI 229 (INTID 261), apps RSC SPI 5 (INTID 37); houji: PCIe0 MSI group 0, SPI 141 (INTID 173, Wi-Fi). */
+    if(!handler || (intid!=261 && intid!=37 && intid!=173) || edge)return HoujiSpiArgument;
     unsigned expected=0;
     if(!__atomic_compare_exchange_n(&houji_spi_writer,&expected,1u,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED))return HoujiSpiBusy;
     int result=HoujiSpiBusy;unsigned used=__atomic_load_n(&houji_spi_used,__ATOMIC_ACQUIRE);
     uint32_t word=(intid/32)*4,bit=1u<<(intid%32),cfg=0xc00+(intid/16)*4,shift=(intid%16)*2+1;
-    if(used>=2)goto done;
+    if(used>=4)goto done;
     for(unsigned i=0;i<used;i++)if(houji_spis[i].id==intid)goto done;
     if(intid>=((gicd_read32(4)&31)+1)*32){result=HoujiSpiArgument;goto done;}
     if((gicd_read32(0x100+word)|gicd_read32(0x300+word))&bit)goto done;

@@ -4,10 +4,6 @@
 #include "HoujiReadPolicy.h"
 #include "HoujiLogPolicy.h"
 #include "HoujiRootPolicy.h"
-#include "battery/HoujiFirmwareReadPolicy.h"
-// Owned by gHost.lock; armed for one native firmware read and cleared before
-// releasing the lock. Existing root/log/recovery write grants are unchanged.
-static HoujiFirmwareReadGrant gFirmwareReadGrant;
 
 struct HardwareTransferPort {
   uint64_t deadline;
@@ -34,6 +30,27 @@ static uint32_t loadBe32 (const uint8_t *at)
   return (uint32_t (at[0]) << 24) | (uint32_t (at[1]) << 16) | (uint32_t (at[2]) << 8) | at[3];
 }
 
+// Firmware reads (the ADSP image in modem_a, LUN 4): READ(10) only, on LUNs 1-5, of each GPT's header and entry blocks (LBA 1-9) and
+// of partition ranges native_ufs_part_find granted by name. Never a write or any other command.
+struct HoujiPartGrant {uint32_t lun; uint64_t first, blocks;};
+static HoujiPartGrant gHoujiPartGrants[8];
+static unsigned gHoujiPartGrantCount;
+static bool houjiUfsFirmwareCommandAllowed(const uint8_t *u,unsigned n,unsigned dir,uint32_t bytes) {
+  if(!u || n!=32 || u[0]!=1 || u[2]<1 || u[2]>5 || u[3] || u[1]!=0x40 || dir!=2 || !bytes || bytes>131072 || (bytes&4095))return false;
+  for(unsigned i=4;i<12;i++)if(u[i])return false;
+  const uint32_t transfer=(uint32_t(u[12])<<24)|(uint32_t(u[13])<<16)|(uint32_t(u[14])<<8)|u[15];
+  const uint8_t *c=u+16;
+  if(transfer!=bytes || c[0]!=0x28 || c[1] || c[6])return false;
+  for(unsigned i=9;i<16;i++)if(c[i])return false;
+  const uint64_t lba=(uint32_t(c[2])<<24)|(uint32_t(c[3])<<16)|(uint32_t(c[4])<<8)|c[5];
+  const unsigned blocks=(unsigned(c[7])<<8)|c[8];
+  if(!blocks || blocks*4096U!=bytes)return false;
+  if(lba>=1 && lba+blocks<=10)return true;
+  for(unsigned i=0;i<gHoujiPartGrantCount;i++){const HoujiPartGrant&g=gHoujiPartGrants[i];
+    if(g.lun==u[2] && lba>=g.first && lba-g.first+blocks<=g.blocks)return true;}
+  return false;
+}
+
 // Issue the UPIU already placed at gHost.virt + kUcdOffset through request slot 0. `direction` is
 // the UTRD data direction (0 none, 1 from host, 2 to host). Direction 1 is reachable only through hostWrite4k, which
 // confines it to the persistent store window. Returns the overall command status
@@ -45,7 +62,7 @@ static IOReturn hostSubmit (uint32_t direction, uint32_t dataBytes, uint32_t tim
       !houjiUfsLogCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gLogEnabled,gLogArmed) &&
       !houjiUfsRootCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gRootEnabled,gRootArmed) &&
       !houjiUfsRecoveryCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gReturnRecovery,gRecoveryArmed) &&
-      !houjiUfsFirmwareCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes,gFirmwareReadGrant))
+      !houjiUfsFirmwareCommandAllowed(gHost.virt+kUcdOffset,32,direction,dataBytes))
     return kIOReturnNotPermitted;
   if (!timeoutUs || dataBytes > kDataMax || (dataBytes & 3) ||
       (dataBytes ? (direction != 1 && direction != 2) : direction != 0)) return kIOReturnBadArgument;

@@ -75,6 +75,8 @@ public:
     IOReturn retireCompleted();
     /* Waits for every outstanding job in submission order and retires its references. */
     IOReturn waitAll(const NativeAdrenoRingClock *,uint32_t timeout_us);
+    /* Waits for the oldest jobs (in submission order) until fewer than depth remain outstanding. */
+    IOReturn waitDepth(size_t depth,const NativeAdrenoRingClock *,uint32_t timeout_us);
     /* Polls the CP timestamp; on completion retires every buffer reference. A fence whose job was already retired (by
      * wait or retireCompleted) is checked against the ring and succeeds once the CP has passed it. */
     IOReturn wait(uint32_t fence,const NativeAdrenoRingClock *,uint32_t timeout_us);

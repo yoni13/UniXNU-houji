@@ -5,23 +5,26 @@
  */
 #include "HoujiGpuGovernorPolicy.h"
 extern "C" uint64_t houji_dvfs_touch_time(void);
-extern "C" uint64_t houji_dvfs_touch_burst_time(void);
-extern "C" unsigned houji_thermal_gpu_cap(void);
-extern "C" void houji_thermal_start(void);
+extern "C" {extern volatile uint32_t houji_thermal_level;}
+/* GPU OPP cap by TSENS level: 903, 680, 578, 500, 366, 231 MHz. houji_gpu_maxlevel (default 12 = 903 MHz) bounds it;
+ * 8 keeps 680 MHz, 5 restores the old fixed 500 MHz cap. */
+static unsigned houjiGpuCap(void){
+ static unsigned maximum=0;
+ if(!maximum){unsigned v=12;PE_parse_boot_argn("houji_gpu_maxlevel",&v,sizeof(v));maximum=v<1?1:v>HCO_COUNT?HCO_COUNT:v;}
+ static const unsigned byLevel[]={12,8,6,5,3,1};
+ unsigned level=__atomic_load_n(&houji_thermal_level,__ATOMIC_RELAXED);
+ unsigned cap=byLevel[level<6?level:5];
+ return cap<maximum?cap:maximum;
+}
 static struct {
- unsigned enabled,ready,bad,level=HCO_BOOT_LEVEL,cap=HCO_DEFAULT_CAP,low,changes,failed,busyPermille;
+ unsigned enabled,ready,bad,level=HCO_BOOT_LEVEL,low,changes,failed,busyPermille;
  uint64_t last,lastBusy,lastTouch,idleAt,wakeUntil,lastSubmits,windowNs,busyNs,at[HCO_COUNT+1],invalid;
- unsigned wakeBoosts,touchPrewarms,touchBursts,touchActive,touchLate;bool idle;HoujiGpuGovernorPolicy policy;
- uint64_t touchWakeUntil;
+ unsigned wakeBoosts;bool idle;HoujiGpuGovernorPolicy policy;
  uint64_t historyAt,historyNs,historyBusy,history231,history500,maxTickUs;
 } gHoujiDvfs;
 struct HoujiGpuDvfsWindow {uint64_t upUs,spanUs,busyUs,at231Us,at500Us,maxTickUs;unsigned changes,wakes;};
 static HoujiGpuDvfsWindow houjiGpuDvfsHistory[48];
 static unsigned houjiGpuDvfsHistoryCount;
-// Last input prewarms, published after the corresponding HFI decision. All
-// writes occur under the issuer lock; the terminal snapshot reads cached data.
-struct HoujiGpuTouchWakeRecord {uint64_t sequence,atUs,ageUs;unsigned before,after,cap,busy,active;};
-static HoujiGpuTouchWakeRecord houjiGpuTouchWakeRecords[8];
 static bool houjiDvfsRead(uint32_t a,uint32_t *v){
  if(!native_adreno_board_running() || !v)return false;
  auto*p=houjiFullPointer(a,4);if(!p)return false;
@@ -45,7 +48,7 @@ extern "C" void houji_gpu_dvfs_tick(void){
   uint32_t enable=0,select=0;
   if(!houjiDvfsRead(0x3d7e100,&enable) || !houjiDvfsRead(0x3d7e104,&select) || enable!=1 || (select&255)!=32){v.bad=1;IOLog("HOUJI GPU DVFS: existing XO counter selection invalid; no vote changes\n");return;}
   v.last=now;v.lastBusy=busy;v.idleAt=now;v.historyAt=now;v.ready=1;
-  IOLog("HOUJI GPU OPP: 12 advertised factory levels 231..903 MHz; cap=%u MHz, boot=500 MHz; SKU bin5/AB; firmware HFI votes, no PLL writes; TSENS junction cap active; hardware validation pending\n",hco_opp(v.cap)->khz/1000);return;
+  IOLog("HOUJI GPU OPP: 12 advertised factory levels 231..903 MHz; thermal cap now %u MHz (TSENS level %u), boot=500 MHz; SKU bin5/AB; firmware HFI votes, no PLL writes\n",hco_opp(houjiGpuCap())->khz/1000,houji_thermal_level);return;
  }
  uint64_t us=now-v.last;if(us<16000)return;
  if(us>v.maxTickUs)v.maxTickUs=us;
@@ -60,32 +63,13 @@ extern "C" void houji_gpu_dvfs_tick(void){
  if(active)v.idleAt=now;
  uint64_t touch=houji_dvfs_touch_time(),touchNs=0;
  if(touch){uint64_t abs=mach_absolute_time();if(abs>=touch)absolutetime_to_nanoseconds(abs-touch,&touchNs);}
- uint64_t burstNs=0;absolutetime_to_nanoseconds(houji_dvfs_touch_burst_time(),&burstNs);
- const uint64_t burstUs=burstNs/1000;
- const uint64_t previousBurst=v.lastTouch;
- const bool inputWake=houjiGpuArmTouchWake(now,burstUs,v.idle,&v.lastTouch,&v.touchWakeUntil);
- if(v.lastTouch!=previousBurst){
-  __atomic_fetch_add(&v.touchBursts,1u,__ATOMIC_RELAXED);
-  if(!inputWake)__atomic_fetch_add(v.idle?&v.touchLate:&v.touchActive,1u,__ATOMIC_RELAXED);
- }
- const unsigned before=v.level;
- unsigned thermal=houji_thermal_gpu_cap();
- unsigned cap=thermal<v.cap?thermal:v.cap;if(!cap)cap=1;
- unsigned want=houjiGpuChoose(&v.policy,v.level,cap,v.busyPermille,active,
-  touch && touchNs<1000000000ULL,(now<v.wakeUntil?1u:0u)|(now<v.touchWakeUntil?2u:0u),(unsigned)gHoujiApi.submit.outstanding());
+ unsigned want=houjiGpuChoose(&v.policy,v.level,houjiGpuCap(),v.busyPermille,active,
+  touch && touchNs<1000000000ULL,now<v.wakeUntil,(unsigned)gHoujiApi.submit.outstanding());
  if(!hco_opp(want)){v.bad=1;IOLog("HOUJI GPU DVFS: invalid policy output; no vote changes\n");return;}
  if(want!=v.level){
   uint32_t reply[6]={};const FhrRuntimeIo io={nullptr,houjiDvfsOwner,houjiDvfsDoorbell,houjiDvfsBarrier,houjiDvfsDelay};int code=fhr_runtime_vote(&gHoujiFull.storage,sizeof(gHoujiFull.storage),&io,want,reply);
   if(code){++v.failed;v.bad=1;IOLog("HOUJI GPU DVFS FAIL: request-index=%u bridge=%d HFI=%u sent=%u ACK=%u value=%u status=%u polls=%u; live worker isolates before log commit\n",want,code,reply[0],reply[1],reply[2],reply[3],reply[4],reply[5]);return;}
   v.level=want;++v.changes;v.low=0;
- }
- if(inputWake){
-  const uint64_t seq=__atomic_add_fetch(&v.touchPrewarms,1u,__ATOMIC_RELAXED);auto&r=houjiGpuTouchWakeRecords[(seq-1)%8];
-  __atomic_store_n(&r.sequence,0ull,__ATOMIC_SEQ_CST);
-  __atomic_store_n(&r.atUs,now,__ATOMIC_RELAXED);__atomic_store_n(&r.ageUs,now-burstUs,__ATOMIC_RELAXED);
-  __atomic_store_n(&r.before,before,__ATOMIC_RELAXED);__atomic_store_n(&r.after,v.level,__ATOMIC_RELAXED);
-  __atomic_store_n(&r.cap,cap,__ATOMIC_RELAXED);__atomic_store_n(&r.busy,v.busyPermille,__ATOMIC_RELAXED);__atomic_store_n(&r.active,(unsigned)active,__ATOMIC_RELAXED);
-  __atomic_store_n(&r.sequence,seq,__ATOMIC_RELEASE);
  }
  if(now-v.historyAt>=5000000){unsigned count=__atomic_load_n(&houjiGpuDvfsHistoryCount,__ATOMIC_RELAXED);
   if(count<48){houjiGpuDvfsHistory[count]={now,(v.windowNs-v.historyNs)/1000,(v.busyNs-v.historyBusy)/1000,(v.at[1]-v.history231)/1000,(v.at[HCO_BOOT_LEVEL]-v.history500)/1000,v.maxTickUs,v.changes,v.wakeBoosts};__atomic_store_n(&houjiGpuDvfsHistoryCount,count+1,__ATOMIC_RELEASE);}
@@ -104,15 +88,7 @@ static void houjiDvfsReport(){auto&v=gHoujiDvfs;
 extern "C" unsigned houji_gpu_dvfs_snapshot(char*out,unsigned capacity){
  if(!out || !capacity)return 0;unsigned used=0;out[0]=0;auto&v=gHoujiDvfs;
  auto append=[&](const char*f,auto...a){if(used>=capacity-1)return;int n=snprintf(out+used,capacity-used,f,a...);if(n>0)used+=(unsigned)n<capacity-used?(unsigned)n:capacity-used-1;};
- append("HOUJI OPP SNAPSHOT: ready=%u bad=%u level=%u cap-MHz=%u thermal-level=%u changes=%u failed=%u busy=%u reason=%u\n",v.ready,v.bad,v.level,hco_opp(v.cap)->khz/1000,houji_thermal_gpu_cap(),v.changes,v.failed,v.busyPermille,v.policy.reason);
+ append("HOUJI OPP SNAPSHOT: ready=%u bad=%u level=%u cap-MHz=%u changes=%u failed=%u busy=%u reason=%u\n",v.ready,v.bad,v.level,hco_opp(houjiGpuCap())->khz/1000,v.changes,v.failed,v.busyPermille,v.policy.reason);
  for(unsigned i=1;i<=HCO_COUNT;i++)append("HOUJI OPP RESIDENCY: MHz=%u request-us=%llu\n",hco_opp(i)->khz/1000,__atomic_load_n(&v.at[i],__ATOMIC_RELAXED)/1000);
- append("HOUJI INPUT PREWARM: count=%u bursts=%u already-active=%u late=%u duration-us=50000 quiet-gap-us=80000; first contact burst only, factory/thermal cap retained\n",__atomic_load_n(&v.touchPrewarms,__ATOMIC_RELAXED),__atomic_load_n(&v.touchBursts,__ATOMIC_RELAXED),__atomic_load_n(&v.touchActive,__ATOMIC_RELAXED),__atomic_load_n(&v.touchLate,__ATOMIC_RELAXED));
- for(const auto&r:houjiGpuTouchWakeRecords){
-  const uint64_t seq=__atomic_load_n(&r.sequence,__ATOMIC_ACQUIRE);if(!seq)continue;
-  uint64_t at=__atomic_load_n(&r.atUs,__ATOMIC_RELAXED),age=__atomic_load_n(&r.ageUs,__ATOMIC_RELAXED);
-  unsigned before=__atomic_load_n(&r.before,__ATOMIC_RELAXED),after=__atomic_load_n(&r.after,__ATOMIC_RELAXED),cap=__atomic_load_n(&r.cap,__ATOMIC_RELAXED),busy=__atomic_load_n(&r.busy,__ATOMIC_RELAXED),active=__atomic_load_n(&r.active,__ATOMIC_RELAXED);
-  __atomic_thread_fence(__ATOMIC_SEQ_CST);if(seq!=__atomic_load_n(&r.sequence,__ATOMIC_ACQUIRE))continue;
-  append("HOUJI INPUT WAKE: n=%llu up-us=%llu age-us=%llu before-level=%u after-level=%u cap=%u busy=%u active=%u; ACK level, not core clock\n",seq,at,age,before,after,cap,busy,active);
- }
  return used;
 }

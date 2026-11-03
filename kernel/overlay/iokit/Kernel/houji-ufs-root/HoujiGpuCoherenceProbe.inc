@@ -2,8 +2,10 @@
 // Adapted from UniXNU-sheng package/GpuPowerProbe.cpp coherenceProbe at
 // 08cde20edc3254ed6f7df8d0f5384fb887786e8f. Same dirty-read and clean-resident
 // write proofs, adapted to exclusive CPU16K pages and houji's retained owner.
-// Mode 4 stops after qualification. Private opt-in mode 5 proceeds to the
-// bounded desktop only after both copy and WB rendering proofs pass this boot.
+// houji (this port): mode 4 is the unbounded desktop. With houji_gpu_coherent=1 (default) it runs these proofs first and enables
+// coherent=2 only when all pass this boot; when they fail with the GPU idle and its tables intact, the desktop continues with every
+// mapping maintained as before (coherent=0). Only an uncertain GPU state still stops. Upstream's mode 5 (proofs, then its bounded
+// desktop, mode 3) is kept; upstream's diagnostic-only mode 4 is not.
 #ifndef HOUJI_GPU_COHERENCE_PROBE_INC
 #define HOUJI_GPU_COHERENCE_PROBE_INC
 #include "HoujiGpuCoherencePolicy.h"
@@ -214,16 +216,23 @@ static void houjiCoherenceTrial(void) {
    houjiFullRaw32(0x3d02084,&protect)|houjiFullRaw32(0x3dc0058,&fsr);
   IOLog("HOUJI COHERENCE RING: direction=%u seq=%u observed=%u read=%u RPTR=%u WPTR=%u RBBM=%x IRQ=%x protect=%x FSR=%x\n",p.direction,gHoujiSubmit.seq,gHoujiSubmit.observed,read,rp,wp,rbbm,irq,protect,fsr);
  }
- if(gHoujiLive.mode==5 && !status && p.pass && p.render_pass && p.copies==2 &&
-    p.draws==8 && p.unmapped && !p.handle && !p.command_mapped && houjiVmIdle() &&
-    !gHoujiApi.submit.outstanding() && houjiFullLease() && houjiFullTables()){
+ const bool settled=p.unmapped && !p.handle && !p.command_mapped && houjiVmIdle() &&
+    !gHoujiApi.submit.outstanding() && houjiFullLease() && houjiFullTables();
+ if(!status && p.pass && p.render_pass && p.copies==2 && p.draws==8 && settled){
   // Private opt-in desktop mode: same-boot proofs completed with coherence
   // disabled. Preserve every ring/fence/issuer/presenter check. Only WB,
   // inner-shareable mappings can skip maintenance; NC imports still cannot.
-  gHoujiApi.phase=10;p.active=0;gHoujiLive.mode=3;
+  gHoujiApi.phase=10;p.active=0;if(gHoujiLive.mode==5)gHoujiLive.mode=3;
   native_adreno_io_coherent=NativeAdrenoCoherenceReadWrite;
   IOLog("HOUJI COHERENCE DESKTOP: mode=2 proofs=2 copies+8 renders; WB/inner-shareable imports only, NC maintenance and submit/present waits retained\n");
   houji_ufs_checkpoint("same-boot coherence and WB-target proofs complete; opt-in bounded coherent desktop; original owner retained",0);
+  __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;
+ }
+ if(gHoujiLive.mode==4 && settled){
+  // houji: no proof, but the scratch work is unmapped and the GPU idle with audited tables. Keep the owner and its scratch pages
+  // (never freed after a failed experiment) and run the desktop with full maintenance.
+  gHoujiApi.phase=10;p.active=0;native_adreno_io_coherent=NativeAdrenoCoherenceOff;
+  IOLog("HOUJI COHERENCE DESKTOP: proofs not met (status=%u), coherent=0, every mapping maintained as before\n",status);
   __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;
  }
  // Use the already-qualified owner's stop sequence even when the scratch

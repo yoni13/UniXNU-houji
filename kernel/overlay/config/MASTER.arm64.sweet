@@ -1,14 +1,9 @@
 #
-# houji retains the SWEET build target from its r222 source configuration:
-# MASTER.arm64.MacOSX plus the open-source
+# sweet (Redmi Note 10 Pro, SM7150): MASTER.arm64.MacOSX plus the open-source
 # arm64 assembly and pmap (nos_arm_asm, nos_arm_pmap). Apple's own SoC configs
 # link those from the KDK's closed lib<SOC>.os.<CONFIG>.a instead, which is
 # arm64e and Apple-silicon specific. kperf/kpc stay (xnu does not build without
 # kperf); osfmk/arm64/kpc.c is a stub with no hardware counters.
-# Drivers are built into this image. iOS has no kextd/kernelmanagerd launch job;
-# waiting for that macOS daemon holds the registry busy indefinitely, delaying
-# InterfaceNamer and Settings' network-interface enumeration. Use XNU's existing
-# no_kextd mode; real service matching and its busy accounting remain enabled.
 #
 #
 # Mach Operating System
@@ -17,14 +12,14 @@
 #
 # All rights reserved.  The CMU software License Agreement
 # specifies the terms and conditions for use and redistribution.
-#
+#  
 ######################################################################
 #
 #  Master Apple configuration file (see the master machine independent
 #  configuration file for a description of the file format).
 #
 ######################################################################
-#
+#  
 #  Standard Apple OS Configurations:
 #  -------- ----- -- ---------------
 #
@@ -57,7 +52,7 @@
 #else /*!(SOC_CONFIG_t8020 || SOC_IS_VIRTUALIZED)*/
 #  HIBERNATION =    [ ]
 #endif /*SOC_CONFIG_t8020 || SOC_IS_VIRTUALIZED*/
-#  IOKIT_BASE =     [ iokit iokitcpp no_kextd no_kernel_hid config_sleep iokitstats HIBERNATION ]
+#  IOKIT_BASE =     [ iokit iokitcpp no_kernel_hid config_sleep iokitstats HIBERNATION ]
 #  IOKIT_RELEASE =  [ IOKIT_BASE ]
 #  IOKIT_DEV =      [ IOKIT_BASE iotracking ]
 #  IOKIT_DEBUG =    [ IOKIT_BASE iotracking ]

@@ -368,8 +368,48 @@ private:
 };
 OSDefineMetaClassAndStructors(SweetHIDTouch, IOHIDEventService);
 
+/*
+ * A keyboard for unattended text entry from the USB console ("type TEXT"):
+ * not in the personality list, made on first use, so a normal boot has no
+ * hardware keyboard and the on-screen one behaves as usual until then.
+ */
+class SweetHIDKeyboard : public IOHIDEventService {
+	OSDeclareDefaultStructors(SweetHIDKeyboard);
+public:
+	virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+	void key(UInt32 usage, bool down);
+protected:
+	virtual UInt32 getPrimaryUsagePage() APPLE_KEXT_OVERRIDE { return kHIDPage_GenericDesktop; }
+	virtual UInt32 getPrimaryUsage() APPLE_KEXT_OVERRIDE { return kHIDUsage_GD_Keyboard; }
+	virtual UInt32 getProductID() APPLE_KEXT_OVERRIDE { return 3; }
+};
+OSDefineMetaClassAndStructors(SweetHIDKeyboard, IOHIDEventService);
+
 static SweetHIDButtons *gSweetButtons;
 static SweetHIDTouch *gSweetTouch;
+static SweetHIDKeyboard *gSweetKeyboard;
+
+bool
+SweetHIDKeyboard::start(IOService *provider)
+{
+	if (!IOHIDEventService::start(provider)) {
+		return false;
+	}
+	gSweetKeyboard = this;
+	registerService();
+	IOLog("SWEET HID: keyboard registered\n");
+	return true;
+}
+
+void
+SweetHIDKeyboard::key(UInt32 usage, bool down)
+{
+	IOHIDEvent *event = IOHIDEvent::keyboardEvent(mach_absolute_time(), kHIDPage_KeyboardOrKeypad, usage, down);
+	if (event) {
+		dispatchEvent(event);
+		event->release();
+	}
+}
 
 bool
 SweetHIDButtons::start(IOService *provider)
@@ -548,4 +588,51 @@ sweet_hid_touch(int finger, int down, int x, int y)
 	if (gSweetTouch) {
 		gSweetTouch->touch(finger, down != 0, x, y);
 	}
+}
+
+/* US layout: the usage of an ASCII character and whether it needs Shift (0: not typeable). */
+static UInt32
+sweet_hid_usage(char c, bool *shift)
+{
+	static const char plain[] = "-=[]\\;'`,./", shifted[] = "_+{}|:\"~<>?";
+	static const UInt8 punct[] = {0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38};
+	static const char digitsShifted[] = ")!@#$%^&*(";
+	*shift = false;
+	if (c >= 'a' && c <= 'z') return 0x04 + (c - 'a');
+	if (c >= 'A' && c <= 'Z') { *shift = true; return 0x04 + (c - 'A'); }
+	if (c >= '1' && c <= '9') return 0x1e + (c - '1');
+	if (c == '0') return 0x27;
+	if (c == ' ') return 0x2c;
+	if (c == '\n') return 0x28;
+	for (int i = 0; i < 10; i++) if (digitsShifted[i] == c) { *shift = true; return i ? 0x1e + (i - 1) : 0x27; }
+	for (int i = 0; plain[i]; i++) if (plain[i] == c) return punct[i];
+	for (int i = 0; shifted[i]; i++) if (shifted[i] == c) { *shift = true; return punct[i]; }
+	return 0;
+}
+
+/* Types ASCII text through the keyboard (made on first use). Blocks for about 25 ms a key event; call from a thread of your own. */
+extern "C" int
+sweet_hid_type(const char *text)
+{
+	if (!gSweetKeyboard) {
+		SweetHIDKeyboard *k = OSTypeAlloc(SweetHIDKeyboard);
+		IOService *resources = IOService::getResourceService();
+		if (!k || !resources || !k->init()) { OSSafeReleaseNULL(k); return -1; }
+		if (!k->attach(resources)) { k->release(); return -1; }
+		if (!k->start(resources)) { k->detach(resources); k->release(); return -1; }
+		k->release();
+		IOSleep(1500);   /* backboardd finds the new service */
+	}
+	int typed = 0;
+	for (const char *c = text; *c; c++) {
+		bool shift;
+		UInt32 usage = sweet_hid_usage(*c, &shift);
+		if (!usage) continue;
+		if (shift) { gSweetKeyboard->key(0xe1, true); IOSleep(25); }
+		gSweetKeyboard->key(usage, true); IOSleep(25);
+		gSweetKeyboard->key(usage, false); IOSleep(25);
+		if (shift) { gSweetKeyboard->key(0xe1, false); IOSleep(25); }
+		typed++;
+	}
+	return typed;
 }

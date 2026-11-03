@@ -47,6 +47,8 @@ int main(void) {
     assert(!houji_spi_dispatch(27) && !houji_spi_dispatch(1));
     unsigned saved=writes;assert(houji_spi_attach(261,0,callback,0,0,0)==HoujiSpiBusy && writes==saved);
     assert(!houji_spi_attach(37,0,callback,&callback_count,0,0));assert(houji_spi_dispatch(37));
+    /* yoni13: the PCIe0 MSI group 0 line (Wi-Fi) is a third accepted SPI */
+    assert(!houji_spi_attach(173,0,callback,&callback_count,0,0));assert(houji_spi_dispatch(173));
     reset();houji_spi_controller_ready();*(uint32_t *)gicd_base=1u<<31;
     assert(houji_spi_attach(261,0,callback,0,0,0)==HoujiSpiTimeout && !houji_spi_used && !houji_spi_writer);
     reset();houji_spi_controller_ready();bad_readback=1;

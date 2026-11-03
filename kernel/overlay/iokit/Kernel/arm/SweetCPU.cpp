@@ -18,7 +18,6 @@
 #include <mach/mach_time.h>
 #include "HoujiCpuPolicy.h"
 #include "HoujiSmpGic.h"
-#include "HoujiThermal.inc"
 #include "HoujiCpuDvfs.inc"
 
 extern "C" void houji_secondary_entry(void);
