@@ -1784,7 +1784,7 @@
     "kernel/overlay/iokit/Kernel/arm/HoujiSurfaceAcquire.h": "6465e565af11042cd58aab2f5d50c33ebe26c36acf126a7b67afb8fe89ceb604",
     "kernel/overlay/iokit/Kernel/arm/HoujiThermal.inc": "78f906ec5aeb648555601b4f0c34de7f4803bc53db2a57cca569cedb3fe56fc0",
     "kernel/overlay/iokit/Kernel/arm/SurfaceUseCount.h": "eb258627b0ce07d6e0b677577c333af32e85c0e1e8c0fbeb2fda090d1615fe1e",
-    "kernel/overlay/iokit/Kernel/arm/SweetCPU.cpp": "3184a74e56f8175f9f6c229bcaad856a66434dbdfbbd90ca61b585f9fd9bb8b0",
+    "kernel/overlay/iokit/Kernel/arm/SweetCPU.cpp": "c7ddc9e70f23bb91fc04cb1ef187068d66436dea1b913d01410a2214da94c3be",
     "kernel/overlay/iokit/Kernel/arm/SweetEntitlements.cpp": "59ff9f774d7228dc0ad0b13bb1350dbeaf2627e8180f362c388433733a77fe51",
     "kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp": "1c8c4fb072a9bd73aaa0ae92f774066cf71ad020375fdbbc3e7d3978f20eb512",
     "kernel/overlay/iokit/Kernel/arm/SweetKeyStore.cpp": "0224ef7ac3fd78511b4cb4369f9099352f80a9b434ae3fd15b5a3dbd1f145d55",
