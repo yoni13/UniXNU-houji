@@ -157,10 +157,13 @@ static void houjiLiveWorker(void*,wait_result_t){
  if(l.mode>=3){houjiWallpaperLogDump();houjiCpSaveFinal();houjiKeyboardLogDump();houjiCpSaveFinal();}
  panic("HOUJI LIVE: runtime ended mode=%u code=%u; retained PSCI recovery",l.mode,l.code);
 }
+// Real GIC interrupts attached while the coherence trial ran froze the phone (most boots, any line); attaches wait for this.
+extern "C" {volatile uint32_t houji_gpu_trial_done;}
 static bool houjiLiveStart(void){
  if(!houjiFullKeepLive(nullptr))return false;
  {unsigned coherent=1;PE_parse_boot_argn("houji_gpu_coherent",&coherent,sizeof(coherent));
   if((gHoujiLive.mode==4 && coherent) || gHoujiLive.mode==5)houjiCoherenceTrial();}
+ __atomic_store_n(&houji_gpu_trial_done,1u,__ATOMIC_RELEASE);   // HoujiAdsp.cpp attaches GIC interrupts only after this
  if(houjiProviderStart())return false;
  houjiDvfsStart();
  IOLog("HOUJI LIVE COMMIT: exact retained handoff and coexistence before userland; completed=%u real jobs\n",gHoujiSubmit.completed);

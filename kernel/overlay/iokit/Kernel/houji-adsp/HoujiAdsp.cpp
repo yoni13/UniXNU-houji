@@ -1414,6 +1414,7 @@ void pollerThread(void *, wait_result_t) {
 }  // namespace
 extern "C" int houji_spi_attach(uint32_t, int, void (*)(void *), void *, uint32_t *, uint64_t *);
 extern "C" uint64_t houji_spi_count(uint32_t);
+extern "C" {extern volatile uint32_t houji_gpu_trial_done;}   // HoujiGpuNativeLive.inc
 extern "C" {volatile int32_t native_spi_stats[4];}   // [0] attached, [1] fell back to polling, [2] last attach result, [3] last INTID
 extern "C" int armcpu_spi_attach(uint32_t intid, bool edge, void (*handler)(void *), void *context, uint32_t *readback, uint64_t *router) {
     unsigned real = 1; PE_parse_boot_argn("houji_spi", &real, sizeof real);
@@ -1421,6 +1422,8 @@ extern "C" int armcpu_spi_attach(uint32_t intid, bool edge, void (*handler)(void
     unsigned mask = 1; PE_parse_boot_argn("houji_spi_mask", &mask, sizeof mask);
     const unsigned bit = intid == 261 ? 1u : intid == 37 ? 2u : intid == 173 ? 4u : 0u;
     if (real && handler && (mask & bit)) {
+        // Not while the GPU's boot-time coherence trial runs (an attach during it froze the phone); at most 120 s.
+        for (unsigned waited = 0; !__atomic_load_n(&houji_gpu_trial_done, __ATOMIC_ACQUIRE) && waited < 1200; ++waited) IOSleep(100);
         const int rc = houji_spi_attach(intid, edge ? 1 : 0, handler, context, readback, router);
         native_spi_stats[2] = rc; native_spi_stats[3] = (int32_t)intid;
         if (rc == -1) return kIOReturnNotReady;   // HoujiSpiNotReady: the GIC driver has not started yet; the callers retry
