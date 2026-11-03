@@ -2,10 +2,11 @@
 # Build an already prepared Darwin 22 tree with caller-supplied KDK/CTF tools.
 set -euo pipefail
 : "${HOUJI_XNU:?path to prepared XNU source}"
-: "${HOUJI_KDK:?path to extracted KDK payload}"
+# HOUJI_KDK is optional: XNU links KDK archives only for T6000, T8101 and VMAPPLE (makedefs/MakeInc.def), never for SWEET.
+HOUJI_KDK=${HOUJI_KDK:-}
 : "${HOUJI_FAKEROOT:?path containing usr/local/bin/ctfconvert, ctfmerge, ctfdump}"
 : "${HOUJI_BUILD_ROOT:?new/local kernel output directory}"
-if [[ ! -d "$HOUJI_KDK/System/Library/KernelSupport" ]]; then
+if [[ -n "$HOUJI_KDK" && ! -d "$HOUJI_KDK/System/Library/KernelSupport" ]]; then
   echo "Missing KDK payload KernelSupport directory" >&2
   exit 1
 fi
@@ -57,4 +58,4 @@ make -C "$HOUJI_XNU" install -j"${HOUJI_JOBS:-8}" \
   SYSCTL_HW_LOGICALCPU="$(sysctl -n hw.logicalcpu)" KERNEL_BUILDS_IN_PARALLEL=1 \
   CTFCONVERT="$HOUJI_FAKEROOT/usr/local/bin/ctfconvert" \
   CTFMERGE="$HOUJI_FAKEROOT/usr/local/bin/ctfmerge" CTFDUMP="$HOUJI_FAKEROOT/usr/local/bin/ctfdump" \
-  IIG="$port_root/tools/iig-darwin22.py" HOUJI_EXTRA_OBJS="${HOUJI_EXTRA_OBJS:-}"   # yoni13: the Ath12kWifi module objects (tools/build-ath12k.py)
+  IIG="$port_root/tools/iig-darwin22.py" CCACHE="${HOUJI_CCACHE:-}" HOUJI_EXTRA_OBJS="${HOUJI_EXTRA_OBJS:-}"   # yoni13: the Ath12kWifi module objects (tools/build-ath12k.py)

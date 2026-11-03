@@ -2094,7 +2094,7 @@
     "tools/analyze-gpu-issuer.py": "94643293e145de46001f2612fa11cfd89199f71c88572bac3099e8871abfb060",
     "tools/analyze-gpu-stages.py": "9ad43ee7f49803731c9bffeb91dd4dd23ce4f1eba32245d4fe08bee54425aae2",
     "tools/build-ath12k.py": "92c5cbe7c95591c72260004f8bc9af969b809ae7e35f8d7eabcd9b819c2e3ee2",
-    "tools/build-kernel.sh": "ecaee1a761540d63162c1dba9888f6ae6d588b6ceab2ac2961012af2375beafa",
+    "tools/build-kernel.sh": "229a1a673d3f3150d6c3f6233a38f7c882ee70b6766756def9e8db804b736a97",
     "tools/build-metal.py": "18eb8f6f50ceb38f72e8109e42567f851c8c1da518ec6d74f493f78a489f8172",
     "tools/build-power-probe.py": "250a12bd6437e131f2288069b8a4d551eff789d9c1c3aa76a7abd39082c01534",
     "tools/build-system-apps.py": "ccf23adfd60daf5c67ac54faa2161533550740639fb9c7eb4365e61e40a4f8b7",
