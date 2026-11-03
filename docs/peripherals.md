@@ -66,9 +66,10 @@ GPU power collapse, DDR/CX votes left by the boot firmware, copying only the cha
   the batch ABI (our root's userland keeps the 32-buffer submit), no per-submit TLBIALL, 4 GiB GPU address layout.
   Kept ours: GPU frequency governor and TSENS caps, the frame copy worker, IOSurface dirty tracking.
 - **Interrupts.** `pexpert/arm/HoujiSpi` (GIC SPI routing) with a dispatch hook in `sleh_irq`. IPCC (INTID 261, ADSP/modem
-  doorbells) and PCIe0 MSI (INTID 173, Wi-Fi) are real level interrupts: about 60 and 70 per second while Wi-Fi scans, battery and
-  Wi-Fi work, and the old 2 ms poller thread no longer starts. The RSC line (INTID 37) froze the boot as a GIC interrupt, so vote()
-  polls its TCS status itself. `houji_spi=0` restores polling; `houji_spi_mask` (bit 0 IPCC, 1 RSC, 2 MSI; default 5) selects lines.
+  doorbells) is a real level interrupt (about 20-60 per second; battery works). As GIC interrupts, the RSC line (INTID 37) froze every
+  boot and PCIe0 MSI (INTID 173, Wi-Fi) froze 3 of 4 boots at the point Wi-Fi brings up its link (the 4th ran normally with about 70
+  MSIs per second); the cause is not known. vote() polls its RSC TCS status itself; Wi-Fi MSI stays on the 2 ms poller.
+  `houji_spi=0` restores polling for everything; `houji_spi_mask` (bit 0 IPCC, 1 RSC, 2 MSI; default 1) selects lines.
 - Idle with the screen off after both: 2.4-2.5 W, CPU about 47.5 C (wfi=1 alone: 2.5-2.8 W, about 52 C).
 
 ## Buttons — implemented, not yet pressed on hardware

@@ -28,7 +28,7 @@ Per-peripheral status, measurements and boot arguments are in [peripherals.md](p
 | Battery and charging | Own ADSP battery-manager client with USB-PD charge control, thermal current limits, and no charging when full and above 40 C. |
 | Buttons | Power and volume keys by read-only SPMI polling, delivered as HID. |
 | Display | iOS's display power (IOMobileFramebuffer selector 12) drives the panel (DCS 0x28/0x29); iOS brightness through an AppleARMBacklight-compatible service; a touch on a dark screen no longer lights it. |
-| Idle power | `wfi=1` (cores stop in WFI instead of spinning), real interrupts for IPCC and Wi-Fi MSI instead of a 2 ms poller, a 10 s lock-screen timeout. Screen-off draw went from 3.3 W to 2.4 W. |
+| Idle power | `wfi=1` (cores stop in WFI instead of spinning), a real interrupt for IPCC (ADSP/modem doorbells) instead of a 2 ms poller, a 10 s lock-screen timeout. Screen-off draw went from 3.3 W to about 2.5 W. |
 | GPU | Upstream's coherence merged into this kernel; per-submit cache maintenance 10 us instead of 200-600 us. |
 | Modem and GPS | Opt-in modem start (`houji_modem=2`), rmtfs and TFTP servers, QMI LOC client. No position fix yet. |
 | Cameras | Opt-in probe (`houji_camera=1`) powers all four sensors and reads their chip IDs. No streaming yet. |

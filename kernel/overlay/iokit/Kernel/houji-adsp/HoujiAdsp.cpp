@@ -1417,7 +1417,8 @@ extern "C" uint64_t houji_spi_count(uint32_t);
 extern "C" {volatile int32_t native_spi_stats[4];}   // [0] attached, [1] fell back to polling, [2] last attach result, [3] last INTID
 extern "C" int armcpu_spi_attach(uint32_t intid, bool edge, void (*handler)(void *), void *context, uint32_t *readback, uint64_t *router) {
     unsigned real = 1; PE_parse_boot_argn("houji_spi", &real, sizeof real);
-    unsigned mask = 5; PE_parse_boot_argn("houji_spi_mask", &mask, sizeof mask);   // bit 0 IPCC, 1 RSC (froze the boot), 2 Wi-Fi MSI
+    // bit 0 IPCC, 1 RSC (froze every boot), 2 Wi-Fi MSI (froze 3 of 4 boots, during Wi-Fi bring-up): IPCC only by default
+    unsigned mask = 1; PE_parse_boot_argn("houji_spi_mask", &mask, sizeof mask);
     const unsigned bit = intid == 261 ? 1u : intid == 37 ? 2u : intid == 173 ? 4u : 0u;
     if (real && handler && (mask & bit)) {
         const int rc = houji_spi_attach(intid, edge ? 1 : 0, handler, context, readback, router);
