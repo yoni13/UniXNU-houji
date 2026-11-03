@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// Camera bring-up probe (see docs/peripherals.md, Cameras).
 // Camera bring-up on houji (Xiaomi 14), stage 1: power each camera in turn and find what answers on its bus. Boot argument houji_camera=1
 // (off by default); runs once, 70 s into the boot, powering every camera down again after its scan. USB console: "camera probe" (all),
 // "camera probe N" (cell N only).
