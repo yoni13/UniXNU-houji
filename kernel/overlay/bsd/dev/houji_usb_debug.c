@@ -690,58 +690,17 @@ void houji_usb_debug_start(void)
     for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
     if (rd(DCTL)&RESET) {
         /* Standalone-boot wedge, exactly as observed: ABL initializes USB
-         * for its gadget on every boot, its normal-boot shutdown leaves
-         * the soft reset stuck, and the reset bit never clears. The
-         * dwc3-qcom probe order - USB30 block reset, then clocks, then
-         * controller - releases it. Register facts: torvalds
-         * gcc-sm8650.c, USB30 PRIM block at GCC 0x100000+0x39000 (this
-         * window), tcsrcc-sm8650.c usb2_clkref_en 0x1f40000+0x31118. */
-        unote("HOUJI USB RECOVER: soft reset stuck (dctl=%08x dsts=%08x); block reset + clocks\n",
+         * for its own gadget on every boot and its normal-boot shutdown
+         * leaves the soft-reset bit stuck (never clears, in UEFI or here).
+         * Fighting it with a USB30 block reset aborted the bus in both
+         * firmwares (access while unclocked-in-reset -> panic loop). The
+         * soft reset only provides pristine defaults; this driver below
+         * rewrites every register that matters (GEVNT, DCFG, endpoint
+         * config, DALEPENA, DEVTEN), so step over the stuck bit and
+         * continue with ABL's leftover state, as the working fastboot
+         * path does with ABL's clean state. */
+        unote("HOUJI USB: soft reset stuck (dctl=%08x dsts=%08x); continuing with ABL state\n",
             rd(DCTL),rd(DSTS));
-        vm_offset_t gcc=ml_io_map(0x139000,0x1000),tcsr=ml_io_map(0x1f71100,0x100);
-        if (!gcc||!tcsr) { fail("recovery gcc/tcsr map failed");return; }
-        /* USB30 PRIM block reset assert/deassert (BCR at +0). */
-        *(volatile uint32_t *)gcc=1;
-        delay(100);
-        *(volatile uint32_t *)gcc&=~1u;
-        delay(100);
-        /* TCSR usb2_clkref_en (bit0). */
-        *(volatile uint32_t *)(tcsr+0x18)|=1u;
-        /* Master RCG 200 MHz: GPLL0 (src 1) /3 (prediv reg 5); cmd_rcgr
-         * +0x2c, CFG +0x30, UPDATE bit0. mock_utmi RCG: XO (src 0);
-         * cmd +0x44, CFG +0x48. */
-        *(volatile uint32_t *)(gcc+0x30)=(1u<<8)|5u;
-        *(volatile uint32_t *)(gcc+0x2c)=1u;
-        for (unsigned n=0;n<500;n++){if(!(*(volatile uint32_t *)(gcc+0x2c)&1u))break;delay(10);}
-        *(volatile uint32_t *)(gcc+0x48)=0u;
-        *(volatile uint32_t *)(gcc+0x44)=1u;
-        for (unsigned n=0;n<500;n++){if(!(*(volatile uint32_t *)(gcc+0x44)&1u))break;delay(10);}
-        /* Five branches: master +0x18, cfg +0x88, aggre +0x8c, utmi
-         * +0x28, sleep +0x24; CBCR bit0 enable, bit31 clear = running. */
-        static const uint16_t cbcrs[5]={0x18,0x88,0x8c,0x28,0x24};
-        for (unsigned n=0;n<5;n++){
-            *(volatile uint32_t *)(gcc+cbcrs[n])|=1u;
-            unsigned m;for(m=0;m<500;m++){if(!(*(volatile uint32_t *)(gcc+cbcrs[n])&(1u<<31)))break;delay(10);}
-            if (m==500) unote("HOUJI USB RECOVER: branch +%03x did not turn on\n",cbcrs[n]);
-        }
-        unote("HOUJI USB RECOVER: block reset + clocks done (master=%08x cfg=%08x aggre=%08x)\n",
-            read_reg(gcc,0x18),read_reg(gcc,0x88),read_reg(gcc,0x8c));
-        /* The block reset cleared GCTL; restore device mode (PRTCAPDIR=2),
-         * the value the rest of this driver expects and never sets. */
-        wr(GCTL,(rd(GCTL)&~(3u<<12))|(2u<<12));
-        unote("HOUJI USB RECOVER: gctl=%08x; retrying halt and soft reset\n",rd(GCTL));
-        /* Registers are at reset defaults: halt first, then retry. */
-        wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);
-        for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) delay(1000);
-        if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout after recovery");return; }
-        wr(DCTL,RESET);
-        for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
-        if (rd(DCTL)&RESET) { fail("controller reset timeout after recovery");return; }
-        unote("HOUJI USB RECOVER: soft reset completed after recovery\n");
-        /* The block reset cleared DCFG; the healthy path inherits ABL's.
-         * Device address 0 (host re-enumerates), high speed (the driver's
-         * MPS-512 bulk endpoints require HS). */
-        wr(DCFG,rd(DCFG)&~(7u|(127u<<3)));
     }
     sync_dma(0,DMA_SIZE);
     wr(GEVNTADRLO,(uint32_t)u.pa);wr(GEVNTADRHI,(uint32_t)(u.pa>>32));
