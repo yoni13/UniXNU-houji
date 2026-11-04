@@ -538,10 +538,10 @@ static void houjiGpuExternalFailureHold(void) {
  IOSleep(8000);
 }
 static bool houjiGpuExternalCanaryProbeOnce(void) {
- int enabled=0;PE_parse_boot_argn("houji_gpu_external_canary_probe",&enabled,sizeof(enabled));if(enabled!=1)return true;unsigned expected=0;
+ int enabled=1;PE_parse_boot_argn("houji_gpu_external_canary_probe",&enabled,sizeof(enabled));if(enabled!=1)return true;unsigned expected=0;
  if(!__atomic_compare_exchange_n(&gHoujiGpuExternalCanaryOnce,&expected,1,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return gHoujiGpuExternalCanary.result.safe_to_save==1 && !gHoujiGpuExternalCanary.active;
  auto&p=gHoujiGpuExternalCanary;p.enabled=1;p.phase=1;
- int nc=0;PE_parse_boot_argn("houji_gpu_external_nc_probe",&nc,sizeof(nc));if(nc!=0 && nc!=1){p.code=GECN_FLAGS;houjiGpuExternalReport(0);return false;}p.memory_profile=(unsigned)nc;
+ int nc=1;PE_parse_boot_argn("houji_gpu_external_nc_probe",&nc,sizeof(nc));if(nc!=0 && nc!=1){p.code=GECN_FLAGS;houjiGpuExternalReport(0);return false;}p.memory_profile=(unsigned)nc;
  if(!gRootEnabled || !gLogEnabled || !gReturnRecovery){p.code=GECN_FLAGS;houjiGpuExternalReport(0);return false;}
  IORegistryEntry*chosen=IORegistryEntry::fromPath("/chosen",gIODTPlane);if(!chosen){p.code=GECN_PROPERTY;houjiGpuExternalReport(0);return false;}
  OSData*data=OSDynamicCast(OSData,chosen->getProperty("houji,gpu-power-handoff"));p.property_bytes=data?data->getLength():0;

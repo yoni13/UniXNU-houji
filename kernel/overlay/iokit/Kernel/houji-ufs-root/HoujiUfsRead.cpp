@@ -645,7 +645,7 @@ extern "C" void houji_ufs_root_attach(void) {
     if(!houjiGpuInternalExecProbeOnce())
       panic("HOUJI GMU EXEC: qualification uncertain; resources and originals retained; PSCI-only recovery without later filesystem save");
   }
-  int externalCanaryProbe=0;PE_parse_boot_argn("houji_gpu_external_canary_probe",&externalCanaryProbe,sizeof(externalCanaryProbe));
+  int externalCanaryProbe=1;PE_parse_boot_argn("houji_gpu_external_canary_probe",&externalCanaryProbe,sizeof(externalCanaryProbe));
   if(externalCanaryProbe==1) {
     houji_ufs_checkpoint("before XNU GMU external memory positive/negative canary",0);
     if(!houjiGpuExternalCanaryProbeOnce())

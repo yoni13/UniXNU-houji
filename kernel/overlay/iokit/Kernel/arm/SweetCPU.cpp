@@ -189,7 +189,7 @@ void SweetCPU::finishStartup(void) {
     ml_cpu_init_completed();
     IOService::publishResource(gIOAllCPUInitializedKey, kOSBooleanTrue);
     ml_set_max_cpus(topology->max_cpu_id + 1);
-    int probe = 0;
+    int probe = 1;
     PE_parse_boot_argn("houji_smp_probe", &probe, sizeof(probe));
     if (probe == 1 && done >= 2) {
       thread_t thread;
@@ -338,7 +338,7 @@ extern "C" bool houji_smp_preflight(void) {
   unsigned total = ml_get_topology_info()->num_cpus;
   if (total == 1) return true;
   if (total < 2 || total > 8) return false;
-  int probe = 0;
+  int probe = 1;
   PE_parse_boot_argn("houji_smp_probe", &probe, sizeof(probe));
   if (probe != 1) return false;
   uint32_t mask = ((1U << total) - 1U) & ~1U;

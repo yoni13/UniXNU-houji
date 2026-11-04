@@ -177,7 +177,7 @@ static void houjiFullReport(void){auto&p=gHoujiFull;houjiFullRefresh();const aut
 
 #include "HoujiGpuNativeCp.inc"
 static void houjiGpuFullHostProbeOnce(void){int mode=0;PE_parse_boot_argn("houji_gpu_stock_probe",&mode,sizeof(mode));if(mode!=8)return;unsigned expected=0;if(!__atomic_compare_exchange_n(&gHoujiFullOnce,&expected,1,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))panic("HOUJI FULL: repeated terminal attempt");auto&p=gHoujiFull;
- int liveMode=0;
+ int liveMode=4;
  if(!houjiStockConfiguration()){p.code=15;goto terminal;}
  PE_parse_boot_argn("houji_gpu_runtime",&liveMode,sizeof(liveMode));gHoujiLive.mode=liveMode;gHoujiLive.requested=liveMode>=1 && liveMode<=5;
  if(houjiGfxImport()){p.code=20;IOLog("HOUJI NATIVE GFX IMPORT REFUSED: stage=%u which=%u page=%u imported=%u; no new GPU execution or target store\n",gHoujiGfx.import_stage,gHoujiGfx.import_which,gHoujiGfx.import_page,gHoujiGfx.imported);if(!p.possible && !p.writes && !gHoujiCp.once && !gHoujiGfx.target_started && houjiStockConfiguration())houji_ufs_checkpoint("signed graphics import refused before any full-host GPU write; prior secureCX cold/report completed",0);goto terminal;}

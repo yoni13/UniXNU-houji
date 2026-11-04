@@ -82,3 +82,15 @@ Hardware claims in peripherals.md come from tests on one Xiaomi 14 (OS3.0.303.0.
 - Every write was a 4 KiB block patch to the offline-pulled HFSX image, immediately read back from UFS; the resulting HFS+
   volume passes `fsck.hfsplus` (0). Runtime verification is pending a complete power-off: repeated warm resets leave UEFI's GPU
   power handoff not ready before userland.
+
+## Feature defaults
+
+Stable hardware support is enabled in code, not by a growing UEFI argument list. The normal boot line selects the root/diagnostic
+profile; individual features use explicit `=0` opt-outs:
+
+- GPU runtime desktop mode 4, external WB/NC canary qualification, same-boot coherence qualification: on by default
+  (`houji_gpu_runtime=0`, `houji_gpu_external_canary_probe=0`, `houji_gpu_external_nc_probe=0`, or `houji_gpu_coherent=0` to disable).
+- Eight-core SMP bound-worker probe: on (`houji_smp_probe=0` disables only its diagnostic worker).
+- IPCC GIC interrupt: on; RSC and Wi-Fi MSI stay polled (`houji_spi=0` restores all polling; `houji_spi_mask` overrides the line mask).
+- Wi-Fi, buttons, display power/brightness and the 60 s/10 s screen locks: on (`houji_wifi=0`, `houji_buttons=0`,
+  `houji_screen=0`, `houji_autolock=0` opt out). Camera streaming probes and modem start remain opt-in.
