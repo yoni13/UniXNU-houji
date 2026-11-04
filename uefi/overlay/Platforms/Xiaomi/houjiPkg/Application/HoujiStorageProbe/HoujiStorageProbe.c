@@ -1107,12 +1107,10 @@ Finished:
       }
     }
     if (mXnuUfsRun && !EFI_ERROR (Status)) {
-      // Standalone USB: reproduce ABL-fastboot's controller state (GDSC,
-      // GCC USB clocks, eUSB2 HS PHY, repeater, DWC3 device mode) so the
-      // kernel CDC console works without a PC. Runs before the transcript
-      // freezes; non-fatal by design.
+      // Read-only UEFI observation; bounded standalone recovery belongs to
+      // the kernel CDC driver after UFS root bring-up.
       EFI_STATUS UsbStatus = PrepareUsbHandoff ();
-      Print (L"HOUJI USB UEFI: preparation=%r; standalone console preconditions=%u\n",
+      Print (L"HOUJI USB UEFI: observation=%r; diagnostic-attempted=%u\n",
         UsbStatus, mUsbHandoffAttempted);
       // Touch handoff is also required when GPU initialization belongs to XNU.
       EFI_STATUS TouchStatus=PrepareTouchHandoff();
