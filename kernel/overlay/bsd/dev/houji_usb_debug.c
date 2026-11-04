@@ -680,6 +680,52 @@ void houji_usb_debug_start(void)
     }
     vm_offset_t qs=ml_io_map(0xa6f8800,0x100);
     if (!qs) return;
+    /* Standalone-boot recovery: ABL initializes USB for its own gadget on
+     * every boot but its normal-boot shutdown leaves the DWC3 wedged in
+     * host mode with the soft reset stuck (observed: gctl=00102000, dctl
+     * reset bit never clears). The dwc3-qcom probe order - block reset,
+     * then clocks, then controller - releases it. Only the wedged state
+     * takes this path; a fastboot-initialized controller (gctl PRTCAPDIR=2,
+     * no stuck reset) passes straight through. GCC register facts:
+     * torvalds gcc-sm8650.c (USB30 block 0x39000 relative to 0x139000
+     * base as mapped below) and tcsrcc-sm8650 (0x1f40000+0x31118). */
+    {
+        vm_offset_t gcc=ml_io_map(0x139000,0x1000),tcsr=ml_io_map(0x1f40000,0x1000);
+        if (gcc&&tcsr) {
+            uint32_t gctl0=rd(GCTL);
+            uint32_t dctl0=rd(DCTL);
+            uint32_t wedged=((gctl0>>12)&3u)!=2u||(dctl0&(1u<<30));
+            unote("HOUJI USB RECOVER: gcc=%08lx tcsr=%08lx gctl=%08x dctl=%08x wedged=%u\n",
+                (unsigned long)read_reg(gcc,0x18),(unsigned long)read_reg(tcsr,0x31118),gctl0,dctl0,wedged);
+            if (wedged) {
+                /* USB30 PRIM block reset assert/deassert (BCR 0x39000). */
+                *(volatile uint32_t *)(gcc+0x39000)=1;
+                delay(100);
+                *(volatile uint32_t *)(gcc+0x39000)&=~1u;
+                delay(100);
+                /* TCSR usb2_clkref_en + master RCG 200 MHz (GPLL0/3: src 1,
+                 * prediv reg 5) + mock_utmi RCG XO, then the five branches
+                 * (master 0x39018, cfg 0x39088, aggre 0x3908c, utmi
+                 * 0x39028, sleep 0x39024), CBCR bit0 enable, bit31 clear
+                 * means running. */
+                *(volatile uint32_t *)(tcsr+0x31118)|=1u;
+                *(volatile uint32_t *)(gcc+0x39030)=(1u<<8)|5u;   /* master CFG */
+                *(volatile uint32_t *)(gcc+0x3902c)=1u;           /* UPDATE */
+                for (unsigned n=0;n<500;n++){if(!(*(volatile uint32_t *)(gcc+0x3902c)&1u))break;delay(10);}
+                *(volatile uint32_t *)(gcc+0x39048)=0u;           /* utmi CFG: XO */
+                *(volatile uint32_t *)(gcc+0x39044)=1u;           /* UPDATE */
+                for (unsigned n=0;n<500;n++){if(!(*(volatile uint32_t *)(gcc+0x39044)&1u))break;delay(10);}
+                static const uint16_t cbcrs[5]={0x39018,0x39088,0x3908c,0x39028,0x39024};
+                for (unsigned n=0;n<5;n++){
+                    *(volatile uint32_t *)(gcc+cbcrs[n])|=1u;
+                    unsigned m;for(m=0;m<500;m++){if(!(*(volatile uint32_t *)(gcc+cbcrs[n])&(1u<<31)))break;delay(10);}
+                    if (m==500) unote("HOUJI USB RECOVER: branch %04x did not turn on\n",cbcrs[n]);
+                }
+                unote("HOUJI USB RECOVER: block reset + clocks done (master=%08x cfg=%08x aggre=%08x)\n",
+                    read_reg(gcc,0x18),read_reg(gcc,0x88),read_reg(gcc,0x8c));
+            }
+        } else unote("HOUJI USB RECOVER: gcc/tcsr map failed\n");
+    }
     /* First stop any old device DMA; soft reset must finish before replacing
      * descriptors. PHY configuration and global bus settings remain from ABL. */
     wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);

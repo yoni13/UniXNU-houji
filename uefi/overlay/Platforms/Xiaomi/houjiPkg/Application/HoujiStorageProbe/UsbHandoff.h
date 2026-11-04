@@ -47,6 +47,8 @@
  */
 #ifndef HOUJI_USB_HANDOFF_H
 #define HOUJI_USB_HANDOFF_H
+/* Defined in LogFsTest.h, included after this file. */
+EFI_STATUS EFIAPI ProbeCheckpoint (CONST CHAR8 *Stage);
 
 /* GCC window: base 0x100000, USB30 PRIM block at +0x39000 (GDSCR absolute
  * 0x139004, as the kernel driver checks at GCC 0x139000 + 4). */
@@ -260,54 +262,66 @@ PrepareUsbHandoff (VOID)
   EFI_STATUS Status;
   if (mUsbHandoffAttempted) { return EFI_ALREADY_STARTED; }
   mUsbHandoffAttempted = TRUE;
-  /* PC-assisted boots (fastboot) already have the full ABL USB state;
-   * leave it untouched. The kernel readback on this phone for that state
-   * is gdscr bit31 set with master/cfg/aggre bit31 clear and GCTL
-   * PRTCAPDIR=2 (0x00102001). */
-  if ((UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR) & BIT31) &&
-      !(UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_MASTER) & BIT31) &&
-      !(UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_CFG_NOC) & BIT31) &&
-      !(UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_AGGRE) & BIT31) &&
-      ((UsbHsRead32 (HOUJI_DWC3_BASE, DWC3_GCTL) >> DWC3_GCTL_PRTCL_SHIFT) & 3u) ==
-        DWC3_GCTL_PRTCL_DEVICE) {
-    Print (L"HOUJI USB UEFI: ABL state already present; handoff skipped\n");
-    return EFI_SUCCESS;
+  /* ABL turns the USB30 GDSC and clocks on for its own gadget on every
+   * boot, but its normal-boot shutdown leaves the DWC3 wedged in host
+   * mode with the soft reset stuck (kernel readback on this phone:
+   * gctl=00102000, dctl reset bit never clears, "controller reset
+   * timeout"). The recovery below follows the Linux dwc3-qcom probe
+   * order - block reset, then clocks, then the controller - because a
+   * block reset without the clock re-programming left the USB block
+   * unclocked in reset and hung the config NOC (the 87f55586 image broke
+   * the kernel's UFS root exactly that way). */
+  BOOLEAN AblPowerOn = (UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR) & BIT31) &&
+    !(UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_MASTER) & BIT31) &&
+    !(UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_CFG_NOC) & BIT31) &&
+    !(UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_AGGRE) & BIT31);
+  Print (L"HOUJI USB UEFI: ABL power/clock state present=%u\n", AblPowerOn);
+  /* Flush the transcript up to here so any later stall is visible. */
+  (VOID)ProbeCheckpoint (AblPowerOn ? "usb-handoff-abl-state-detected" : "usb-handoff-cold-path");
+
+  if (!AblPowerOn) {
+    /* Rails (live-DT CmdDb names and init voltages) - cold path only.
+     * ABL's SuperSpeed enumeration proves the rails are already powered
+     * on every observed boot, and re-voting them through a fresh RPMh
+     * client stalled the boot (HJ_WAIT has no timeout). */
+    STATIC CONST CHAR8 *CONST Rails[4] = {"ldoi1", "ldoi3", "ldob5", "ldob15"};
+    STATIC CONST UINT32 RailMicrovolts[4] = {880000, 1200000, 3104000, 1800000};
+    for (UINTN I = 0; I < 4; I++) {
+      Status = UsbEnableRail (Rails[I], RailMicrovolts[I]);
+      if (EFI_ERROR (Status)) { return Status; }
+    }
+    /* USB30 PRIM GDSC: clear SW collapse, wait for power (bit 31). */
+    UsbHsMask32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR, BIT0, 0);
+    BOOLEAN Powered = FALSE;
+    for (UINTN N = 0; N < 500; N++) {
+      if (UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR) & BIT31) { Powered = TRUE; break; }
+      gBS->Stall (1000);
+    }
+    Print (L"HOUJI USB GDSC: gdscr=%08x powered=%u\n",
+      UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR), Powered);
+    if (!Powered) { return EFI_DEVICE_ERROR; }
   }
 
-  /* 1. Rails (live-DT CmdDb names and init voltages). */
-  STATIC CONST CHAR8 *CONST Rails[4] = {"ldoi1", "ldoi3", "ldob5", "ldob15"};
-  STATIC CONST UINT32 RailMicrovolts[4] = {880000, 1200000, 3104000, 1800000};
-  for (UINTN I = 0; I < 4; I++) {
-    Status = UsbEnableRail (Rails[I], RailMicrovolts[I]);
-    if (EFI_ERROR (Status)) { return Status; }
-  }
-
-  /* 2. USB30 PRIM GDSC: clear SW collapse, wait for power (bit 31). */
-  UsbHsMask32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR, BIT0, 0);
-  BOOLEAN Powered = FALSE;
-  for (UINTN N = 0; N < 500; N++) {
-    if (UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR) & BIT31) { Powered = TRUE; break; }
-    gBS->Stall (1000);
-  }
-  Print (L"HOUJI USB GDSC: gdscr=%08x powered=%u\n",
-    UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_GDSCR), Powered);
-  if (!Powered) { return EFI_DEVICE_ERROR; }
-
-  /* 3. USB30 PRIM block reset pulse. */
+  /* 1. USB30 PRIM block reset is NOT done here: asserting it from UEFI
+   * with ABL's gadget state live stalled the boot twice (transcripts end
+   * at usb-handoff-abl-state-detected). The recovery moved into the kernel
+   * console driver, which already owns the proven halt/reset/run sequence
+   * and runs after the UFS root is safe. */
+  if (0) {
   UsbHsWrite32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_BCR, BIT0);
-  gBS->Stall (20);
+  gBS->Stall (100);
   UsbHsMask32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_BCR, BIT0, 0);
   gBS->Stall (100);
 
-  /* 4. TCSR usb2 reference clock gate (19.2 MHz bi_tcxo). */
+  /* 2. TCSR usb2 reference clock gate (19.2 MHz bi_tcxo). */
   UsbHsMask32 (HOUJI_TCSR_BASE, HOUJI_TCSR_USB2_CLKREF, BIT0, BIT0);
 
-  /* 5. RCGs: master = GPLL0/3 (src 1) for 200 MHz; mock_utmi = XO (src 0)
+  /* 3. RCGs: master = GPLL0/3 (src 1) for 200 MHz; mock_utmi = XO (src 0)
    * for 19.2 MHz; postdiv is read-only hardware. */
   UsbRcgProgram (HOUJI_GCC_USB_MASTER_RCG, 1, 3);
   UsbRcgProgram (HOUJI_GCC_USB_UTMI_RCG, 0, 1);
 
-  /* 6. Branches: the kernel driver checks master/cfg/aggre explicitly. */
+  /* 4. Branches: the kernel driver checks master/cfg/aggre explicitly. */
   if (!UsbBranchOn (HOUJI_GCC_USB_MASTER) ||
       !UsbBranchOn (HOUJI_GCC_USB_CFG_NOC) ||
       !UsbBranchOn (HOUJI_GCC_USB_AGGRE) ||
@@ -326,13 +340,13 @@ PrepareUsbHandoff (VOID)
     UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_AGGRE),
     UsbHsRead32 (HOUJI_GCC_BASE, HOUJI_GCC_USB_UTMI));
 
-  /* 7. QUSB2PHY_PRIM reset pulse. */
+  /* 5. QUSB2PHY_PRIM reset pulse. */
   UsbHsWrite32 (HOUJI_GCC_BASE, HOUJI_GCC_QUSB2PHY_BCR, BIT0);
   gBS->Stall (20);
   UsbHsMask32 (HOUJI_GCC_BASE, HOUJI_GCC_QUSB2PHY_BCR, BIT0, 0);
   gBS->Stall (100);
 
-  /* 8. PM8550B repeater: enable, this phone's tune table, device mode. */
+  /* 6. PM8550B repeater: enable, this phone's tune table, device mode. */
   INT32 Apid = -1;
   if (!UsbSpmiFindApid (&Apid)) {
     Print (L"HOUJI USB RPTR: no APID for PPID %x\n", HOUJI_RPTR_PPID);
@@ -369,7 +383,7 @@ PrepareUsbHandoff (VOID)
     Print (L"HOUJI USB RPTR: status not OK; continuing with PHY init\n");
   }
 
-  /* 9. eUSB2 HS PHY init, qcom_snps_eusb2_hsphy_init() order, 19.2 MHz. */
+  /* 7. eUSB2 HS PHY init, qcom_snps_eusb2_hsphy_init() order, 19.2 MHz. */
   UsbHsMask32 (HOUJI_HSPHY_BASE, HSPHY_CFG0, BIT1, BIT1);                        /* CMN_CTRL_OVERRIDE_EN */
   UsbHsMask32 (HOUJI_HSPHY_BASE, HSPHY_UTMI_CTRL5, BIT1, BIT1);                  /* POR */
   UsbHsMask32 (HOUJI_HSPHY_BASE, HSPHY_CTRL_COMMON0, BIT0 | BIT3, BIT0 | BIT3);  /* PHY_ENABLE|RETENABLEN */
@@ -401,13 +415,40 @@ PrepareUsbHandoff (VOID)
   UsbHsMask32 (HOUJI_HSPHY_BASE, HSPHY_CFG0, BIT1, 0);                           /* OVERRIDE_EN off */
   Print (L"HOUJI USB HSPHY: init complete (19.2 MHz)\n");
 
-  /* 10. DWC3 in device mode: the fastboot-left state (kernel readback on
-   * this phone: gctl=0x00102001, PRTCAPDIR=2). RUN stays off; the kernel
-   * driver performs its own halt/reset/run sequence. */
+  /* 8. DWC3 recovery, the kernel driver's own proven sequence: disable
+   * device events, stop, wait for halt, soft reset, wait for clear, then
+   * device mode - the state a fastboot launch leaves (gctl 0x00102001,
+   * dsts halted, dctl run cleared). */
+  UsbHsWrite32 (HOUJI_DWC3_BASE, 0xc708, 0);                    /* DEVTEN off */
+  UsbHsMask32 (HOUJI_DWC3_BASE, 0xc704, 1u << 31, 0);           /* DCTL RUN off */
+  BOOLEAN Halted = FALSE;
+  for (UINTN N = 0; N < 500; N++) {
+    if (UsbHsRead32 (HOUJI_DWC3_BASE, 0xc70c) & (1u << 22)) { Halted = TRUE; break; }
+    gBS->Stall (1000);
+  }
+  Print (L"HOUJI USB DWC3: halted=%u (dsts=%08x dctl=%08x)\n", Halted,
+    UsbHsRead32 (HOUJI_DWC3_BASE, 0xc70c), UsbHsRead32 (HOUJI_DWC3_BASE, 0xc704));
+  if (!Halted) { return EFI_TIMEOUT; }
+  UsbHsMask32 (HOUJI_DWC3_BASE, 0xc704, 1u << 30, 1u << 30);    /* DCTL soft reset */
+  BOOLEAN ResetDone = FALSE;
+  for (UINTN N = 0; N < 500; N++) {
+    if (!(UsbHsRead32 (HOUJI_DWC3_BASE, 0xc704) & (1u << 30))) { ResetDone = TRUE; break; }
+    gBS->Stall (1000);
+  }
+  Print (L"HOUJI USB DWC3: reset-done=%u (dctl=%08x dsts=%08x)\n", ResetDone,
+    UsbHsRead32 (HOUJI_DWC3_BASE, 0xc704), UsbHsRead32 (HOUJI_DWC3_BASE, 0xc70c));
+  if (!ResetDone) { return EFI_TIMEOUT; }
+  /* Device mode (PRTCAPDIR=2): the fastboot-left value. */
   UsbHsMask32 (HOUJI_DWC3_BASE, DWC3_GCTL, 3u << DWC3_GCTL_PRTCL_SHIFT,
     DWC3_GCTL_PRTCL_DEVICE << DWC3_GCTL_PRTCL_SHIFT);
   Print (L"HOUJI USB: standalone handoff complete (gctl=%08x)\n",
     UsbHsRead32 (HOUJI_DWC3_BASE, DWC3_GCTL));
+  (VOID)ProbeCheckpoint ("usb-handoff-complete-before-XNU");
+  return EFI_SUCCESS;
+  }
+  /* Recovery disabled in UEFI (stalled the boot twice); kernel-side. */
+  Print (L"HOUJI USB UEFI: recovery disabled; kernel driver owns it\n");
+  (VOID)ProbeCheckpoint ("usb-handoff-uefi-recovery-disabled");
   return EFI_SUCCESS;
 }
 #endif
