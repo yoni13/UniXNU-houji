@@ -249,6 +249,7 @@ static void configure(void)
         epcmd(5,SET_CONFIG,(3u<<1)|(16u<<3)|(2u<<17),(1u<<8)|(8u<<16)|(5u<<25),0) ||
         epcmd(5,SET_RESOURCE,1,0,0)) return;
     wr(DALEPENA,3|(1u<<2)|(1u<<3)|(1u<<5));
+    if (rd(DALEPENA)!=(3|(1u<<2)|(1u<<3)|(1u<<5))) { fail("endpoint enable readback");return; }
     u.configured=true; receive_arm();
     unote("HOUJI USB: CDC ACM configured, bulk MPS %u\n",u.mps);
 }
@@ -609,6 +610,129 @@ static int identity(void)
     unote("HOUJI USB: SID40 route=%08x cbar=%08x sctlr=%08x\n",route,cbar,sctlr);
     return huc_route(route,cbar,sctlr,((route>>16)&3)==0?read_reg(s,0x1800+4*cb):0)?1:0;
 }
+/* eUSB2 HS PHY (0x88e3000) and PM8550B eUSB2 repeater (SPMI SID 7,
+ * peripheral 0xfd) bring-up for the standalone-boot path: ABL initializes
+ * USB for its own gadget on every boot, its normal-boot shutdown leaves
+ * the HS PHY down, and the DWC3 core soft reset then never completes (the
+ * observed wedge). Linux QCOM dwc3_core_init runs phy_power_on BEFORE the
+ * core soft reset for exactly this reason. Sequences: qcom_snps_eusb2_
+ * hsphy_init (torvalds drivers/phy/phy-snps-eusb2.c, 19.2 MHz reference)
+ * and phy-qcom-eusb2-repeater.c; repeater tune values are this phone's
+ * own qcom,param-override-seq from its live device tree. Register writes
+ * only - no GCC resets: the USB30 block reset aborted the bus in both
+ * firmwares. SPMI arbiter layout (v7, EE 0) is the one this phone's
+ * buttons driver (BootResetCore.h) proved on hardware. */
+static void uh_phy_mask(vm_offset_t phy,unsigned off,uint32_t mask,uint32_t val)
+{
+    uint32_t r=*(volatile uint32_t *)(phy+off);
+    r&=~mask;r|=val&mask;
+    *(volatile uint32_t *)(phy+off)=r;
+    (void)*(volatile uint32_t *)(phy+off);
+}
+
+static bool uh_spmi_write8(vm_offset_t chn,int apid,uint8_t addr,uint8_t value)
+{
+    volatile uint32_t *ch=(volatile uint32_t *)(chn+0x1000u*(unsigned)apid);
+    ch[0x10/4]=value;
+    ch[0]=(uint32_t)addr<<4; /* EXT_WRITE: command at +0, status at +8 */
+    for (unsigned n=0;n<100000;n++){
+        uint32_t s=ch[0x08/4];
+        if (s&1u) return (s&0xeu)==0;
+        delay(1);
+    }
+    return false;
+}
+
+static bool uh_spmi_read8(vm_offset_t obs,int apid,uint8_t addr,uint8_t *value)
+{
+    volatile uint32_t *ch=(volatile uint32_t *)(obs+0x20u*(unsigned)apid);
+    ch[0]=((uint32_t)addr<<4)|(1u<<27); /* EXT_READ */
+    for (unsigned n=0;n<100000;n++){
+        uint32_t s=ch[0x08/4];
+        if (s&1u){ if (s&0xeu) return false; *value=(uint8_t)ch[0x18/4]; return true; }
+        delay(1);
+    }
+    return false;
+}
+
+static void uh_hsphy_bringup(void)
+{
+    vm_offset_t phy=ml_io_map(0x88e3000,0x200);
+    if (!phy) { unote("HOUJI USB HSPHY: map failed\n"); return; }
+    uh_phy_mask(phy,0x94,1u<<1,1u<<1);                       /* CMN_CTRL_OVERRIDE_EN */
+    uh_phy_mask(phy,0x50,1u<<1,1u<<1);                       /* POR */
+    uh_phy_mask(phy,0x54,(1u<<0)|(1u<<3),(1u<<0)|(1u<<3));  /* PHY_ENABLE|RETENABLEN */
+    uh_phy_mask(phy,0x130,1u<<2,1u<<2);                      /* APB_LOGIC_RESET */
+    uh_phy_mask(phy,0x98,1u<<6,0);                          /* TESTBURNIN off */
+    uh_phy_mask(phy,0xb8,1u,1);                              /* FSEL_SEL */
+    uh_phy_mask(phy,0x54,0x70u,0);                           /* FSEL: 19.2 MHz */
+    uh_phy_mask(phy,0x5c,0xffu,0x90u);                       /* PLL fb div 7:0 */
+    uh_phy_mask(phy,0x60,0x0fu,0x01u);                       /* PLL fb div 11:8 */
+    uh_phy_mask(phy,0x60,0xf0u,0);                           /* PLL_REF_DIV */
+    uh_phy_mask(phy,0x58,0xfeu,0);                           /* CPBIAS */
+    uh_phy_mask(phy,0x68,0xfcu,0x8u<<2);                     /* PLL_INT 0x8 */
+    uh_phy_mask(phy,0x68,0x03u,0x1u);                        /* PLL_GMP 1 */
+    uh_phy_mask(phy,0x6c,0x1fu,0x10u);                       /* PLL_PROP 0x10 */
+    uh_phy_mask(phy,0x70,0x07u,0);                           /* PLL_VCO */
+    uh_phy_mask(phy,0x6c,0xc0u,0x1u<<6);                     /* PLL_VREF 1 */
+    uh_phy_mask(phy,0x64,1u<<4,1u<<4);                       /* VBUS_DET_EXT_SEL */
+    uh_phy_mask(phy,0x7c,0x07u,0);                           /* TX_PREEMP 0 */
+    uh_phy_mask(phy,0x7c,0x60u,0x2u<<5);                     /* TX_RISE 2 */
+    uh_phy_mask(phy,0x7c,0x18u,0x1u<<3);                     /* TX_RES 1 */
+    uh_phy_mask(phy,0x78,0x38u,0x3u<<3);                     /* TX_HS_VREF 3 */
+    uh_phy_mask(phy,0x78,0xc0u,0);                           /* TX_HS_XV 0 */
+    uh_phy_mask(phy,0x64,(1u<<3)|(1u<<2),(1u<<3)|(1u<<2));   /* SUSPEND_N_SEL|SUSPEND_N */
+    uh_phy_mask(phy,0x3c,1u,1);                              /* SLEEPM */
+    uh_phy_mask(phy,0x54,1u<<1,1u<<1);                       /* SIDDQ_SEL */
+    uh_phy_mask(phy,0x54,1u<<2,0);                           /* SIDDQ off */
+    uh_phy_mask(phy,0x50,1u<<1,0);                           /* POR release */
+    uh_phy_mask(phy,0x64,1u<<3,0);                           /* SUSPEND_N_SEL off */
+    uh_phy_mask(phy,0x94,1u<<1,0);                           /* CMN_CTRL_OVERRIDE_EN off */
+    unote("HOUJI USB HSPHY: initialised (19.2 MHz)\n");
+    /* PM8550B repeater: device-mode clear, enable, this phone's tune. */
+    vm_offset_t core=ml_io_map(0xc400000,0x3000);
+    vm_offset_t cnfg=ml_io_map(0xc42d000,0x4000);
+    vm_offset_t chn=ml_io_map(0xc500000,0x400000);
+    vm_offset_t obs=ml_io_map(0xc440000,0x400000);
+    if (!core||!cnfg||!chn||!obs) { unote("HOUJI USB RPTR: arbiter map failed\n"); return; }
+    uint32_t version=*(volatile uint32_t *)core;
+    uint32_t apids=*(volatile uint32_t *)(core+4)&0x7ffu;
+    if (version<0x70000000u||version>=0x80000000u||!apids||apids>1024) {
+        unote("HOUJI USB RPTR: arbiter version=%08x apids=%u unsupported\n",version,apids);
+        return;
+    }
+    int apid=-1;
+    for (uint32_t n=0;n<apids;n++){
+        uint32_t map=*(volatile uint32_t *)(core+0x2000+4*n);
+        if (!map||((map>>8)&0xfff)!=0x7fd) continue;
+        apid=(int)n;
+        if ((*(volatile uint32_t *)(cnfg+4*n)&7u)==0) break; /* prefer EE 0 owned */
+    }
+    if (apid<0) { unote("HOUJI USB RPTR: no APID for PPID 7fd\n"); return; }
+    if (!uh_spmi_write8(chn,apid,0xe8,0)||!uh_spmi_write8(chn,apid,0xed,0)) {
+        unote("HOUJI USB RPTR: force-clear write failed\n"); return;
+    }
+    if (!uh_spmi_write8(chn,apid,0x46,0x80)) { unote("HOUJI USB RPTR: enable write failed\n"); return; }
+    static const uint8_t tune[][2]={
+        {0x50,0x00},{0x51,0x0f},{0x52,0x04},{0x53,0x07},{0x54,0x03},
+        {0x55,0x01},{0x56,0x03},{0x57,0x01},{0x58,0x02},{0x59,0x01},
+        {0x5a,0x03},{0x5b,0x02},
+    };
+    for (unsigned n=0;n<sizeof(tune)/sizeof(tune[0]);n++) {
+        if (!uh_spmi_write8(chn,apid,tune[n][0],tune[n][1])) {
+            unote("HOUJI USB RPTR: tune %02x write failed\n",tune[n][0]);
+            return;
+        }
+    }
+    bool ok=false;
+    uint8_t status=0;
+    for (unsigned n=0;n<500;n++){
+        if (uh_spmi_read8(obs,apid,0x08,&status)&&(status&0x80)) { ok=true; break; }
+        delay(10);
+    }
+    unote("HOUJI USB RPTR: rptr-ok=%u status=%02x\n",ok,status);
+}
+
 void houji_usb_debug_start(void)
 {
     static bool attempted;
@@ -690,22 +814,30 @@ void houji_usb_debug_start(void)
     for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
     if (rd(DCTL)&RESET) {
         /* Standalone-boot wedge, exactly as observed: ABL initializes USB
-         * for its own gadget on every boot and its normal-boot shutdown
-         * leaves the soft-reset bit stuck (never clears, in UEFI or here).
-         * Fighting it with a USB30 block reset aborted the bus in both
-         * firmwares (access while unclocked-in-reset -> panic loop). The
-         * soft reset only provides pristine defaults; this driver below
-         * rewrites every register that matters (GEVNT, DCFG, endpoint
-         * config, DALEPENA, DEVTEN), so step over the stuck bit and
-         * continue with ABL's leftover state, as the working fastboot
-         * path does with ABL's clean state. */
-        unote("HOUJI USB: soft reset stuck (dctl=%08x dsts=%08x); continuing with ABL state\n",
+         * for its gadget on every boot and its normal-boot shutdown
+         * leaves the soft-reset bit stuck (never clears, here or in UEFI;
+         * the state is device mode, clocks on - only the reset hangs).
+         * Linux QCOM dwc3_core_init runs phy_power_on BEFORE the core
+         * soft reset; a down HS PHY is the known reset blocker. Bring the
+         * PHY and repeater up - register writes only, no GCC resets (the
+         * USB30 block reset aborted the bus in both firmwares) - and
+         * retry once. Healthy fastboot boots never reach this block.
+         * If the retry also fails, abort: never continue, and never set
+         * RUN, while RESET reads set (writes may not latch and the
+         * controller could DMA through stale state). */
+        unote("HOUJI USB: soft reset stuck (dctl=%08x dsts=%08x); HS PHY bringup + one retry\n",
             rd(DCTL),rd(DSTS));
+        uh_hsphy_bringup();
+        wr(DCTL,RESET);
+        for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
+        if (rd(DCTL)&RESET) { fail("controller reset timeout after PHY bringup");return; }
+        unote("HOUJI USB: soft reset completed after PHY bringup\n");
     }
     sync_dma(0,DMA_SIZE);
     wr(GEVNTADRLO,(uint32_t)u.pa);wr(GEVNTADRHI,(uint32_t)(u.pa>>32));
-    if (rd(GEVNTADRHI)!=(uint32_t)(u.pa>>32)) { fail("event address readback");return; }
+    if (rd(GEVNTADRLO)!=(uint32_t)u.pa||rd(GEVNTADRHI)!=(uint32_t)(u.pa>>32)) { fail("event address readback");return; }
     wr(GEVNTSIZ,(1u<<31)|EVENT_SIZE);wr(GEVNTCOUNT,rd(GEVNTCOUNT)&0xffff);
+    if ((rd(GEVNTSIZ)&0x1ffffu)!=EVENT_SIZE) { fail("event size readback");return; }
     wr(DCFG,rd(DCFG)&~(7u|(127u<<3))); /* high speed only */
     if (epcmd(0,START_CONFIG,0,0,0) ||
         epcmd(0,SET_CONFIG,64u<<3,(1u<<8)|(1u<<10),0) || epcmd(0,SET_RESOURCE,1,0,0) ||
@@ -715,11 +847,12 @@ void houji_usb_debug_start(void)
     *(volatile uint32_t *)(qs+0x10)=hs|(1u<<20)|(1u<<28);
     *(volatile uint32_t *)(qs+0x30)=ss|(1u<<24);
     __asm__ volatile("dsb sy" ::: "memory");
-    wr(DEVTEN,7|(1u<<9)|(1u<<11));wr(DCTL,rd(DCTL)|RUN);
+    wr(DEVTEN,7|(1u<<9)|(1u<<11));
+    wr(DCTL,(rd(DCTL)&~RESET)|RUN);
     for (i=0;i<500 && (rd(DSTS)&HALTED);i++) delay(1000);
-    if (rd(DSTS)&HALTED) { fail("controller run timeout");return; }
+    if (rd(DSTS)&HALTED) { fail("controller run timeout");wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);return; }
     thread_t thread;
-    if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) { fail("poll thread creation");wr(DCTL,rd(DCTL)&~RUN);return; }
+    if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) { fail("poll thread creation");wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);return; }
     thread_deallocate(thread);
     unote("HOUJI USB: owned RAM base=%lx bytes=%lx; mode=%d\n",gPhysBase,gPhysSize,enabled);
     unote("HOUJI USB: running; DMA=%llx; CDC serial HOUJIDBG001; awaiting enumeration\n",u.pa);
