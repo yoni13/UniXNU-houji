@@ -146,9 +146,15 @@ UsbSpmiFindApid (INT32 *Apid)
   }
   for (UINT32 I = 0; I < Apids; I++) {
     UINT32 Map = Core[0x2000 / 4 + I];
-    if (Map && ((Map >> 8) & 0xfff) == HOUJI_RPTR_PPID) { *Apid = (INT32)I; return TRUE; }
+    if (Map && ((Map >> 8) & 0xfff) == HOUJI_RPTR_PPID) {
+      *Apid = (INT32)I;
+      /* As the buttons driver picks it: first mapping, replaced by one
+       * this EE (0) owns, so writes are never denied. */
+      volatile UINT32 *Cnfg = (volatile UINT32 *)(UINTN)HOUJI_SPMI_CNFG;
+      if ((Cnfg[I] & 7u) == 0) { return TRUE; }
+    }
   }
-  return FALSE;
+  return *Apid >= 0;
 }
 
 STATIC
