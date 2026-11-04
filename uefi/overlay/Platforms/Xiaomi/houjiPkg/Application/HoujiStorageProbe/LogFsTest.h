@@ -95,6 +95,68 @@ FindLogFsChild (EFI_HANDLE Parent, CONST EFI_PARTITION_ENTRY *Entry, EFI_HANDLE 
 STATIC EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *mGpuCheckpointFs;
 STATIC EFI_BLOCK_IO_PROTOCOL *mGpuCheckpointParent;
 
+// Kernel contract (fork HoujiLogFile.h): XnuLog.bin must contain the exact
+// pristine 65536-byte initial image -- magic HJXNU001, LE32(0), LE32(1), the
+// fixed run ID, then zeros -- whose CRC32 the kernel's native-root bring-up
+// verifies before appending its snapshot ("log file ownership/run ID
+// changed" otherwise). boot-houji.sh restores it with dd; a standalone boot
+// has no host, so restore it here through the same validated logfs FAT path
+// used for the UEFI transcript, with size, content and CRC verified.
+#define HOUJI_XNU_LOG_INITIAL_CRC 0xABBE97D5U
+STATIC CONST UINT8 mXnuLogRunId[16] =
+  { 0xAB,0x7A,0x39,0x33,0x1D,0xA9,0x46,0xBF,0x95,0x23,0x93,0x6E,0x56,0x25,0x63,0xCE };
+
+STATIC EFI_STATUS
+ResetNativeXnuLog (EFI_FILE_PROTOCOL *Root)
+{
+  STATIC UINT8 Image[65536];
+  STATIC CONST UINT8 Magic[8] = {'H','J','X','N','U','0','0','1'};
+  SetMem (Image, sizeof (Image), 0);
+  CopyMem (Image, Magic, sizeof (Magic));
+  Image[12] = 1;
+  CopyMem (Image + 16, mXnuLogRunId, sizeof (mXnuLogRunId));
+  UINT32 Crc = 0;
+  EFI_STATUS Status = gBS->CalculateCrc32 (Image, sizeof (Image), &Crc);
+  if (EFI_ERROR (Status) || Crc != HOUJI_XNU_LOG_INITIAL_CRC) {
+    Print (L"HOUJI XNU LOG: initial image CRC %08x differs from the kernel constant\n", Crc);
+    return EFI_CRC_ERROR;
+  }
+  EFI_FILE_PROTOCOL *File = NULL;
+  Status = Root->Open (Root, &File, L"\\XnuLog.bin", EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) { return Status; }
+  UINT64 Position = 0;
+  Status = File->SetPosition (File, 0xFFFFFFFFFFFFFFFFULL);
+  if (!EFI_ERROR (Status)) { Status = File->GetPosition (File, &Position); }
+  File->Close (File);
+  File = NULL;
+  if (EFI_ERROR (Status) || Position != sizeof (Image)) {
+    Print (L"HOUJI XNU LOG: XnuLog.bin size %lu differs from the reserved 65536\n", Position);
+    return EFI_VOLUME_CORRUPTED;
+  }
+  Status = Root->Open (Root, &File, L"\\XnuLog.bin", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+  if (EFI_ERROR (Status)) { return Status; }
+  UINTN Written = sizeof (Image);
+  Status = File->SetPosition (File, 0);
+  if (!EFI_ERROR (Status)) { Status = File->Write (File, &Written, Image); }
+  if (!EFI_ERROR (Status) && Written != sizeof (Image)) { Status = EFI_DEVICE_ERROR; }
+  if (!EFI_ERROR (Status)) { Status = File->Flush (File); }
+  if (!EFI_ERROR (Status)) { Status = File->Close (File); }
+  File = NULL;
+  if (EFI_ERROR (Status)) { return Status; }
+  Status = Root->Open (Root, &File, L"\\XnuLog.bin", EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) { return Status; }
+  UINTN Read = sizeof (Image);
+  Status = File->Read (File, &Read, Image);
+  EFI_STATUS Closed = File->Close (File);
+  if (!EFI_ERROR (Status)) { Status = Closed; }
+  if (EFI_ERROR (Status)) { return Status; }
+  if (Read != sizeof (Image) ||
+      EFI_ERROR (gBS->CalculateCrc32 (Image, Read, &Crc)) ||
+      Crc != HOUJI_XNU_LOG_INITIAL_CRC) { return EFI_CRC_ERROR; }
+  Print (L"HOUJI XNU LOG: pristine initial state restored and verified (crc=%08x)\n", Crc);
+  return EFI_SUCCESS;
+}
+
 STATIC EFI_STATUS
 RunLogFsTest (EFI_HANDLE ImageHandle)
 {
@@ -140,8 +202,15 @@ RunLogFsTest (EFI_HANDLE ImageHandle)
   Status = Fs->OpenVolume (Fs, &Root);
   Print (L"HOUJI LOGFS: OpenVolume=%r\n", Status);
   if (EFI_ERROR (Status)) { goto Done; }
-  Status = Root->Open (Root, &File, L"\\UniXNU.log", EFI_FILE_MODE_READ, 0);
-  if (!EFI_ERROR (Status)) { Status = EFI_ALREADY_STARTED; goto Done; }
+  Status = Root->Open (Root, &File, L"\\UniXNU.log", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+  if (!EFI_ERROR (Status)) {
+    // Standalone boots have no host to remove the previous UEFI transcript.
+    // Recreate only this known diagnostic file inside the validated logfs.
+    Status = File->Delete (File);
+    File = NULL; // EFI_FILE_PROTOCOL.Delete closes the handle, including on error.
+    if (Status != EFI_SUCCESS) { goto Done; }
+    Status = EFI_NOT_FOUND;
+  }
   if (Status != EFI_NOT_FOUND) { goto Done; }
   File = NULL;
   if (mProbeLogTruncated) { Status = EFI_BUFFER_TOO_SMALL; goto Done; }
@@ -181,6 +250,13 @@ RunLogFsTest (EFI_HANDLE ImageHandle)
   Status = gBS->CalculateCrc32 (Readback, Read, &BackCrc);
   if (EFI_ERROR (Status) || Crc != BackCrc) { Status = EFI_CRC_ERROR; goto Done; }
   Print (L"HOUJI LOGFS: file readback PASS bytes=%u CRC=%08x\n", Read, BackCrc);
+  if (mXnuUfsRun) {
+    // A standalone power-on has no host to reset XnuLog.bin; restore the
+    // pristine initial image through this validated logfs FAT path before
+    // the kernel's native-root ownership check runs.
+    Status = ResetNativeXnuLog (Root);
+    if (EFI_ERROR (Status)) { goto Done; }
+  }
 Done:
   if (File) { EFI_STATUS S = File->Close (File); if (EFI_ERROR (S) && !EFI_ERROR (Status)) { Status = S; } }
   if (Root) { EFI_STATUS S = Root->Close (Root); if (EFI_ERROR (S) && !EFI_ERROR (Status)) { Status = S; } }

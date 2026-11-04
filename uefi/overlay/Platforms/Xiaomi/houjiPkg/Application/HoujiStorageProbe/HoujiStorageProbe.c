@@ -59,7 +59,7 @@ STATIC BOOLEAN mClockStorageOnly;
 STATIC BOOLEAN mStorageServicesRun;
 STATIC BOOLEAN mUfsReadonlyRun, mUfsGuardEnabled, mUfsGuardSelfTestPassed;
 STATIC UINTN mUfsAllowed, mUfsDenied;
-STATIC BOOLEAN mLogFsTestRun, mLogFsWritesArmed, mUfsHandoffRun, mXnuUfsRun;
+STATIC BOOLEAN mLogFsTestRun, mLogFsWritesArmed, mUfsHandoffRun, mXnuUfsRun, mBcbArmWritesArmed;
 STATIC UINTN mLogFsWriteCommands, mLogFsFlushCommands;
 STATIC UINT64 mStorageImageBase, mStorageImageBytes;
 STATIC CONST CHAR16 *mStorageDriverName = L"none";
@@ -300,7 +300,8 @@ StorageException (EFI_EXCEPTION_TYPE Type, EFI_SYSTEM_CONTEXT Context)
         C->X1 >= C->SP + 0xE0 && C->X1 <= C->SP + 0x120;
       CONST UINT8 *Request = (CONST UINT8 *)(UINTN)C->X1;
       BOOLEAN LogWrite = Bounded && UfsLogWriteAllowed (Request, 0xC8, mLogFsWritesArmed);
-      BOOLEAN Allowed = Bounded && (UfsCommandAllowed (Request, 0xC8) || LogWrite);
+      BOOLEAN BcbWrite = Bounded && UfsBcbArmWriteAllowed (Request, 0xC8, mBcbArmWritesArmed);
+      BOOLEAN Allowed = Bounded && (UfsCommandAllowed (Request, 0xC8) || LogWrite || BcbWrite);
       if (LogWrite) {
         if (Request[0x5C] == 0x2A) { mLogFsWriteCommands++; }
         else { mLogFsFlushCommands++; }
@@ -951,6 +952,43 @@ STATIC EFI_STATUS GpuPowerHandoffPrepare(EFI_HANDLE ImageHandle) {
 }
 
 
+// The installed image arms the exact no-wipe recovery request itself, so a
+// normal power-on needs no host-side dd to misc. GpuPowerRecoveryPrearm
+// below still verifies the identical 864-byte record at absolute LBA 1024
+// with bytes 864..4095 preserved; only the arming step moved into the image.
+STATIC EFI_STATUS
+ArmStandaloneRecoveryRequest (VOID)
+{
+  EFI_BLOCK_IO_PROTOCOL *Parent = mGpuCheckpointParent;
+  if (!Parent || !Parent->Media || !Parent->Media->MediaPresent ||
+      Parent->Media->BlockSize != 4096 || Parent->Media->IoAlign > 4096 ||
+      Parent->Media->LastBlock < 1024) { return EFI_NOT_READY; }
+  STATIC UINT8 Block[4096] __attribute__((aligned(4096)));
+  UINT8 Record[864];
+  if (!hgr_record (Record, sizeof (Record))) { return EFI_NOT_READY; }
+  UINT32 MediaId = Parent->Media->MediaId;
+  EFI_STATUS Status = Parent->ReadBlocks (Parent, MediaId, 1024, sizeof (Block), Block);
+  Print (L"HOUJI SELF BOOT: misc read=%r\n", Status);
+  if (EFI_ERROR (Status)) { return Status; }
+  if (CompareMem (Block, Record, sizeof (Record)) == 0) {
+    Print (L"HOUJI SELF BOOT: exact recovery request already armed\n");
+    return EFI_SUCCESS;
+  }
+  CopyMem (Block, Record, sizeof (Record));
+  mBcbArmWritesArmed = TRUE;
+  Status = Parent->WriteBlocks (Parent, MediaId, 1024, sizeof (Block), Block);
+  EFI_STATUS Flush = Parent->FlushBlocks (Parent);
+  mBcbArmWritesArmed = FALSE;
+  Print (L"HOUJI SELF BOOT: misc arm write=%r flush=%r\n", Status, Flush);
+  if (EFI_ERROR (Status)) { return Status; }
+  if (EFI_ERROR (Flush)) { return Flush; }
+  Status = Parent->ReadBlocks (Parent, MediaId, 1024, sizeof (Block), Block);
+  if (EFI_ERROR (Status)) { return Status; }
+  if (CompareMem (Block, Record, sizeof (Record)) != 0) { return EFI_CRC_ERROR; }
+  Print (L"HOUJI SELF BOOT: recovery request armed and verified at LBA 1024\n");
+  return EFI_SUCCESS;
+}
+
 STATIC EFI_STATUS
 RunUfsReadonly (EFI_HANDLE ImageHandle)
 {
@@ -1023,6 +1061,18 @@ Finished:
   if (mLogFsTestRun && !EFI_ERROR (Status)) {
     // Establish a durable, validated log BEFORE entering experimental GPU I/O.
     Status = RunLogFsTest (ImageHandle);
+    if (mXnuUfsRun && !EFI_ERROR(Status)) {
+      // A standalone power-on has no host to dd misc with the exact no-wipe
+      // recovery request; the installed image arms it itself before the
+      // prearm-verified GPU power handoff below.
+      Status = ArmStandaloneRecoveryRequest ();
+      if (EFI_ERROR (Status)) {
+        Print (L"HOUJI SELF BOOT: recovery request arm failed (%r); STOP before XNU\n", Status);
+        (VOID)GpuTrialReturnRecovery ("standalone-bcb-arm-failed");
+        // A reset that returns must never fall through to the XNU loader.
+        for(;;)gBS->Stall(1000000);
+      }
+    }
     if (mXnuUfsRun && !EFI_ERROR(Status)) {
       if(HOUJI_GPU_POWER_HANDOFF_XNU_ONLY) {
         Print(L"HOUJI GPU POWER HANDOFF: UEFI power/clocks only; XNU fresh RO observation\n");

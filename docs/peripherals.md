@@ -140,3 +140,29 @@ function and boot island-owned (config `0x801`): writes only reach them with EGP
 
 Next: streaming, which needs sensor mode tables (the stock vendor sensor libraries), CSIPHY, CSID and IFE programming, and no public
 driver covers this chip; a first target is one raw frame from the front OV32B into memory.
+
+## Standalone self-boot — host prep steps moved in-image
+
+A power-on boot from `boot_a` previously stopped at the UEFI result page with
+`HOUJI LOGFS: stopped with Already started`: the PC flow (`boot-houji.sh`)
+performs three preparations that the image itself did not, and the first one
+gates the rest.
+
+| Host step in `boot-houji.sh` | In-image replacement |
+|---|---|
+| `rm -f logfs/UniXNU.log` | `RunLogFsTest` deletes the previous UEFI transcript and writes a fresh one through the validated logfs FAT path |
+| `dd XnuLog.initial.bin` into `XnuLog.bin` (16 reserved clusters) | `ResetNativeXnuLog` rebuilds the pristine 65536-byte initial image (magic `HJXNU001`, run ID, zeros; CRC32 `abbe97d5`) and restores it with size, content and CRC verified |
+| `dd` of the exact 864-byte `boot-recovery` BCB into misc | `ArmStandaloneRecoveryRequest` read-modify-writes the same record at absolute LBA 1024 (bytes 864..4095 preserved), flushed and read back, before `GpuPowerRecoveryPrearm` verifies it |
+
+The BCB write is allowed by a new bounded guard window (`UfsBcbArmWriteAllowed`):
+exactly one 4096-byte block write at LBA 1024 plus a device cache flush, and
+only while the single arming call holds `mBcbArmWritesArmed`; the read-only
+command policy for every other LBA is unchanged. The kernel-side contract is
+unchanged: native-root still refuses a non-pristine `XnuLog.bin`, and every
+reset path still requires the exact no-wipe BCB readback.
+
+With the BCB armed for the whole session, a power cycle after a failed XNU
+run lands in OrangeFox automatically; after a successful run the next power
+cycle passes through OrangeFox once (it clears the BCB at startup) and the
+power-on after that arms it again from the image. Standalone power-on
+verification is tracked below in this document's run log.
