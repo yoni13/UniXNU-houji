@@ -1082,12 +1082,21 @@ HoujiStorageProbeEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
   (VOID)SystemTable;
   if (gST->ConOut) { gST->ConOut->ClearScreen (gST->ConOut); }
   EFI_LOADED_IMAGE_PROTOCOL *Self = NULL;
-  BOOLEAN FoundationRequested = FALSE;
+  // Installed production image: always execute the qualified native-XNU
+  // profile. Diagnostic-only images must change this at build time; no boot
+  // manager or ABL load-option value may return this image to the old UFS test
+  // stop screen.
+  BOOLEAN FoundationRequested = TRUE;
   BOOLEAN SmemOnly = FALSE;
-  BOOLEAN PowerBootstrap = FALSE;
+  BOOLEAN PowerBootstrap = TRUE;
   BOOLEAN ClockBootstrap = FALSE;
-  BOOLEAN ClockMapOnly = FALSE;
-  BOOLEAN ClockMappedRun = FALSE;
+  BOOLEAN ClockMapOnly = TRUE;
+  BOOLEAN ClockMappedRun = TRUE;
+  mClockStorageOnly = TRUE;
+  mStorageServicesRun = TRUE;
+  mUfsReadonlyRun = TRUE;
+  mXnuUfsRun = TRUE;
+  mLogFsTestRun = TRUE;
   EFI_STATUS Status = gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **)&Self);
   // Production image: the boot manager/ABL path has supplied different or
   // stale options across fastboot and boot_a launches. Normalize the loaded
@@ -1211,6 +1220,23 @@ HoujiStorageProbeEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     mLogFsTestRun = TRUE;
     Print (L"HOUJI SELF BOOT: no recognized diagnostic option; defaulting to --xnu-ufs-read\n");
   }
+  // Final production override after every legacy option parser above. This is
+  // deliberately unconditional: the installed image cannot enter the old
+  // HOB/UFS diagnostic-stop modes, irrespective of LoadOptions contents.
+  FoundationRequested = TRUE;
+  SmemOnly = FALSE;
+  PowerBootstrap = TRUE;
+  ClockBootstrap = FALSE;
+  ClockMapOnly = TRUE;
+  ClockMappedRun = TRUE;
+  mClockTraceEnabled = FALSE;
+  mClockStorageOnly = TRUE;
+  mStorageServicesRun = TRUE;
+  mUfsReadonlyRun = TRUE;
+  mUfsHandoffRun = FALSE;
+  mXnuUfsRun = TRUE;
+  mLogFsTestRun = TRUE;
+  Print (L"HOUJI SELF BOOT: final production override; diagnostic stop disabled\n");
   (VOID)gBS->SetWatchdogTimer (0, 0, 0, NULL);
   if (!FoundationRequested) {
     Print (L"HOUJI STORAGE: Scheduler HOB-only checkpoint r4\n");
