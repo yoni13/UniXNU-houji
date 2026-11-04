@@ -1089,6 +1089,17 @@ HoujiStorageProbeEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
   BOOLEAN ClockMapOnly = FALSE;
   BOOLEAN ClockMappedRun = FALSE;
   EFI_STATUS Status = gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **)&Self);
+  // Production image: the boot manager/ABL path has supplied different or
+  // stale options across fastboot and boot_a launches. Normalize the loaded
+  // image options before the existing parser, so both paths execute the exact
+  // --xnu-ufs-read profile that is hardware-qualified. Diagnostic profiles
+  // belong in separately built images, never in the installed boot image.
+  STATIC CONST CHAR16 ProductionLoadOptions[] = L"--xnu-ufs-read";
+  if (!EFI_ERROR (Status) && Self) {
+    Self->LoadOptions = (VOID *)ProductionLoadOptions;
+    Self->LoadOptionsSize = sizeof (ProductionLoadOptions);
+    Print (L"HOUJI SELF BOOT: forcing production profile --xnu-ufs-read\n");
+  }
   if (!EFI_ERROR (Status) && Self && Self->LoadOptions &&
       Self->LoadOptionsSize == sizeof (L"--foundation") &&
       CompareMem (Self->LoadOptions, L"--foundation", sizeof (L"--foundation")) == 0) {
