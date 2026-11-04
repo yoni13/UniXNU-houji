@@ -166,3 +166,28 @@ run lands in OrangeFox automatically; after a successful run the next power
 cycle passes through OrangeFox once (it clears the BCB at startup) and the
 power-on after that arms it again from the image. Standalone power-on
 verification is tracked below in this document's run log.
+
+### Standalone boot verified (2026-11-04)
+
+Two consecutive power-on boots from `boot_a` reached the iOS desktop with no
+PC involvement (cable connected but no host command issued; ABL normal boot
+path, no `fastboot boot`). Evidence pulled from logfs afterwards
+(`run-logs/selfboot-20261104/`):
+
+- `UniXNU.log`: production profile forced; logfs GPT/FAT validation passed;
+  fresh transcript written (the old `Already started` stop is gone);
+  `exact recovery request already armed` at misc LBA 1024; GPU prearm
+  verified the same record; touch handoff completed; `HOUJI NATIVE UFS r222`
+  reached the XNU loader.
+- `XnuLog.bin`: valid header/run ID/CRC; kernel snapshot shows SpringBoard
+  running, 1417 presents, live GPU commit/Metal statistics — a full desktop
+  session, and proof the pristine-log restore passed the kernel's ownership
+  check (it panics otherwise).
+- `misc`: cleared by OrangeFox at its own startup, as documented.
+
+Known gap from this run: the XNU USB console did not enumerate on a
+standalone power-on (`HOUJI CHARGER: usb-online=0` in the snapshot). In
+PC-assisted sessions ABL's fastboot had already initialized the USB
+controller; on a normal power-on nothing does, and the kernel console
+driver expects an inherited controller. Kernel-side USB controller bring-up
+is the follow-up; it does not affect boot or the desktop.
