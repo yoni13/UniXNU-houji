@@ -820,6 +820,7 @@ ReadHeaders (VOID)
 }
 
 #include "TouchHandoff.h"
+#include "UsbHandoff.h"
 #include "GpuHandoff.h"
 #include "GpuPowerOnlyHandoff.h"
 #include "GpuPowerHandoffGuid.h"
@@ -1106,6 +1107,13 @@ Finished:
       }
     }
     if (mXnuUfsRun && !EFI_ERROR (Status)) {
+      // Standalone USB: reproduce ABL-fastboot's controller state (GDSC,
+      // GCC USB clocks, eUSB2 HS PHY, repeater, DWC3 device mode) so the
+      // kernel CDC console works without a PC. Runs before the transcript
+      // freezes; non-fatal by design.
+      EFI_STATUS UsbStatus = PrepareUsbHandoff ();
+      Print (L"HOUJI USB UEFI: preparation=%r; standalone console preconditions=%u\n",
+        UsbStatus, mUsbHandoffAttempted);
       // Touch handoff is also required when GPU initialization belongs to XNU.
       EFI_STATUS TouchStatus=PrepareTouchHandoff();
       Print (L"HOUJI TOUCH UEFI: preparation=%r; driver enabled=%u\n",TouchStatus,mTouchHandoffReady);

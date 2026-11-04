@@ -5,6 +5,7 @@
 #ifndef HOUJI_GPU_NATIVE_LIVE_INC
 #define HOUJI_GPU_NATIVE_LIVE_INC
 extern "C" void houji_touch_driver_report(void);
+extern "C" void houji_usb_report(void);
 extern "C" void houji_managed_physical_map_debug_report(void);
 static struct {
  unsigned mode,requested,retained,ufs_proven,fs_trial,coexist,deny,phase,code,draws,pending_read,pending_write,worker;
@@ -134,7 +135,7 @@ static void houjiLiveWorker(void*,wait_result_t){
     houji_framebuffer_report();
     if(!observed && stats[0] && !first_draw){first_draw=now;first_fence=stats[4];}
     if(!observed && stats[2]){l.code=15;break;}
-    if(now-last_desktop_save>=20000000){houji_touch_driver_report();houji_managed_physical_map_debug_report();houjiProviderPerfReport();native_adreno_perf_report();native_adreno_provider_snapshot();if(houjiNativeGpuFsAllowed())houji_ufs_checkpoint("desktop actual-submit/fence/display sampling; no GPU gate held",0);last_desktop_save=now;}
+    if(now-last_desktop_save>=20000000){houji_touch_driver_report();houji_usb_report();houji_managed_physical_map_debug_report();houjiProviderPerfReport();native_adreno_perf_report();native_adreno_provider_snapshot();if(houjiNativeGpuFsAllowed())houji_ufs_checkpoint("desktop actual-submit/fence/display sampling; no GPU gate held",0);last_desktop_save=now;}
     if(l.mode==3 && first_draw && now-first_draw>=120000000 && !observed && stats[0]>=64 && stats[4]>=first_fence+32 && presents-base_presents>=30){IOLog("HOUJI DESKTOP: GPU and display activity sampling complete; physical UI confirmation still required\n");break;}
    }
    if(l.mode==3 && now-started>=360000000)break;
