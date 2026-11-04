@@ -2207,7 +2207,7 @@
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/GpuZapLoadNative.h": "f8a281f6df0cff74b01bf4332346eaaf5089efcaaffec1889f6659fdfd408f96",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/GpuZapReservationNative.h": "d23d4ac7fa2398850968204f634dc30d5745f9f007afe08009d11fd18eab3d6a",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/HandoffReadPolicy.h": "048d4b89a36b09ffe26937ed70659facfbfddb1a43c99a569b4ea8d143e0f123",
-    "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/HoujiStorageProbe.c": "e878351d09e875658d46c107e99bd2d5459d383f6832e9636abbaea1a5503c99",
+    "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/HoujiStorageProbe.c": "e09c8e98aba1e48a638daacdd3c90da4ec711631641a11544db3526462ab54fd",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/HoujiStorageProbe.inf": "5de014811ccc17dee72d74aa546b8d5b52fb35ec7cfbc59f4909d07503708e14",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/LogFsTest.h": "9dbb7cb7b7f7b1f3470e719682f93a97db83951c17cc84ff1eeacc1bbd0b228e",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/OemServices.inc": "d03c84ca0d93f886efee27cdb7cde45c0b595e05712e7c2c7f245e801abdf741",

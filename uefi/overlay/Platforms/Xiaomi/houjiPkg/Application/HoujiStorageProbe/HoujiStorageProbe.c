@@ -1183,6 +1183,25 @@ HoujiStorageProbeEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     FoundationRequested = TRUE;
     SmemOnly = TRUE;
   }
+  // A normal ABL boot from boot_a supplies no EFI load options. The old
+  // diagnostic default stopped at the HOB inventory and therefore required a
+  // PC's `fastboot boot`, whose launcher supplied --xnu-ufs-read. Make the
+  // installed image self-booting: no options selects the same full XNU path;
+  // every named diagnostic option above keeps its existing bounded behavior.
+  if (!EFI_ERROR (Status) && Self && !FoundationRequested &&
+      (!Self->LoadOptions || Self->LoadOptionsSize <= sizeof (CHAR16) ||
+       *(CONST CHAR16 *)Self->LoadOptions == L'\0')) {
+    FoundationRequested = TRUE;
+    PowerBootstrap = TRUE;
+    ClockMapOnly = TRUE;
+    ClockMappedRun = TRUE;
+    mClockStorageOnly = TRUE;
+    mStorageServicesRun = TRUE;
+    mUfsReadonlyRun = TRUE;
+    mXnuUfsRun = TRUE;
+    mLogFsTestRun = TRUE;
+    Print (L"HOUJI SELF BOOT: no load options; defaulting to --xnu-ufs-read\n");
+  }
   (VOID)gBS->SetWatchdogTimer (0, 0, 0, NULL);
   if (!FoundationRequested) {
     Print (L"HOUJI STORAGE: Scheduler HOB-only checkpoint r4\n");
