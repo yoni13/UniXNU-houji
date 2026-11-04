@@ -1188,9 +1188,7 @@ HoujiStorageProbeEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
   // PC's `fastboot boot`, whose launcher supplied --xnu-ufs-read. Make the
   // installed image self-booting: no options selects the same full XNU path;
   // every named diagnostic option above keeps its existing bounded behavior.
-  if (!EFI_ERROR (Status) && Self && !FoundationRequested &&
-      (!Self->LoadOptions || Self->LoadOptionsSize <= sizeof (CHAR16) ||
-       *(CONST CHAR16 *)Self->LoadOptions == L'\0')) {
+  if (!EFI_ERROR (Status) && Self && !FoundationRequested) {
     FoundationRequested = TRUE;
     PowerBootstrap = TRUE;
     ClockMapOnly = TRUE;
@@ -1200,7 +1198,7 @@ HoujiStorageProbeEntry (EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     mUfsReadonlyRun = TRUE;
     mXnuUfsRun = TRUE;
     mLogFsTestRun = TRUE;
-    Print (L"HOUJI SELF BOOT: no load options; defaulting to --xnu-ufs-read\n");
+    Print (L"HOUJI SELF BOOT: no recognized diagnostic option; defaulting to --xnu-ufs-read\n");
   }
   (VOID)gBS->SetWatchdogTimer (0, 0, 0, NULL);
   if (!FoundationRequested) {
