@@ -31,7 +31,7 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 index 4427401..06abb0f 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -103,7 +103,14 @@ bsd/dev/dtrace/fasttrap.c		optional config_dtrace
+@@ -103,7 +103,15 @@ bsd/dev/dtrace/fasttrap.c		optional config_dtrace
  
  bsd/dev/random/randomdev.c		standard
  
