@@ -507,7 +507,7 @@ void runCommand(char *t) {
     // "join " and the LAST space is the SSID, and the last token is the
     // password.
     if (!strncmp(t, "join ", 5) && t[5]) {
-        char *p = t; while (*p == ' ') ++p;              // skip spaces after "join"
+        char *p = t + 5; while (*p == ' ') ++p;       // skip spaces after "join"
         char *last = NULL;
         for (char *q = p; *q; ++q) if (*q == ' ') { last = q; while (q[1] == ' ') ++q; }
         char *pass = NULL; size_t ssid_len = strlen(p);
