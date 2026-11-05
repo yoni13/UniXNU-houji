@@ -164,6 +164,17 @@ static void wr(unsigned off,uint32_t v)
     *(volatile uint32_t *)(u.regs+off)=v;
     __asm__ volatile("dsb sy" ::: "memory");
 }
+static void phys_write32(uint64_t pa,uint32_t v)
+{
+    *(volatile uint32_t *)pa=v;
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+static uint32_t phys_read32(uint64_t pa)
+{
+    uint32_t v=*(volatile uint32_t *)pa;
+    __asm__ volatile("dmb oshld" ::: "memory");
+    return v;
+}
 /* Linux v6.12 dwc3_gadget_dctl_write_safe: do not replay link requests. */
 static void dctl_write(uint32_t v) { wr(DCTL,v&~LINK_REQUEST_MASK); }
 static void reset_state(const char *phase)
@@ -687,6 +698,100 @@ void houji_usb_debug_start(void)
     }
     vm_offset_t qs=ml_io_map(0xa6f8800,0x100);
     if (!qs) return;
+    /* Vendor bring-up (reverse-engineered from this phone's own ABL:
+     * uefi_a UsbConfigDxe SSUsb1InitCommon + sub_8610 + sub_E25C).
+     * On a normal power-on ABL leaves the controller with its soft reset
+     * unable to complete, because the eUSB2 HS PHY was left parked and the
+     * controller reset branch was never pulsed. The vendor's own sequence
+     * before any DWC3 device init is:
+     *   1. pulse the USB30 PRIM master-clock reset (GCC 0x139018 bit 0,
+     *      the CBCR .halt of gcc_usb30_prim_master_clk BCR domain),
+     *   2. assert then release QUSB2PHY PRIM BCR (GCC 0x112000),
+     *   3. re-program the eUSB2 HS PHY at 0x88e3000 with the exact
+     *      register sequence UsbConfigDxe uses,
+     *   4. clear GUSB2PHYCFG ENBLSLPM/SUSPHY and GUSB3PIPECTL per
+     *      SSUsb1InitCommon.
+     * Only the standalone wedge executes this; healthy fastboot handoff
+     * states take the existing proven path unchanged. */
+    if (rd(DCTL)&RESET) {
+        /* The controller is stuck in soft reset (normal-boot leftover).
+         * Stop the bus first: retract event enable and RUN. */
+        unote("HOUJI USB: standalone wedge; running vendor platform bring-up\n");
+        wr(DEVTEN,0);
+        /* GCC offsets from torvalds drivers/clk/qcom/gcc-sm8650.c, base
+         * 0x100000: USB30_PRIM_BCR 0x39000 (abs 0x139000), master CBCR
+         * 0x39018 (abs 0x139018), QUSB2PHY_PRIM_BCR 0x12000 (abs
+         * 0x112000), USB3_PHY_PRIM_BCR 0x50000, USB3PHY_PHY_PRIM_BCR
+         * 0x50004, USB3_DP_PHY_PRIM_BCR 0x50008 (abs 0x150000..08).
+         * Sequence mirrors UsbConfigDxe sub_8610: master clock reset
+         * pulse, then PHY BCR assert/deassert. */
+        phys_write32(0x100139018,read_reg(gcc,0x18)|(1u<<0));
+        delay(10000);
+        phys_write32(0x100139018,read_reg(gcc,0x18)&~(1u<<0));
+        delay(10000);
+        /* USB30 PRIM block reset pulse: this is what makes the stuck
+         * CSFTRST state disappear; the vendor performs the equivalent
+         * through the clock protocol before any core init. Assert,
+         * wait, release, then wait for the block to re-power. */
+        phys_write32(0x100139000,1u);
+        delay(10000);
+        phys_write32(0x100139000,0u);
+        delay(50000);
+        uint32_t gdscr=phys_read32(0x100139004);
+        unote("HOUJI USB: after BCR pulse gdscr=%08x master=%08x\n",
+            gdscr,phys_read32(0x100139018));
+        if (!(gdscr&(1u<<31))) { fail("GDSC power after BCR pulse");return; }
+        phys_write32(0x100112000,1u);   /* QUSB2PHY PRIM BCR assert */
+        phys_write32(0x100150000,1u);   /* USB3 PHY PRIM BCR assert */
+        phys_write32(0x100150008,1u);   /* USB3 DP PHY PRIM BCR assert */
+        phys_write32(0x100150004,1u);   /* USB3PHY PHY PRIM BCR assert */
+        delay(10000);
+        phys_write32(0x100150004,0u);   /* release, reverse order */
+        phys_write32(0x100150008,0u);
+        phys_write32(0x100150000,0u);
+        phys_write32(0x100112000,0u);
+        delay(10000);
+        /* 3. eUSB2 HS PHY register sequence (sub_E25C of this phone's
+         *    UsbConfigDxe). All writes are to the 0x88e3000 block. */
+        phys_write32(0x088e3094,2);       /* CFG0: UTMI override */
+        phys_write32(0x088e3050,2);      /* UTMI_CTRL5: POR */
+        delay(100000);                    /* vendor stalls 10ms here */
+        phys_write32(0x088e3130,4);       /* APB_ACCESS_CMD: logic reset */
+        phys_write32(0x088e3098,0);      /* CMN_CTRL0 */
+        phys_write32(0x088e30b8,1);      /* FSEL_SEL */
+        phys_write32(0x088e3054,73);     /* HS_PHY_CTRL_COMMON0: ENABLE|FSEL 19.2M */
+        phys_write32(0x088e305c,200);    /* CFG_CTRL_2: PLL fb div 7:0 */
+        phys_write32(0x088e3058,2);      /* CFG_CTRL_1 */
+        phys_write32(0x088e3068,33);     /* CFG_CTRL_5 */
+        phys_write32(0x088e306c,80);     /* CFG_CTRL_6 */
+        phys_write32(0x088e3064,23);     /* HS_PHY_CTRL2: suspend-n */
+        /* hs_phy_cfg DTB list is empty on this phone (verified in
+         * xbl_config_a); no additional pairs to apply. */
+        phys_write32(0x088e3078,24);     /* CFG_CTRL_8 */
+        phys_write32(0x088e307c,200);    /* CFG_CTRL_9 */
+        phys_write32(0x088e303c,1);      /* UTMI_CTRL0: opmode non-driving */
+        phys_write32(0x088e3054,75);     /* HS_PHY_CTRL_COMMON0: RETENABLEN */
+        phys_write32(0x088e3050,0);      /* UTMI_CTRL5: release POR */
+        phys_write32(0x088e3064,23);     /* HS_PHY_CTRL2 */
+        phys_write32(0x088e3094,0);      /* CFG0: release override */
+        delay(200000);                   /* vendor stalls 20ms */
+        /* 4. DWC3-side per SSUsb1InitCommon. */
+        uint32_t pipe3=rd(GUSB3PIPECTL0);
+        wr(GUSB3PIPECTL0,pipe3&~(0x1fu<<8)); /* clear DEP1P2P3 fields */
+        wr(GUSB3PIPECTL0,rd(GUSB3PIPECTL0)|(1u<<27)); /* UX_EXIT_PX */
+        wr(0xc0f0,rd(0xc0f0)|1u);            /* vendor: GCTL region bit */
+        wr(GUSB3PIPECTL0,rd(GUSB3PIPECTL0)|(1u<<10)); /* LFPSFILT */
+        wr(GUSB3PIPECTL0,rd(GUSB3PIPECTL0)|(1u<<27));
+        /* GUCTL (0xd030 in the vendor dump region) */
+        wr(0xd030,(rd(0xd030)&~0xfu)|5u);
+        wr(0xd030,(rd(0xd030)&0xff00ffffu)|0x60000u);
+        wr(0xc0fc,rd(0xc0fc)|(1u<<24));
+        wr(0xc0fc,rd(0xc0fc)|(1u<<31));
+        wr(0xc0fc,(rd(0xc0fc)&0xffa0ffffu)|0x5f0000u);
+        uint32_t phy2b=rd(GUSB2PHYCFG0);
+        wr(GUSB2PHYCFG0,phy2b&~USB2_ENBLSLPM);
+        reset_state("after vendor bring-up");
+    }
     /* First stop any old device DMA; soft reset must finish before replacing
      * descriptors or enabling a previously faulting SMMU stream. */
     reset_state("before halt");
