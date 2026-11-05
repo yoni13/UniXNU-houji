@@ -721,41 +721,15 @@ void houji_usb_debug_start(void)
     int standalone=(phy2_boot&USB2_ENBLSLPM)!=0;
     if (standalone || (rd(DCTL)&RESET)) {
         /* The controller cannot complete CSFTRST with the HS PHY parked.
-         * Stop the bus first: retract event enable and RUN. */
-        unote("HOUJI USB: standalone wedge; running vendor platform bring-up\n");
+         * Reset ONLY the eUSB2 HS PHY (QUSB2PHY PRIM BCR, GCC 0x112000);
+         * the full USB30 block reset wedged the bus when pulsed from the
+         * running kernel (cd53d5e panic), so it is deliberately not done.
+         * The PHY BCR is local to the 0x88e3000 block and safe here. */
+        unote("HOUJI USB: standalone wedge; HS PHY bring-up\n");
         wr(DEVTEN,0);
-        /* GCC offsets from torvalds drivers/clk/qcom/gcc-sm8650.c, base
-         * 0x100000: USB30_PRIM_BCR 0x39000 (abs 0x139000), master CBCR
-         * 0x39018 (abs 0x139018), QUSB2PHY_PRIM_BCR 0x12000 (abs
-         * 0x112000), USB3_PHY_PRIM_BCR 0x50000, USB3PHY_PHY_PRIM_BCR
-         * 0x50004, USB3_DP_PHY_PRIM_BCR 0x50008 (abs 0x150000..08).
-         * Sequence mirrors UsbConfigDxe sub_8610: master clock reset
-         * pulse, then PHY BCR assert/deassert. */
-        phys_write32(0x100139018,read_reg(gcc,0x18)|(1u<<0));
-        delay(10000);
-        phys_write32(0x100139018,read_reg(gcc,0x18)&~(1u<<0));
-        delay(10000);
-        /* USB30 PRIM block reset pulse: this is what makes the stuck
-         * CSFTRST state disappear; the vendor performs the equivalent
-         * through the clock protocol before any core init. Assert,
-         * wait, release, then wait for the block to re-power. */
-        phys_write32(0x100139000,1u);
-        delay(10000);
-        phys_write32(0x100139000,0u);
-        delay(50000);
-        uint32_t gdscr=phys_read32(0x100139004);
-        unote("HOUJI USB: after BCR pulse gdscr=%08x master=%08x\n",
-            gdscr,phys_read32(0x100139018));
-        if (!(gdscr&(1u<<31))) { fail("GDSC power after BCR pulse");return; }
         phys_write32(0x100112000,1u);   /* QUSB2PHY PRIM BCR assert */
-        phys_write32(0x100150000,1u);   /* USB3 PHY PRIM BCR assert */
-        phys_write32(0x100150008,1u);   /* USB3 DP PHY PRIM BCR assert */
-        phys_write32(0x100150004,1u);   /* USB3PHY PHY PRIM BCR assert */
         delay(10000);
-        phys_write32(0x100150004,0u);   /* release, reverse order */
-        phys_write32(0x100150008,0u);
-        phys_write32(0x100150000,0u);
-        phys_write32(0x100112000,0u);
+        phys_write32(0x100112000,0u);   /* release */
         delay(10000);
         /* 3. eUSB2 HS PHY register sequence (sub_E25C of this phone's
          *    UsbConfigDxe). All writes are to the 0x88e3000 block. */
