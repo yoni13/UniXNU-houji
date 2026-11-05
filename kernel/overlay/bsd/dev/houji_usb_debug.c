@@ -790,6 +790,14 @@ void houji_usb_debug_start(void)
         wr(0xc0fc,(rd(0xc0fc)&0xffa0ffffu)|0x5f0000u);
         uint32_t phy2b=rd(GUSB2PHYCFG0);
         wr(GUSB2PHYCFG0,phy2b&~USB2_ENBLSLPM);
+        /* The block reset restores GCTL strap defaults; re-assert device
+         * mode exactly as the vendor's DwcInitialize+core-init does. */
+        uint32_t gctl2=rd(GCTL);
+        if (((gctl2>>12)&3)!=2) {
+            wr(GCTL,(gctl2&~(3u<<12))|(2u<<12));
+            unote("HOUJI USB: re-assert device mode gctl %08x->%08x\n",
+                gctl2,rd(GCTL));
+        }
         reset_state("after vendor bring-up");
     }
     /* First stop any old device DMA; soft reset must finish before replacing
