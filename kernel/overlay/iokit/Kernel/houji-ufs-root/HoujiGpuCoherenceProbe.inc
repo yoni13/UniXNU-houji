@@ -206,6 +206,22 @@ static void houjiCoherenceTrial(void) {
  thread_deallocate(guard);
  houji_ufs_checkpoint("upstream two-way coherence self-test; CPU16K owned scratch; no userland or coherent fast path",0);
  unsigned status=houjiCoherenceRun();auto &p=gHoujiCoherence;
+ /* The dirty-line precondition is cache-state dependent and can be inconclusive
+  * (status 11) with the backing retained; a retry re-runs it on the same owner.
+  * The persistent desktop mode benefits most: its frame rate depends on the
+  * coherence fast path, so give the trial up to three chances before settling.
+  * A failed attempt's backing stays retained (never freed); the retry state
+  * resets only the per-attempt fields. */
+ for(unsigned retry=0;retry<2 && status==11 && gHoujiLive.mode==1;++retry){
+  auto&a=gHoujiApi;unsigned clean=0;
+  if(p.handle){clean=a.vm.unmap(p.handle);(void)houjiApiAuditTables();}
+  if(a.handle[2]){unsigned c2=a.client.unmapRetainedForTrial(a.handle[2]);if(!clean)clean=c2;(void)houjiApiBo(2,0);}
+  if(!clean){
+   p.active=0;p.phase=0;p.code=0;p.attempts=0;p.dirty=0;p.read_new=p.read_old=0;
+   p.write_new=p.dram_new=0;p.direction=0;p.copies=0;p.command_mapped=0;p.unmapped=0;
+   p.handle=0;status=houjiCoherenceRun();
+  }else {IOLog("HOUJI COHERENCE: retry cleanup failed code=%u; not retrying\n",clean);break;}
+ }
  IOLog("HOUJI COHERENCE: status=%u phase=%u io=%x attempts=%u dirty=%u/64 GPU-read=%u/%u CPU-write=%u DRAM-write=%u copies=%u unmapped=%u proof=%u; scratch=%u CPU-page=%u coherent-enabled=0\n",status,p.phase,p.code,p.attempts,p.dirty,p.read_new,p.read_old,p.write_new,p.dram_new,p.copies,p.unmapped,!status && p.pass,HoujiCoherenceBytes,HoujiCoherencePage);
  IOLog("HOUJI COHERENCE VIEWS: page=%u sub=%u cached-PAR=%llx uncached-PAR=%llx; original must stay WB, alias must be uncached, both must resolve owned page\n",p.view_page,p.view_sub,p.cached_par,p.uncached_par);
  IOLog("HOUJI COHERENCE RENDER: draws=%u/8 pass=%u CRC=%x bad-byte=%u copy-proof=%u; two owned WB targets, cached and DRAM pixels plus CPU16K guard bytes; no desktop claim\n",p.draws,p.render_pass,p.render_crc,p.render_bad_byte,p.pass);
@@ -234,6 +250,22 @@ static void houjiCoherenceTrial(void) {
   gHoujiApi.phase=10;p.active=0;native_adreno_io_coherent=NativeAdrenoCoherenceOff;
   IOLog("HOUJI COHERENCE DESKTOP: proofs not met (status=%u), coherent=0, every mapping maintained as before\n",status);
   __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;
+ }
+ if(gHoujiLive.mode==1){
+  /* Persistent desktop mode: an unsettled trial (early precondition failure
+   * left the scratch VM mapping and the trial client BO mapped) must not end
+   * the session. Undo the same two mappings the successful path unmaps; the
+   * scratch pages and aliases stay pinned like every other failed experiment.
+   * An uncertain unmap is the only remaining reason to stop. */
+  auto&a=gHoujiApi;unsigned code=0;
+  if(p.handle){code=a.vm.unmap(p.handle);if(!code && houjiApiAuditTables())code=0xe00002c2;if(!code)p.handle=0;}
+  if(!code && a.handle[2]){code=a.client.unmapRetainedForTrial(a.handle[2]);if(!code && (!houjiApiBo(2,0) || houjiApiAuditTables()))code=0xe00002c2;if(!code)p.command_mapped=0;}
+  if(!code && houjiFullLease() && houjiFullTables()){
+   p.unmapped=1;gHoujiApi.phase=10;p.active=0;native_adreno_io_coherent=NativeAdrenoCoherenceOff;
+   IOLog("HOUJI COHERENCE DESKTOP: unsettled trial cleaned up (status=%u), coherent=0, desktop continues with full maintenance\n",status);
+   __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;
+  }
+  if(code)IOLog("HOUJI COHERENCE DESKTOP: cleanup failed code=%x; stopping\n",code);
  }
  // Use the already-qualified owner's stop sequence even when the scratch
  // experiment failed; never free a possibly referenced page on failure.
