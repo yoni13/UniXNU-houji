@@ -112,7 +112,7 @@ static void houjiLiveWorker(void*,wait_result_t){
  thread_set_thread_name(current_thread(),"houji-gpu-owner");auto&l=gHoujiLive;uint64_t started=houjiSubmitNow(nullptr),busy_since=0,last_saved=UINT64_MAX,last_report=0,last_desktop_save=0,first_draw=0,first_fence=0,base_swaps=0,base_presents=0;unsigned checks=0,probe_state=0;
  if(l.mode>=3)houji_framebuffer_counts(&base_swaps,&base_presents);
  for(;;){
-  IOSleep(l.mode>=3?500:l.mode==2?250:100);++checks;
+  IOSleep(l.mode==2?250:500);++checks;
   if(l.mode==2 && !(checks&3)){
    uint64_t progress=native_adreno_provider_progress_token();
    if(progress!=last_saved){
@@ -121,8 +121,13 @@ static void houjiLiveWorker(void*,wait_result_t){
     last_saved=progress;
    }
   }
-  IOReturn polled=l.mode>=2?native_adreno_provider_try_poll():native_adreno_provider_poll();
-  if(polled==kIOReturnBusy && l.mode>=2){
+  /* Mode 1 is the persistent desktop mode: poll exactly like mode 4 — the cheap
+   * try_poll that skips the board quiesce while no jobs are outstanding. The
+   * full provider_poll takes the issuer lock and runs the complete GPU idle
+   * gate (CRC-set/check audits, ~15 ms each) on every call; at the mode-1
+   * cadence that starved backboardd's submits to single-digit FPS. */
+  IOReturn polled=l.mode>=1?native_adreno_provider_try_poll():native_adreno_provider_poll();
+  if(polled==kIOReturnBusy && l.mode>=1){
    if(!busy_since)busy_since=houjiSubmitNow(nullptr);
    if(houjiSubmitNow(nullptr)-busy_since>10000000)panic("HOUJI LIVE: provider call held gate over10s; all resources pinned, last progress saved, no-FS PSCI");
   }else {busy_since=0;if(polled){l.code=13;break;}}
