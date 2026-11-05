@@ -146,6 +146,10 @@ static void houjiLiveWorker(void*,wait_result_t){
    if(!probe_state && !(checks&3) && native_adreno_provider_probe_started())probe_state=houjiProbeLogState();
    if(probe_state && polled!=kIOReturnBusy)break;
    if(houjiSubmitNow(nullptr)-started>=300000000)break;
+  }else if(l.mode==1){
+   /* Persistent desktop mode: keep polling forever. Mode 1 never breaks on
+    * the check counter; the hold-forever contract of the handoff includes
+    * this worker, so backboardd gets unlimited time to reach the GPU. */
   }else if(checks>=100)break;
  }
  houjiProviderPerfReport();native_adreno_provider_snapshot();IOLog("HOUJI LIVE LIFETIME: worker=%u mode=%u checks=%u elapsed-us=%llu probe-state=%u code=%u fence=%u/%u; original roots and all active BO retained\n",l.worker,l.mode,checks,houjiSubmitNow(nullptr)-started,probe_state,l.code,gHoujiSubmit.seq,gHoujiSubmit.observed);
