@@ -29,7 +29,7 @@ static bool houjiCoherenceTlbValue(uint64_t value) {
 }
 static int houjiCoherencePublish(const volatile uint32_t *words,size_t bytes) {
  auto &p=gHoujiCoherence;auto &s=gHoujiSubmit;
- if(!p.active || (gHoujiLive.mode!=4 && gHoujiLive.mode!=5) || gHoujiApi.phase!=12 || !houjiApiInOperation() ||
+ if(!p.active || (gHoujiLive.mode!=4 && gHoujiLive.mode!=5 && gHoujiLive.mode!=1) || gHoujiApi.phase!=12 || !houjiApiInOperation() ||
     houjiSubmitGuard() || s.published || s.pending || words!=houjiCpCpu() || bytes!=HHR_BYTES ||
     p.direction>3 || s.iteration!=s.ring.lastSubmitted()+1 || !p.command_mapped || !p.handle)return 1;
  uint32_t command[7];const unsigned count=p.direction<2?7:HGKI_SELECTED_COMMAND_WORDS;
@@ -111,7 +111,7 @@ static bool houjiCoherenceCpuViews(void) {
 }
 static int houjiCoherenceRun(void) {
  auto &p=gHoujiCoherence;auto &a=gHoujiApi;
- if(p.active || (gHoujiLive.mode!=4 && gHoujiLive.mode!=5) || native_adreno_io_coherent ||
+ if(p.active || (gHoujiLive.mode!=4 && gHoujiLive.mode!=5 && gHoujiLive.mode!=1) || native_adreno_io_coherent ||
     a.phase!=10 || !houjiFullKeepLive(nullptr) || a.submit.outstanding())return 1;
  p.active=1;p.started_us=houjiSubmitNow(nullptr);p.phase=1;a.phase=12;
  p.code=p.backing.allocate(HoujiCoherenceBytes,36,true,HoujiCoherenceBytes,false);if(p.code)return 2;
@@ -228,9 +228,9 @@ static void houjiCoherenceTrial(void) {
   houji_ufs_checkpoint("same-boot coherence and WB-target proofs complete; opt-in bounded coherent desktop; original owner retained",0);
   __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;
  }
- if(gHoujiLive.mode==4 && settled){
+ if((gHoujiLive.mode==1 || gHoujiLive.mode==4) && settled){
   // houji: no proof, but the scratch work is unmapped and the GPU idle with audited tables. Keep the owner and its scratch pages
-  // (never freed after a failed experiment) and run the desktop with full maintenance.
+  // (never freed after a possibly failed experiment) and run the desktop with full maintenance.
   gHoujiApi.phase=10;p.active=0;native_adreno_io_coherent=NativeAdrenoCoherenceOff;
   IOLog("HOUJI COHERENCE DESKTOP: proofs not met (status=%u), coherent=0, every mapping maintained as before\n",status);
   __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;

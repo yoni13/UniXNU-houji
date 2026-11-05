@@ -179,7 +179,12 @@ extern "C" {volatile uint32_t houji_gpu_trial_done;}
 static bool houjiLiveStart(void){
  if(!houjiFullKeepLive(nullptr))return false;
  {unsigned coherent=1;PE_parse_boot_argn("houji_gpu_coherent",&coherent,sizeof(coherent));
-  if((gHoujiLive.mode==4 && coherent) || gHoujiLive.mode==5)houjiCoherenceTrial();}
+  /* Mode 1 runs the same qualification as the desktop mode 4: a passing
+   * coherence proof enables native_adreno_io_coherent, which lets WB/inner-
+   * shareable mappings skip the per-submit cache maintenance in publishMapped
+   * and acquireImported. Without it the persistent desktop pays a full cache
+   * sweep on every frame and runs at half the frame rate. */
+  if(((gHoujiLive.mode==1 || gHoujiLive.mode==4) && coherent) || gHoujiLive.mode==5)houjiCoherenceTrial();}
  __atomic_store_n(&houji_gpu_trial_done,1u,__ATOMIC_RELEASE);   // HoujiAdsp.cpp attaches GIC interrupts only after this
  if(houjiProviderStart())return false;
  houjiDvfsStart();
