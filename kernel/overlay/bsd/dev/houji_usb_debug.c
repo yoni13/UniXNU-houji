@@ -713,14 +713,8 @@ void houji_usb_debug_start(void)
      *      SSUsb1InitCommon.
      * Only the standalone wedge executes this; healthy fastboot handoff
      * states take the existing proven path unchanged. */
-    /* Standalone normal boot leaves the eUSB2 HS PHY parked (ENBLSLPM set,
-     * no gadget active); the working fastboot handoff has ENBLSLPM clear
-     * and its gadget already halted. Evidence: standalone captures
-     * phy2=00102500, assisted captures phy2=00102400. */
-    uint32_t phy2_boot=rd(GUSB2PHYCFG0);
-    int standalone=(phy2_boot&USB2_ENBLSLPM)!=0;
-    if (standalone || (rd(DCTL)&RESET)) {
-        /* The controller cannot complete CSFTRST with the HS PHY parked.
+    if (rd(DCTL)&RESET) {
+        /* The controller is stuck in soft reset (normal-boot leftover).
          * Stop the bus first: retract event enable and RUN. */
         unote("HOUJI USB: standalone wedge; running vendor platform bring-up\n");
         wr(DEVTEN,0);
