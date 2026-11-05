@@ -1637,7 +1637,7 @@
     "kernel/overlay/bsd/dev/houji_ram_upload.h": "a9440d1420a9a0557c8d0f6da3eea69ad1698556a8354bfa94e498467b984d9f",
     "kernel/overlay/bsd/dev/houji_route_probe.c": "addd82d2be6595285922c69bb326005f75f728249e5fc410990531139f6ecff1",
     "kernel/overlay/bsd/dev/houji_upload_test_target.c": "1338f919d528947cdba01ddbaffe5acdbc16c82df5a8ebf58e31e0817890827f",
-    "kernel/overlay/bsd/dev/houji_usb_debug.c": "d9222635fd5abfe37beb7d4cbec25f0cea89da6f7a120ef0f23272944691fc77",
+    "kernel/overlay/bsd/dev/houji_usb_debug.c": "77eff584e5b7b89aae65f47a56a4003dbff54bbe00660bfb9f150609cacb2793",
     "kernel/overlay/bsd/dev/houji_usb_policy.h": "5b014c5a7b8849bd4756705bdd10a40b18ec3d9655c7fe0912550a68db2645a9",
     "kernel/overlay/bsd/dev/houji_usb_protocol.h": "ee97f81c05a50c9dad99e18e3f6a4af6c359e428a57986fa047fe60cb1593b76",
     "kernel/overlay/bsd/dev/memdev_range.h": "a415eb0c4e041afa11ef5b60b46cdb2da5f92630d24bd7013cc40b220ea52cb2",

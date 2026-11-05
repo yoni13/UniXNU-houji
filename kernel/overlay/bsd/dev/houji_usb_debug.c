@@ -45,6 +45,7 @@ static void note_add(const char *line,int n)
     printf("%s",_l); note_add(_l,_n<(int)sizeof(_l)?_n:(int)sizeof(_l)-1); } while (0)
 
 #define GCTL 0xc110
+#define GCTL_DSBLCLKGTNG 1u
 #define GUSB2PHYCFG0 0xc200
 #define GUSB3PIPECTL0 0xc2c0
 #define USB2_SUSPHY (1u<<6)
@@ -693,6 +694,16 @@ void houji_usb_debug_start(void)
     unsigned i;
     for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) delay(1000);
     if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout");return; }
+    /* The working ABL fastboot handoff has DSBLCLKGTNG=1, unlike its
+     * normal-boot shutdown. Keep controller-local clocks ungated through
+     * reset and polled gadget operation; do not change GCC or PHY resets. */
+    uint32_t gctl=rd(GCTL);
+    if (!(gctl&GCTL_DSBLCLKGTNG)) {
+        wr(GCTL,gctl|GCTL_DSBLCLKGTNG);
+        if (!(rd(GCTL)&GCTL_DSBLCLKGTNG)) { fail("clock gating disable readback");return; }
+    }
+    unote("HOUJI USB: reset clocks utmi=%08x sleep=%08x master-rcg=%08x utmi-rcg=%08x\n",
+        read_reg(gcc,0x28),read_reg(gcc,0x24),read_reg(gcc,0x2c),read_reg(gcc,0x44));
     /* Upstream DWC3 clears GUSB2PHYCFG.SUSPHY before PHY init and before
      * issuing DCTL.CSFTRST. The failed standalone capture had SUSPHY=0,
      * so this is not an established fix for that reset timeout. This is a
