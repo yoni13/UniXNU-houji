@@ -636,6 +636,11 @@ extern "C" void houji_framebuffer_counts(uint64_t *swaps, uint64_t *presents)
 	if (presents) *presents = __atomic_load_n(&houji_fb_present_count, __ATOMIC_RELAXED);
 }
 
+extern "C" uint64_t houji_framebuffer_callback_count(void)
+{
+	return __atomic_load_n(&houji_fb_callbacks, __ATOMIC_RELAXED);
+}
+
 extern "C" void houji_framebuffer_report(void)
 {
 	static uint64_t previousTime, previousPresents, previousSwaps, previousTicks, previousBytes;
