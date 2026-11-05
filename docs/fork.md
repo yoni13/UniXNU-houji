@@ -91,6 +91,8 @@ profile; individual features use explicit `=0` opt-outs:
 
 - GPU runtime desktop mode 4, external WB/NC canary qualification, same-boot coherence qualification: on by default
   (`houji_gpu_runtime=0`, `houji_gpu_external_canary_probe=0`, `houji_gpu_external_nc_probe=0`, or `houji_gpu_coherent=0` to disable).
+  For a persistent desktop use `houji_gpu_runtime=1` (hold forever; mode 3 is a bounded test that stops after a few minutes) and
+  keep `rootrw=1`. See `docs/desktop-regression-postmortem.md` for why both flags matter.
 - Eight-core SMP bound-worker probe: on (`houji_smp_probe=0` disables only its diagnostic worker).
 - IPCC GIC interrupt: on; RSC and Wi-Fi MSI stay polled (`houji_spi=0` restores all polling; `houji_spi_mask` overrides the line mask).
 - Wi-Fi, buttons, display power/brightness and the 60 s/10 s screen locks: on (`houji_wifi=0`, `houji_buttons=0`,
