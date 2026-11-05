@@ -86,14 +86,18 @@ extern "C" IOReturn native_adreno_board_quiesce(void){
   * the extra full graph/table CRC on each real generation change,
   * before any next submit; unchanged queries/waits need no repeated CRC. */
  uint64_t generation=gHoujiVm.binding.state->generation;
- if(gHoujiLive.mode==1 || gHoujiProvider.audited_generation!=generation){
+ if(gHoujiProvider.audited_generation!=generation){
   /* NativeAdrenoVm's transaction proof and periodic conflicting-route scan
    * remain authoritative. The first outer audit
-   * still binds the seeded houji root. Mode1 keeps the original strict path.
+   * still binds the seeded houji root.
    * Re-walking the entire graph after every generation was duplicate work
    * (r185:24.7s of38.6s in the gate); every-generation CRC checks remain.
+   * The persistent desktop mode 1 now uses the same once-per-generation
+   * policy as the desktop mode 4: the previous per-gate audit in mode 1
+   * cost 7-9 ms on every submit and capped the desktop at half the frame
+   * rate of the mode 4 era.
    */
-  if(gHoujiLive.mode==1 || gHoujiProvider.audited_generation==UINT64_MAX){
+  if(gHoujiProvider.audited_generation==UINT64_MAX){
    if(a.vm.auditLive())return kIOReturnIOError;
    __atomic_fetch_add(&gHoujiGatePerf.audits,1ull,__ATOMIC_RELAXED);
   }
