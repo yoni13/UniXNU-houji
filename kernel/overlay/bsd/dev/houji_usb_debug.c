@@ -48,6 +48,7 @@ static void note_add(const char *line,int n)
 #define GUSB2PHYCFG0 0xc200
 #define GUSB3PIPECTL0 0xc2c0
 #define USB2_SUSPHY (1u<<6)
+#define USB2_ENBLSLPM (1u<<8)
 #define LINK_REQUEST_MASK (0xfu<<5)
 #define GEVNTADRLO 0xc400
 #define GEVNTADRHI 0xc404
@@ -698,12 +699,15 @@ void houji_usb_debug_start(void)
      * controller-local, read-back-verified correction: no GCC, SPMI,
      * regulator, block-reset or external-PHY writes. */
     uint32_t phy2=rd(GUSB2PHYCFG0);
-    if (phy2&USB2_SUSPHY) {
-        wr(GUSB2PHYCFG0,phy2&~USB2_SUSPHY);
+    /* Normal boot captured 00102500; working assisted boot 00102400.
+     * Disable the UTMI sleep request as well as suspend before reset.
+     * This does not initialize an unpowered external PHY. */
+    if (phy2&(USB2_SUSPHY|USB2_ENBLSLPM)) {
+        wr(GUSB2PHYCFG0,phy2&~(USB2_SUSPHY|USB2_ENBLSLPM));
         uint32_t phy2back=rd(GUSB2PHYCFG0);
-        unote("HOUJI USB: clearing SUSPHY before reset: %u->%u\n",
-            (phy2>>6)&1u,(phy2back>>6)&1u);
-        if (phy2back&USB2_SUSPHY) { fail("USB2 SUSPHY clear readback");return; }
+        unote("HOUJI USB: clear USB2 suspend/sleep before reset: %08x->%08x\n",
+            phy2,phy2back);
+        if (phy2back&(USB2_SUSPHY|USB2_ENBLSLPM)) { fail("USB2 sleep clear readback");return; }
         delay(10);
     }
     reset_state("before reset");
