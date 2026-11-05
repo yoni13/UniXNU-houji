@@ -157,11 +157,13 @@ static void houjiLiveWorker(void*,wait_result_t){
     * this worker, so backboardd gets unlimited time to reach the GPU.
     * Every 5 s report the display swap/present counters so the desktop
     * frame rate stays observable in the RAM log while a human drives
-    * the screen; 5 s windows resolve individual gestures. */
+    * the screen; 5 s windows resolve individual gestures. Include the
+    * cached GPU OPP snapshot so the clock level is visible per window. */
    uint64_t now=houjiSubmitNow(nullptr);
    if(now-last_report>=5000000){
     uint64_t swaps=0,presents=0;houji_framebuffer_counts(&swaps,&presents);last_report=now;
     IOLog("HOUJI DESKTOP: mode=1 window-swaps=%llu window-presents=%llu total-swaps=%llu total-presents=%llu fence=%u/%u; actual display counters\n",swaps-base_swaps,presents-base_presents,swaps,presents,gHoujiSubmit.seq,gHoujiSubmit.observed);
+    char opp[640];if(houji_gpu_dvfs_snapshot(opp,sizeof opp)){for(char *q=opp;*q;q++)if(*q=='\n'){*q=0;break;}IOLog("%s\n",opp);}
    }
   }else if(checks>=100)break;
  }
