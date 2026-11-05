@@ -1,5 +1,6 @@
 /* Experimental houji CDC ACM console. Opt-in: houji_usb=1.
- * Reuses ABL's PHY/clocks; never changes GCC, SMMU, PMIC or storage.
+ * Reuses ABL's PHY/clocks; never changes GCC, PMIC or storage. An owned
+ * USB SMMU route may be installed only after halt and completed reset.
  * DWC3 register/endpoint protocol: Linux drivers/usb/dwc3, reference0073.
  * USB can read the RAM console ring and issue four bounded queries only.
  * All controller memory is permanent: a timeout never frees DMA memory.
@@ -44,6 +45,10 @@ static void note_add(const char *line,int n)
     printf("%s",_l); note_add(_l,_n<(int)sizeof(_l)?_n:(int)sizeof(_l)-1); } while (0)
 
 #define GCTL 0xc110
+#define GUSB2PHYCFG0 0xc200
+#define GUSB3PIPECTL0 0xc2c0
+#define USB2_SUSPHY (1u<<6)
+#define LINK_REQUEST_MASK (0xfu<<5)
 #define GEVNTADRLO 0xc400
 #define GEVNTADRHI 0xc404
 #define GEVNTSIZ 0xc408
@@ -156,6 +161,13 @@ static void wr(unsigned off,uint32_t v)
 {
     *(volatile uint32_t *)(u.regs+off)=v;
     __asm__ volatile("dsb sy" ::: "memory");
+}
+/* Linux v6.12 dwc3_gadget_dctl_write_safe: do not replay link requests. */
+static void dctl_write(uint32_t v) { wr(DCTL,v&~LINK_REQUEST_MASK); }
+static void reset_state(const char *phase)
+{
+    unote("HOUJI USB: %s gctl=%08x dctl=%08x dsts=%08x phy2=%08x pipe3=%08x\n",
+        phase,rd(GCTL),rd(DCTL),rd(DSTS),rd(GUSB2PHYCFG0),rd(GUSB3PIPECTL0));
 }
 static void sync_dma(unsigned off,unsigned size)
 {
@@ -578,7 +590,7 @@ static void usb_thread(void *arg __unused,wait_result_t result __unused)
         (void)assert_wait_deadline(&u.sleep_channel,THREAD_UNINT,deadline);
         thread_block(THREAD_CONTINUE_NULL);
     }
-    wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);
+    wr(DEVTEN,0);dctl_write(rd(DCTL)&~RUN);
     thread_terminate(current_thread());
 }
 /* Require the exact known nonsecure SMMU layout and a unique identity route.
@@ -671,39 +683,41 @@ void houji_usb_debug_start(void)
         ppnum_t page=pmap_find_phys(kernel_pmap,(addr64_t)(u.dma+off));
         if (!page || ptoa_64(page)!=u.pa+off) return;
     }
+    vm_offset_t qs=ml_io_map(0xa6f8800,0x100);
+    if (!qs) return;
+    /* First stop any old device DMA; soft reset must finish before replacing
+     * descriptors or enabling a previously faulting SMMU stream. */
+    reset_state("before halt");
+    wr(DEVTEN,0);dctl_write(rd(DCTL)&~RUN);
+    unsigned i;
+    for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) delay(1000);
+    if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout");return; }
+    /* Upstream DWC3 clears GUSB2PHYCFG.SUSPHY before PHY init and before
+     * issuing DCTL.CSFTRST. The failed standalone capture had SUSPHY=0,
+     * so this is not an established fix for that reset timeout. This is a
+     * controller-local, read-back-verified correction: no GCC, SPMI,
+     * regulator, block-reset or external-PHY writes. */
+    uint32_t phy2=rd(GUSB2PHYCFG0);
+    if (phy2&USB2_SUSPHY) {
+        wr(GUSB2PHYCFG0,phy2&~USB2_SUSPHY);
+        uint32_t phy2back=rd(GUSB2PHYCFG0);
+        unote("HOUJI USB: clearing SUSPHY before reset: %u->%u\n",
+            (phy2>>6)&1u,(phy2back>>6)&1u);
+        if (phy2back&USB2_SUSPHY) { fail("USB2 SUSPHY clear readback");return; }
+        delay(10);
+    }
+    reset_state("before reset");
+    dctl_write((rd(DCTL)&~RUN)|RESET);
+    for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
+    if (rd(DCTL)&RESET) { reset_state("reset timeout");fail("controller reset timeout after SUSPHY pre-clear");return; }
+    if (!(rd(DSTS)&HALTED) || (rd(DCTL)&RUN)) { fail("controller not halted after reset");return; }
     if (route==2) {
-        if (!(rd(DSTS)&HALTED) || (rd(DCTL)&RUN)) { unote("HOUJI USB: controller not halted; SMMU route refused\n");return; }
-        uint32_t r[3];
+        uint32_t r[3]={0};
         const char *why=houji_smmu_route_stream(0x40,u.pa,DMA_SIZE,r);
         unote("HOUJI USB: SID40 bypass route %s slot=%u bank=%u cbar=%08x sctlr=%08x\n",
             why?why:"ok",r[0]&0xffff,r[0]>>16,r[1],r[2]);
         if (why) return;
     }
-    vm_offset_t qs=ml_io_map(0xa6f8800,0x100);
-    if (!qs) return;
-    /* First stop any old device DMA; soft reset must finish before replacing
-     * descriptors. PHY configuration and global bus settings remain from ABL. */
-    wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);
-    unsigned i;
-    for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) delay(1000);
-    if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout");return; }
-    /* Upstream DWC3 clears GUSB2PHYCFG.SUSPHY before PHY init and before
-     * issuing DCTL.CSFTRST. ABL's normal-boot shutdown can leave the
-     * eUSB2 path suspended, which blocks reset completion. This is a
-     * controller-local, read-back-verified correction: no GCC, SPMI,
-     * regulator, block-reset or external-PHY writes. */
-    uint32_t phy2=rd(0xc200);
-    if (phy2&(1u<<6)) {
-        wr(0xc200,phy2&~(1u<<6));
-        uint32_t phy2back=rd(0xc200);
-        unote("HOUJI USB: clearing SUSPHY before reset: %u->%u\n",
-            (phy2>>6)&1u,(phy2back>>6)&1u);
-        if (phy2back&(1u<<6)) { fail("USB2 SUSPHY clear readback");return; }
-        delay(10);
-    }
-    wr(DCTL,RESET);
-    for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
-    if (rd(DCTL)&RESET) { fail("controller reset timeout after SUSPHY pre-clear");return; }
     sync_dma(0,DMA_SIZE);
     wr(GEVNTADRLO,(uint32_t)u.pa);wr(GEVNTADRHI,(uint32_t)(u.pa>>32));
     if (rd(GEVNTADRLO)!=(uint32_t)u.pa||rd(GEVNTADRHI)!=(uint32_t)(u.pa>>32)) { fail("event address readback");return; }
@@ -719,11 +733,13 @@ void houji_usb_debug_start(void)
     *(volatile uint32_t *)(qs+0x30)=ss|(1u<<24);
     __asm__ volatile("dsb sy" ::: "memory");
     wr(DEVTEN,7|(1u<<9)|(1u<<11));
-    wr(DCTL,(rd(DCTL)&~RESET)|RUN);
+    uint32_t dctl=rd(DCTL);
+    if (dctl&RESET) { fail("reset asserted before RUN");wr(DEVTEN,0);return; }
+    dctl_write(dctl|RUN);
     for (i=0;i<500 && (rd(DSTS)&HALTED);i++) delay(1000);
-    if (rd(DSTS)&HALTED) { fail("controller run timeout");wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);return; }
+    if (rd(DSTS)&HALTED) { fail("controller run timeout");wr(DEVTEN,0);dctl_write(rd(DCTL)&~RUN);return; }
     thread_t thread;
-    if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) { fail("poll thread creation");wr(DEVTEN,0);wr(DCTL,rd(DCTL)&~RUN);return; }
+    if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) { fail("poll thread creation");wr(DEVTEN,0);dctl_write(rd(DCTL)&~RUN);return; }
     thread_deallocate(thread);
     unote("HOUJI USB: owned RAM base=%lx bytes=%lx; mode=%d\n",gPhysBase,gPhysSize,enabled);
     unote("HOUJI USB: running; DMA=%llx; CDC serial HOUJIDBG001; awaiting enumeration\n",u.pa);
