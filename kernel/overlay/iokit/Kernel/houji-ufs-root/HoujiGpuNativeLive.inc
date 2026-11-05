@@ -99,6 +99,7 @@ static int houjiCpKeepLive(void*,hhr_result*r){
 }
 static int houjiFullKeepLive(void*){return gHoujiLive.requested && gHoujiLive.retained && gHoujiLive.coexist && !gHoujiLive.code && !houjiSubmitGuard() && houjiVmIdle() && houjiFullLease() && houjiFullTables()?1:0;}
 #include "HoujiGpuNativeProvider.inc"
+extern "C" uint64_t houji_framebuffer_callback_count(void);   // SweetFramebuffer.cpp: vsync notification count
 #include "HoujiGpuCoherenceProbe.inc"
 #include "HoujiGpuProbeLog.inc"
 static void houjiLiveDeadline(void*,wait_result_t){
@@ -164,7 +165,6 @@ static void houjiLiveWorker(void*,wait_result_t){
     uint64_t swaps=0,presents=0;houji_framebuffer_counts(&swaps,&presents);last_report=now;
     IOLog("HOUJI DESKTOP: mode=1 window-swaps=%llu window-presents=%llu total-swaps=%llu total-presents=%llu fence=%u/%u; actual display counters\n",swaps-base_swaps,presents-base_presents,swaps,presents,gHoujiSubmit.seq,gHoujiSubmit.observed);
     char opp[640];if(houji_gpu_dvfs_snapshot(opp,sizeof opp)){for(char *q=opp;*q;q++)if(*q=='\n'){*q=0;break;}IOLog("%s\n",opp);}
-    extern "C" uint64_t houji_framebuffer_callback_count(void);
     IOLog("HOUJI DESKTOP PACE: display-callbacks=%llu; vsync notification count\n",(unsigned long long)houji_framebuffer_callback_count());
    }
   }else if(checks>=100)break;
