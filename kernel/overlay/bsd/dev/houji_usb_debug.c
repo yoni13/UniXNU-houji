@@ -687,38 +687,23 @@ void houji_usb_debug_start(void)
     unsigned i;
     for (i=0;i<500 && !(rd(DSTS)&HALTED);i++) delay(1000);
     if (!(rd(DSTS)&HALTED)) { fail("controller halt timeout");return; }
-    wr(DCTL,RESET);
-    for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
-    if (rd(DCTL)&RESET) {
-        /* Standalone-boot wedge, exactly as observed: ABL initializes USB
-         * for its gadget on every boot and its normal-boot shutdown
-         * leaves the soft-reset bit stuck (never clears, here or in UEFI;
-         * the state is device mode, clocks on - only the reset hangs).
-         * Linux QCOM dwc3_core_init runs phy_power_on BEFORE the core
-         * soft reset; a down HS PHY is the known reset blocker. Bring the
-         * PHY and repeater up - register writes only, no GCC resets (the
-         * USB30 block reset aborted the bus in both firmwares) - and
-         * retry once. Healthy fastboot boots never reach this block.
-         * If the retry also fails, abort: never continue, and never set
-         * RUN, while RESET reads set (writes may not latch and the
-         * controller could DMA through stale state). */
-        /* Upstream DWC3 explicitly clears GUSB2PHYCFG.SUSPHY before PHY
-         * init and before the device soft reset. ABL's normal-boot shutdown
-         * leaves the eUSB2 path suspended; that is the narrowest, fully
-         * read-back-verifiable reset blocker to correct. No GCC, SPMI,
-         * regulator, block-reset or external-PHY writes here. */
-        uint32_t phy2=rd(0xc200);
-        wr(0xc200,phy2&~(1u<<6)); /* GUSB2PHYCFG(0).SUSPHY */
+    /* Upstream DWC3 clears GUSB2PHYCFG.SUSPHY before PHY init and before
+     * issuing DCTL.CSFTRST. ABL's normal-boot shutdown can leave the
+     * eUSB2 path suspended, which blocks reset completion. This is a
+     * controller-local, read-back-verified correction: no GCC, SPMI,
+     * regulator, block-reset or external-PHY writes. */
+    uint32_t phy2=rd(0xc200);
+    if (phy2&(1u<<6)) {
+        wr(0xc200,phy2&~(1u<<6));
         uint32_t phy2back=rd(0xc200);
-        unote("HOUJI USB: soft reset stuck (dctl=%08x dsts=%08x); SUSPHY %u->%u, retry once\n",
-            rd(DCTL),rd(DSTS),(phy2>>6)&1u,(phy2back>>6)&1u);
+        unote("HOUJI USB: clearing SUSPHY before reset: %u->%u\n",
+            (phy2>>6)&1u,(phy2back>>6)&1u);
         if (phy2back&(1u<<6)) { fail("USB2 SUSPHY clear readback");return; }
         delay(10);
-        wr(DCTL,RESET);
-        for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
-        if (rd(DCTL)&RESET) { fail("controller reset timeout after SUSPHY clear");return; }
-        unote("HOUJI USB: soft reset completed after SUSPHY clear\n");
     }
+    wr(DCTL,RESET);
+    for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
+    if (rd(DCTL)&RESET) { fail("controller reset timeout after SUSPHY pre-clear");return; }
     sync_dma(0,DMA_SIZE);
     wr(GEVNTADRLO,(uint32_t)u.pa);wr(GEVNTADRHI,(uint32_t)(u.pa>>32));
     if (rd(GEVNTADRLO)!=(uint32_t)u.pa||rd(GEVNTADRHI)!=(uint32_t)(u.pa>>32)) { fail("event address readback");return; }
