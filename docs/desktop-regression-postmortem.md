@@ -87,3 +87,19 @@ Several images were packaged with stale boot-args this way and invalidated test 
   on-device state, lost when userdata was restored). The `-sched` image copy with
   the `tools/restore-system-apps.py` move and `tools/register-system-apps.py`
   registrar applied offline is the apps-complete root; see `docs/system-apps.md`.
+
+## Follow-up: single-digit FPS with the persistent desktop
+
+The first mode-1 build had a second regression of its own making: the live
+worker polled `native_adreno_provider_poll()` at a 100 ms cadence. Unlike
+`native_adreno_provider_try_poll()` (which the desktop modes use, 500 ms, and
+which skips the board quiesce when no jobs are outstanding), `provider_poll`
+always takes the issuer lock and runs the complete GPU idle gate — CRC-set and
+CRC-check audits of ~15 ms each — even when the GPU is idle. Holding that gate
+roughly a third of the time starved every backboardd submit; the desktop ran
+at single-digit FPS with the CPU thermals spiking to 80°C, and it did not
+depend on Wi-Fi. The fix (mode 1 polls with `try_poll` at 500 ms and treats a
+contended lock like mode 4 does) restores exactly the poll path the smooth
+pre-fork-era boots used. Lesson: on this driver, any recurring kernel-side
+poll of the GPU must use the try-lock/no-work path; the full quiesce is for
+teardown and diagnostics only.
