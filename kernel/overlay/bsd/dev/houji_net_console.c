@@ -20,6 +20,8 @@
 #include <kern/thread.h>
 #include <kern/clock.h>
 #include <kern/kalloc.h>
+#include <kern/sched_prim.h>
+#include <mach/thread_act.h>
 #include <machine/atomic.h>
 
 #define HNC_PORT 5555

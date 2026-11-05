@@ -43,6 +43,7 @@ extern "C" void native_wifi_logf(int level, const char *fmt, ...);   // HoujiWif
 extern "C" void sheng_wifi_wake(void);   // HoujiWifi.cpp: the Wi-Fi thread sends the queued frame now
 extern "C" void houji_wifi_on_scan_done(void);
 extern "C" void houji_route_describe(uint32_t addr_be, unsigned int ifscope, char *out, size_t size);   // houji_route_probe.c
+extern "C" void houji_net_console_start(void);   // houji_net_console.c: LAN command channel once en0 has an address
 extern "C" void houji_wifi_on_connect_done(int result);
 extern "C" void houji_wifi_on_link_lost(int reason);
 
@@ -597,6 +598,5 @@ extern "C" void sheng_wifi_net_start(const uint8_t mac[6]) {
       ifnet_capabilities_enabled(ifp));
   // LAN command channel: same read-only command set as the CDC console,
   // once DHCP gives this interface an IPv4 address (houji_net_console.c).
-  extern "C" void houji_net_console_start(void);
   houji_net_console_start();
 }
