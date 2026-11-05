@@ -37,6 +37,7 @@ index 4427401..06abb0f 100644
  
 +bsd/dev/houji_debug.c			standard
 +bsd/dev/houji_usb_debug.c			standard
++bsd/dev/houji_net_console.c		standard
 +bsd/dev/houji_ram_upload.c		standard
 +bsd/dev/houji_upload_test_target.c	standard
 +bsd/dev/houji_route_probe.c		standard

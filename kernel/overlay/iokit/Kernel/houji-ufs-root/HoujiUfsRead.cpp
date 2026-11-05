@@ -493,6 +493,15 @@ static const char *setRecoveryBoot(void) {
   IOLog("HOUJI RECOVERY: BCB verified; no wipe arguments; reserved/A-B data preserved\n");
   return nullptr;
 }
+// The Wi-Fi command channel's "recovery" command: arm the exact no-wipe
+// recovery BCB from the running system, with the same read/modify/flush/
+// readback as the checkpoint path. Returns 0 only when the readback matches.
+extern "C" int houji_ufs_arm_recovery_bcb(void) {
+  initializeNativeFlags();
+  if(!gLogEnabled && !gRootEnabled)return ENXIO;
+  const char *why=setRecoveryBoot();
+  return why?EIO:0;
+}
 extern "C" void houji_ufs_checkpoint(const char *stage,unsigned stopId) {
   initializeNativeFlags();
   if(!gLogEnabled && !gRootEnabled)return;

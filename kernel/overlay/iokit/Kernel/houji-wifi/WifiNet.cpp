@@ -595,4 +595,8 @@ extern "C" void sheng_wifi_net_start(const uint8_t mac[6]) {
   { thread_t t = nullptr; if (kernel_thread_start(trafficLog, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t); }
   log(6, "wifi-net: en0 is up, hardware address %02x:%02x:%02x:%02x:%02x:%02x, capabilities 0x%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
       ifnet_capabilities_enabled(ifp));
+  // LAN command channel: same read-only command set as the CDC console,
+  // once DHCP gives this interface an IPv4 address (houji_net_console.c).
+  extern "C" void houji_net_console_start(void);
+  houji_net_console_start();
 }
