@@ -103,3 +103,11 @@ contended lock like mode 4 does) restores exactly the poll path the smooth
 pre-fork-era boots used. Lesson: on this driver, any recurring kernel-side
 poll of the GPU must use the try-lock/no-work path; the full quiesce is for
 teardown and diagnostics only.
+
+Verified after the fix (`979333b` added a 30 s display-counter report to the
+mode 1 worker): sustained continuous page-swipe windows present at up to
+~58 FPS (1732 presents in one 30 s window), unlock animations burst at
+hundreds of frames per window, and the idle lock screen is event-driven
+(0–19 per window) as expected. CPU load sits at 0–20 % with no thermal
+spikes, Wi-Fi on or off. Single-digit FPS is gone; the residual stutter
+matches the era's documented GPU state, not the regression.

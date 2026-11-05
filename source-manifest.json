@@ -1471,7 +1471,7 @@
     "checks/userland-logs.py": "b110c81f71c251760f957e7df3e029080e0ab55d2b508fe3edb6a706abb9557d",
     "docs/architecture.md": "9c2de00b4278933feca81c60936c58801e5e0ba611ca7c1c65232c092ef5a02d",
     "docs/battery.md": "fb5590ccd41d19165f06c6b72c47c894b92497284be9002445f4ca0d709a1e02",
-    "docs/desktop-regression-postmortem.md": "678d75075208a65c2f4c52c3403d4a3e4649aa89daf17ccfe5bd16207c5c641d",
+    "docs/desktop-regression-postmortem.md": "32132143e4ea43c3cba5ecd8726a42b5a5674019370ad2332bdb6ac0b1268179",
     "docs/development.md": "ec019ece54592b83c16647c5f21e8f4153588d438cbbab13a0c85954394f0f9a",
     "docs/device-tests.md": "85d987ac559f9ae27f9d6b08830717c2c6cf304af0935908583da1c29d62936c",
     "docs/device-tree.md": "c15c524fab6c71155b5301dc7181f2d7113ef911b4bb625a08ee4dbe48036525",
