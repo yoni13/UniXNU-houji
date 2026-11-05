@@ -1486,7 +1486,7 @@
     "docs/stock-power.md": "7749fe427f77207a983789b2e49ccf16fd70d3e8ffc05c52e77b4fca7dec1c82",
     "docs/system-apps.md": "8673c3642921c2c3b9c8e1dc5e32f79cb7c04056c4b1cdf318c423d05879ef32",
     "docs/upstream-features.md": "efffa81bfd15a4e833877054944a9305141935f2b166a55466b70740a970a6ae",
-    "docs/usb-reset-review.md": "88792d3fceb997fe1062fe7c0695edf75c29478f53bd9c169c0264f3f221da49",
+    "docs/usb-reset-review.md": "6b27af68c8734c94ec44996a44735e3eb00dfc269226500a75c53d0982053872",
     "graphics/bridge/Cargo.lock": "fc1cf7c099bbc0d23d0da7f9e2fa88785ca8c51e044881bb8b56cd27755ae0c5",
     "graphics/bridge/Cargo.toml": "d720dd14455db48d4eb10f0a5629004fd15945f3500e36a6805ee9a5f1c46bc6",
     "graphics/include/AdrenoConstants.h": "177b1fd388aba50cd878f40923ec8fdc1f13a6137b59f8ee35aecec8cd044413",
