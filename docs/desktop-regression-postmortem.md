@@ -138,3 +138,42 @@ windows, and the home screen sustained 543-601 presents per 5 s window —
 earlier "single digit"/30 FPS measurements were taken on a static lock
 screen whose wake/sleep cycling produced few frames; they measured the
 screen state, not the animation rate.
+
+## Follow-up 3: the keyboard geometry and texture limits were root-image state
+
+The `99beb10` keyboard/status-bar geometry and texture-limit changes are
+not kernel code: they live in `/usr/lib/HoujiKeyboardGeometry.dylib`
+(weak-linked into 189 APPL main executables) and in the rebuilt
+`NativeAdrenoMetal.bundle`. The 2026-11-04 root image that carried them
+was an offline-patched copy that no longer exists on disk; rebuilding
+the apps root from the `-sched` image silently dropped both. The
+keyboard dylib rebuilds from `tools/build-userland-compat.py` (a
+prebuilt, source-verified copy exists in the userland artifacts), the
+weak link is a plain `LC_LOAD_WEAK_DYLIB` in each executable's header
+padding (the apps are ad-hoc signed with no enforced page hashes, so
+the header patch does not invalidate anything), and the bundle needs
+`tools/build-metal.py` on the macOS CI.
+
+## Follow-up 4: the root image is now fully rebuilt from reproducible parts
+
+The Nov 4 root image (32 apps, registrar, keyboard geometry dylib,
+texture-limits Metal bundle) existed only as an offline-patched file that
+has since been lost. It is now rebuilt on the `-sched` base image with
+committed tooling, restoring every documented item:
+
+- 32 staged apps moved to `/Applications` and the one-shot registrar
+  (guestfs offline, same verification as `tools/restore-system-apps.py`).
+- `/usr/lib/HoujiKeyboardGeometry.dylib` installed and an
+  `LC_LOAD_WEAK_DYLIB` added to all 172 APPL main executables in the
+  header padding (`tools/root/install-keyboard-geometry.py`). The apps
+  are ad-hoc signed without enforced page hashes, so the patch does not
+  invalidate them. An earlier attempt wrote the dylib name offset as 8
+  instead of 24; the malformed entries were dropped and re-added
+  correctly, then verified by guestfs read-back and a lief parse.
+- `NativeAdrenoMetal.bundle` replaced with the CI build that includes
+  the `NativeDeviceLimits` texture-limits frontend
+  (`tools/root/install-metal-bundle.py`, `gpu.yml` artifact).
+
+Lesson: root-image state that is not reproducible from the repository
+does not exist. Every offline patch needs a committed installer and a
+built artifact, or a disk loss silently reverts user-visible fixes.
