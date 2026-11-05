@@ -114,7 +114,7 @@ static void hnc_serve(socket_t so)
         struct msghdr msg;
         bzero(&msg, sizeof(msg));
         mbuf_t m = NULL;
-        size_t got = 0;
+        size_t got = 65536;   /* max receive; sock_receivembuf requires nonzero */
         errno_t e = sock_receivembuf(so, &msg, &m, 0, &got);   /* blocking */
         if (e || !m) break;   /* EOF or error */
         for (mbuf_t c = m; c; c = mbuf_next(c)) {
