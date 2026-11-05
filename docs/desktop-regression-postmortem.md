@@ -111,3 +111,30 @@ hundreds of frames per window, and the idle lock screen is event-driven
 (0–19 per window) as expected. CPU load sits at 0–20 % with no thermal
 spikes, Wi-Fi on or off. Single-digit FPS is gone; the residual stutter
 matches the era's documented GPU state, not the regression.
+
+## Follow-up 2: the real 60 FPS regression — the mode 1 provider gate audit
+
+After the poll fix the desktop still ran at 21-40 ms frame gaps (half the
+era's 60 FPS). The decisive telemetry was the 5 s display-counter report
+added to the mode 1 worker: display callbacks were a steady 120/s (pacing
+fine), GPU submits matched presents exactly (GPU not queuing), and the
+hitch log showed the provider gate's audit phase consuming 14.2 of
+14.2 ms of gate time between frames. The provider gate ran a full
+`auditLive()` plus a table CRC on EVERY gate call in mode 1 — the
+pre-desktop strict path — while the 60 FPS era's mode 4 audits once per
+VM generation. Fixed by giving mode 1 the same once-per-generation
+policy (`4567d48`).
+
+Two supporting fixes landed with it: the coherence qualification now
+runs in mode 1 (`ace4b06`) so the WB fast path enables like the era, and
+an inconclusive trial (flaky dirty-line precondition, status 11) is
+retried and then cleaned up instead of falling into the stop/panic path
+that silently rebooted the phone mid-session (`49b3f2e`).
+
+Verified on hardware: a real unlock (swipe 600,2400 -> 600,200, screen
+on, home screen animating) presented 108 then 408 frames across its 5 s
+windows, and the home screen sustained 543-601 presents per 5 s window —
+108-120 FPS, vsync-limited, for over a minute of live rendering. The
+earlier "single digit"/30 FPS measurements were taken on a static lock
+screen whose wake/sleep cycling produced few frames; they measured the
+screen state, not the animation rate.
