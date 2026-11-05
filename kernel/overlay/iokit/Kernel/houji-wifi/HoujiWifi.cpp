@@ -502,7 +502,21 @@ void listScan() {
     IOFreeData(b, sizeof(nw_bss_info));
 }
 void runCommand(char *t) {
-    // "scan", "join SSID PASSWORD" (no password: an open network), "leave", "status"
+    // "scan", "leave", "status", "join SSID PASSWORD" (no password: an open
+    // network). The SSID may contain spaces: for join, everything between
+    // "join " and the LAST space is the SSID, and the last token is the
+    // password.
+    if (!strncmp(t, "join ", 5) && t[5]) {
+        char *p = t; while (*p == ' ') ++p;              // skip spaces after "join"
+        char *last = NULL;
+        for (char *q = p; *q; ++q) if (*q == ' ') { last = q; while (q[1] == ' ') ++q; }
+        char *pass = NULL; size_t ssid_len = strlen(p);
+        if (last) { *last = 0; pass = last + 1; ssid_len = (size_t)(last - p); }
+        const int r = nw_wifi_connect((const uint8_t *)p, ssid_len, nullptr, pass, pass ? strlen(pass) : 0);
+        wlog(5, "wifi: join '%.*s' (%s) requested: %d", (int)(ssid_len > 32 ? 32 : ssid_len), p, pass ? "WPA2" : "open", r);
+        bzero(t, sizeof gCommand.text);   // a password does not stay in memory
+        return;
+    }
     char *argv[3] = {}; unsigned argc = 0;
     for (char *p = t; *p && argc < 3;) {
         while (*p == ' ') *p++ = 0;
@@ -513,10 +527,7 @@ void runCommand(char *t) {
     }
     if (!argc) return;
     if (!strcmp(argv[0], "scan")) wlog(5, "wifi: scan requested: %d", nw_wifi_scan(nullptr, 0));
-    else if (!strcmp(argv[0], "join") && argc >= 2) {
-        const int r = nw_wifi_connect((const uint8_t *)argv[1], strlen(argv[1]), nullptr, argc == 3 ? argv[2] : nullptr, argc == 3 ? strlen(argv[2]) : 0);
-        wlog(5, "wifi: join '%s' (%s) requested: %d", argv[1], argc == 3 ? "WPA2" : "open", r);
-    } else if (!strcmp(argv[0], "leave")) {nw_wifi_disconnect(); wlog(5, "wifi: leave requested");}
+    else if (!strcmp(argv[0], "leave")) {nw_wifi_disconnect(); wlog(5, "wifi: leave requested");}
     else if (!strcmp(argv[0], "status")) {
         nw_wifi_status st; nw_wifi_status_get(&st);
         char ssid[33];
