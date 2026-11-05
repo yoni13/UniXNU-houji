@@ -110,7 +110,7 @@ static void houjiLiveDeadline(void*,wait_result_t){
 }
 static void houjiLiveWorker(void*,wait_result_t){
  thread_set_thread_name(current_thread(),"houji-gpu-owner");auto&l=gHoujiLive;uint64_t started=houjiSubmitNow(nullptr),busy_since=0,last_saved=UINT64_MAX,last_report=0,last_desktop_save=0,first_draw=0,first_fence=0,base_swaps=0,base_presents=0;unsigned checks=0,probe_state=0;
- if(l.mode>=3)houji_framebuffer_counts(&base_swaps,&base_presents);
+ if(l.mode>=1)houji_framebuffer_counts(&base_swaps,&base_presents);
  for(;;){
   IOSleep(l.mode==2?250:500);++checks;
   if(l.mode==2 && !(checks&3)){
@@ -154,7 +154,14 @@ static void houjiLiveWorker(void*,wait_result_t){
   }else if(l.mode==1){
    /* Persistent desktop mode: keep polling forever. Mode 1 never breaks on
     * the check counter; the hold-forever contract of the handoff includes
-    * this worker, so backboardd gets unlimited time to reach the GPU. */
+    * this worker, so backboardd gets unlimited time to reach the GPU.
+    * Every 30 s report the display swap/present counters so the desktop
+    * frame rate stays observable in the RAM log. */
+   uint64_t now=houjiSubmitNow(nullptr);
+   if(now-last_report>=30000000){
+    uint64_t swaps=0,presents=0;houji_framebuffer_counts(&swaps,&presents);last_report=now;
+    IOLog("HOUJI DESKTOP: mode=1 window-swaps=%llu window-presents=%llu total-swaps=%llu total-presents=%llu; actual display counters\n",swaps-base_swaps,presents-base_presents,swaps,presents);
+   }
   }else if(checks>=100)break;
  }
  houjiProviderPerfReport();native_adreno_provider_snapshot();IOLog("HOUJI LIVE LIFETIME: worker=%u mode=%u checks=%u elapsed-us=%llu probe-state=%u code=%u fence=%u/%u; original roots and all active BO retained\n",l.worker,l.mode,checks,houjiSubmitNow(nullptr)-started,probe_state,l.code,gHoujiSubmit.seq,gHoujiSubmit.observed);
