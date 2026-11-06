@@ -46,8 +46,8 @@ static bool read(Reading&r){
 /* Level -> percent of each domain's maximum. Rise as soon as a trigger is
  * reached; fall one level only 3 C below that level's trigger. */
 constexpr int trigger[]={0,700,750,800,850,900};
-constexpr unsigned bigPct[]={100,80,65,50,35,0};
-constexpr unsigned littlePct[]={100,100,100,80,50,0};
+constexpr unsigned bigPct[]={100,70,50,30,10,0};
+constexpr unsigned littlePct[]={100,90,70,50,25,0};
 constexpr unsigned levels=sizeof(trigger)/sizeof(trigger[0]);
 static unsigned level(unsigned cur,int hottest){
  unsigned want=0;while(want+1<levels && hottest>=trigger[want+1])++want;
