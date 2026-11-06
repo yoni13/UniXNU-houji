@@ -211,3 +211,48 @@ on the old root. The A/B in flight: the pre-apps `-sched` base image
 (same kernel) — stable points at the registrar/weak-link churn as the
 trigger, unstable points at an environmental or hardware-adjacent race
 the software cannot control.
+
+## Follow-up 6: the weak-link bisect — the load command itself kills the machine
+
+The hard reset at backboardd/SpringBoard's GPU-adjacent window was
+bisected across the root-image content. Each leg is a full verified
+restore of a 32 GiB image; the boot kernel was identical throughout
+(nodvfs build of 4537b9d).
+
+| Leg | Apps | Weak links | Dylib | Result |
+|-----|------|-----------|-------|--------|
+| Base `-sched` | no | no | no | stable |
+| Leg 2 | yes, pristine | no | no | stable (25+ min) |
+| Leg 3 | yes, pristine | no | present, unloaded | stable (14+ min) |
+| Leg 1 | yes | v1 (corrupted) | no | crash |
+| V2 | yes | v2 (byte-clean) | yes | crash at +57 s |
+
+Conclusions:
+
+1. The **`LC_LOAD_WEAK_DYLIB` load command itself is the trigger**.
+   The v2 patch was byte-clean — a 42-byte diff confined to the Mach-O
+   header padding (two count fields plus the 40-byte command), file
+   size unchanged, all commands walking correctly, verified by guestfs
+   read-back and a lief parse — and the boot still reset at ~57 s,
+   exactly like the corrupted v1. The dylib is exonerated: present but
+   unlinked (leg 3) the machine is stable for 14+ minutes.
+
+2. The first patcher (v1) was additionally **corrupting the binaries**
+   (269,621 differing bytes, file size +13 — a bytearray slice
+   assignment shifted the whole file). That masked the cleaner signal:
+   even a perfect header patch dies. Something in this iOS 16's dyld
+   (most plausibly the chained-fixups rebasing interacting with a
+   modified header page) hard-faults the machine at SpringBoard's
+   exec. The kernel logs nothing; the reset is silent.
+
+3. The Nov 4 era that shipped working weak links must have relied on
+   the full macOS `codesign` re-sign (which rewrites `__LINKEDIT` and
+   the fixup chain), not header patching. Reproducing it requires
+   running the patch and sign on macOS with real tooling
+   (`install_name_tool`/lief + `codesign --force`), not an offline
+   Linux byte patch.
+
+Current shipped state: leg 3 (apps + registrar + dylib present,
+unlinked). The keyboard/status-bar geometry is inert until the
+macOS-side patch-and-sign pipeline lands; the desktop, apps and 120 FPS
+rendering are stable.
