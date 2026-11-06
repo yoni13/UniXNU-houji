@@ -131,6 +131,14 @@ static void houjiLiveWorker(void*,wait_result_t){
   if(polled==kIOReturnBusy && l.mode>=1){
    if(!busy_since)busy_since=houjiSubmitNow(nullptr);
    if(houjiSubmitNow(nullptr)-busy_since>10000000)panic("HOUJI LIVE: provider call held gate over10s; all resources pinned, last progress saved, no-FS PSCI");
+  }else if(l.mode==1 && polled && polled!=kIOReturnNotReady){
+   /* Persistent desktop: a transient provider error must not end the session
+    * (mode 4's break-then-panic turns any single blip into a full reset, which
+    * a forever-session will eventually hit). Log it, back off for a second,
+    * and keep the desktop alive; the provider's own poisoned state still
+    * stops the session through its error paths. */
+   IOLog("HOUJI LIVE: transient provider error %x in mode 1; continuing\n",polled);
+   IOSleep(1000);
   }else {busy_since=0;if(polled){l.code=13;break;}}
   if(l.mode>=3){
    if(gHoujiDvfs.failed){l.code=16;break;}
