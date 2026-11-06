@@ -177,3 +177,37 @@ committed tooling, restoring every documented item:
 Lesson: root-image state that is not reproducible from the repository
 does not exist. Every offline patch needs a committed installer and a
 built artifact, or a disk loss silently reverts user-visible fixes.
+
+## Follow-up 5: the hard reset at backboardd's GPU open (open investigation)
+
+After the root-image rebuild, boots began resetting ~100% of the time at
+a consistent point: the CDC console appears ~25 s in, dies ~65-80 s in,
+and the phone lands in recovery with no kernel panic trace and no
+committed XNU log beyond the early boot checkpoints. The death moment in
+the console captures is backboardd's `IOAcceleratorES -> AGXAccelerator`
+matching — its first Metal device open.
+
+Variables eliminated by direct test: the Metal bundle (new CI build vs
+the Nov 1 build), the root content (keyboard dylib + weak links vs
+none), the kernel (fps-final 4567d48 through thermal 4537b9d), the GPU
+DVFS worker (disabled entirely), thermal caps (deepened; the "spikes"
+to 94.6 C fall back within one sample and the reset still occurs below
+critical with the caps biting), a complete power-off cycle, and
+idle-vs-active use. All 172 weak-linked executables were re-validated:
+Mach-O structure intact, correct name offset, lief-parseable.
+
+One 30+ minute stable session exists (fps-final2, kernel 4567d48, old
+root): 120 FPS sustained, the full stack working. It is the only boot
+that survived past the window, and nothing reproducible distinguishes
+it. The docs already track a related known issue ("repeated warm resets
+leave UEFI's GPU power handoff not ready before userland"), but a
+complete power-off did not change the outcome.
+
+The regression in crash RATE (flaky ~50% to ~100%) coincides with the
+new root: the one-shot app registrar runs its Launch Services rebuild
+(its 46-109 s window brackets the crash) with 172 weak-linked
+executables, and `lsd` is killed (sig 9) during it — `lsd` never died
+on the old root. The A/B in flight: the pre-apps `-sched` base image
+(same kernel) — stable points at the registrar/weak-link churn as the
+trigger, unstable points at an environmental or hardware-adjacent race
+the software cannot control.
