@@ -6,13 +6,15 @@
 #include "HoujiGpuGovernorPolicy.h"
 extern "C" uint64_t houji_dvfs_touch_time(void);
 extern "C" {extern volatile uint32_t houji_thermal_level;}
+extern "C" {extern volatile uint32_t houji_gpu_thermal_level;}
 /* GPU OPP cap by TSENS level: 903, 680, 578, 500, 366, 231 MHz. houji_gpu_maxlevel (default 12 = 903 MHz) bounds it;
  * 8 keeps 680 MHz, 5 restores the old fixed 500 MHz cap. */
 static unsigned houjiGpuCap(void){
  static unsigned maximum=0;
  if(!maximum){unsigned v=12;PE_parse_boot_argn("houji_gpu_maxlevel",&v,sizeof(v));maximum=v<1?1:v>HCO_COUNT?HCO_COUNT:v;}
  static const unsigned byLevel[]={12,8,6,5,3,1};
- unsigned level=__atomic_load_n(&houji_thermal_level,__ATOMIC_RELAXED);
+ static unsigned own=2;if(own==2){own=0;PE_parse_boot_argn("houji_gpu_thermal_own",&own,sizeof(own));own=own?1:0;}
+ unsigned level=__atomic_load_n(own?&houji_gpu_thermal_level:&houji_thermal_level,__ATOMIC_RELAXED);
  unsigned cap=byLevel[level<6?level:5];
  return cap<maximum?cap:maximum;
 }

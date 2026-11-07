@@ -11,6 +11,8 @@ extern "C" uint64_t houji_gpu_submit_activity(void);
 static uint64_t houjiTouchTime;
 /* Current TSENS level (HoujiThermal) for the GPU governor's cap. Starts at 2 (500 MHz GPU cap) until a real reading arrives. */
 extern "C" {volatile uint32_t houji_thermal_level=2;}
+/* Level from the GPU sensor alone, same triggers and hysteresis; houji_gpu_thermal_own=1 makes it the GPU OPP cap. */
+extern "C" {volatile uint32_t houji_gpu_thermal_level=2;}
 extern "C" void houji_dvfs_touch(void) {
  __atomic_store_n(&houjiTouchTime,mach_absolute_time(),__ATOMIC_RELAXED);
 }
@@ -113,8 +115,11 @@ static void worker(void*,wait_result_t){
     unsigned next=HoujiThermal::level(heatLevel,confirmed>-1000?confirmed:heat.hottest);
     if(next!=heatLevel)IOLog("HOUJI THERMAL LEVEL: %u->%u hottest=%d.%dC sensor=%u/%u cpu=%d.%dC gpu=%d.%dC\n",heatLevel,next,heat.hottest/10,heat.hottest%10,heat.hottestId>>4,heat.hottestId&15,heat.cpu/10,heat.cpu%10,heat.gpu/10,heat.gpu%10);
     heatLevel=next;__atomic_store_n(&houji_thermal_level,heatLevel,__ATOMIC_RELAXED);
+    {static unsigned gpuLevel=0;unsigned g=HoujiThermal::level(gpuLevel,heat.gpu);
+     if(g!=gpuLevel)IOLog("HOUJI GPU THERMAL LEVEL: %u->%u gpu=%d.%dC\n",gpuLevel,g,heat.gpu/10,heat.gpu%10);
+     gpuLevel=g;__atomic_store_n(&houji_gpu_thermal_level,gpuLevel,__ATOMIC_RELAXED);}
     if(heat.cpu>cpuMax)cpuMax=heat.cpu;if(heat.gpu>gpuMax)gpuMax=heat.gpu;if(heat.hottest>hotMax)hotMax=heat.hottest;
-   }else if(heatLevel<2){heatLevel=2;IOLog("HOUJI THERMAL: read failed valid=%u invalid=%u; level 2 CPU cap\n",heat.valid,heat.invalid);}
+   }else if(heatLevel<2){heatLevel=2;__atomic_store_n(&houji_gpu_thermal_level,2u,__ATOMIC_RELAXED);IOLog("HOUJI THERMAL: read failed valid=%u invalid=%u; level 2 CPU cap\n",heat.valid,heat.invalid);}
   }
   if(heatLevel>levelMax)levelMax=heatLevel;
   for(unsigned id=0;id<domains;id++){
