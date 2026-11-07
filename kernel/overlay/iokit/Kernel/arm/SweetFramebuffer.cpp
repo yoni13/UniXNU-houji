@@ -595,6 +595,12 @@ get32(const uint8_t *p, uint32_t off)
 static uint64_t houji_fb_interval_hist[7],houji_fb_anim_frames,houji_fb_anim_ticks,houji_fb_last_swap;
 extern "C" void native_adreno_hitch_snapshot(uint64_t out[16]);
 static uint32_t houji_fb_hitch_logged;
+/* Every SwapEnd interval in 0.5 ms units (254 = 127 ms or more), 255 before the first swap after a new touch; the mode 1
+ * worker prints the window's entries (HOUJI FRAMES) so single gestures can be read frame by frame. */
+static uint8_t houji_fb_frame_ring[4096];
+static uint32_t houji_fb_frame_head,houji_fb_frame_tail;
+extern "C" uint64_t houji_dvfs_touch_time(void);
+static void houjiFrameRingPut(uint8_t v){const uint32_t h=__atomic_load_n(&houji_fb_frame_head,__ATOMIC_RELAXED);houji_fb_frame_ring[h&4095]=v;__atomic_store_n(&houji_fb_frame_head,h+1,__ATOMIC_RELEASE);}
 /* SwapEnd is serialized per client; backboardd is the only one, so the previous snapshot needs no lock. */
 static void houjiNoteSwapInterval(void){
  const uint64_t now=mach_absolute_time(),last=__atomic_exchange_n(&houji_fb_last_swap,now,__ATOMIC_RELAXED);
@@ -604,13 +610,15 @@ static void houjiNoteSwapInterval(void){
  uint64_t ns=0;absolutetime_to_nanoseconds(now-last,&ns);const uint64_t ms10=ns/100000; /* 0.1 ms */
  static uint64_t previousWait;const uint64_t waitNow=__atomic_load_n(&houji_fb_wait_ticks,__ATOMIC_RELAXED);
  uint64_t waitNs=0;absolutetime_to_nanoseconds(waitNow-previousWait,&waitNs);previousWait=waitNow;
- if(ms10>=200 && ms10<500 && houji_fb_hitch_logged<40){
+ if(ms10>=200 && ms10<500 && houji_fb_hitch_logged<12){
   IOLog("HOUJI HITCH SWAP: gap-ms=%llu.%llu swapwait-us=%llu\n",ms10/10,ms10%10,waitNs/1000);
   ++houji_fb_hitch_logged;uint64_t d[16];for(unsigned i=0;i<16;i++)d[i]=snap[i]-previous[i];
   IOLog("HOUJI HITCH: gap-ms=%llu.%llu gate n=%llu us=%llu wait=%llu audit=%llu GPU level=%llu busy-us=%llu | map n=%llu us=%llu free n=%llu us=%llu submit n=%llu us=%llu alloc=%llu fence-wait-us=%llu full=%llu depth=%llu\n",
    ms10/10,ms10%10,d[0],d[1],d[2],d[3],snap[4],d[5],d[6],d[7],d[8],d[9],d[10],d[11],d[12],d[13],d[14],d[15]);
  }
  memcpy(previous,snap,sizeof(snap));
+ {static uint64_t seenTouch;const uint64_t touch=houji_dvfs_touch_time();if(touch!=seenTouch){seenTouch=touch;houjiFrameRingPut(255);}
+  houjiFrameRingPut((uint8_t)(ms10/5>254?254:ms10/5));}
  static const uint64_t edge[6]={100,140,200,250,360,500};
  unsigned b=0;while(b<6 && ms10>=edge[b])++b;
  __atomic_fetch_add(&houji_fb_interval_hist[b],1ull,__ATOMIC_RELAXED);
@@ -644,6 +652,13 @@ extern "C" void houji_framebuffer_pace_report(void)
    ns?(frames-prevFrames)*1000000000000ULL/ns:0,ns/1000000);
  for(unsigned i=0;i<7;i++)prevHist[i]=h[i];prevFrames=frames;prevTicks=ticks;
  houji_fb_hitch_logged=0;
+ {const uint32_t head=__atomic_load_n(&houji_fb_frame_head,__ATOMIC_ACQUIRE);uint32_t tail=houji_fb_frame_tail;
+  if(head-tail>4096)tail=head-4096;
+  bool moving=false;for(uint32_t i=tail;i!=head;i++){const uint8_t v=houji_fb_frame_ring[i&4095];if(v<100){moving=true;break;}}
+  if(moving){char line[2*96+1];unsigned n=0,part=0;
+   for(uint32_t i=tail;i!=head;i++){static const char hex[]="0123456789abcdef";const uint8_t v=houji_fb_frame_ring[i&4095];line[n++]=hex[v>>4];line[n++]=hex[v&15];
+    if(n==2*96 || i+1==head){line[n]=0;IOLog("HOUJI FRAMES: part=%u %s\n",part++,line);n=0;}}}
+  houji_fb_frame_tail=head;}
 }
 extern "C" void houji_framebuffer_counts(uint64_t *swaps, uint64_t *presents)
 {
