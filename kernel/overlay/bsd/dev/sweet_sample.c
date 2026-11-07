@@ -88,6 +88,71 @@ houji_list_proc(proc_t p, void *arg)
 }
 #endif
 
+/* USB console "prof NAME N": one burst of houji_prof_task (osfmk/kern/exception.c) on its own thread. */
+extern void houji_prof_task(const char *name, int pid, task_t task, unsigned samples);
+static struct { char name[32]; unsigned samples; task_t task; int pid; } houji_prof;
+static volatile uint32_t houji_prof_busy;
+static int
+houji_prof_find(proc_t p, __unused void *arg)
+{
+	char name[32];
+	proc_name(proc_pid(p), name, sizeof(name));
+	if (houji_prof.task == TASK_NULL && strcmp(name, houji_prof.name) == 0) {
+		task_t task = proc_task(p);
+		if (task != TASK_NULL) {
+			task_reference(task);
+			houji_prof.task = task;
+			houji_prof.pid = proc_pid(p);
+		}
+	}
+	return PROC_RETURNED;
+}
+static void
+houji_prof_thread(__unused void *arg, __unused wait_result_t wr)
+{
+	houji_prof_task(houji_prof.name, houji_prof.pid, houji_prof.task, houji_prof.samples);
+	task_deallocate(houji_prof.task);
+	houji_prof.task = TASK_NULL;
+	__atomic_store_n(&houji_prof_busy, 0u, __ATOMIC_RELEASE);
+	thread_terminate(current_thread());
+}
+void houji_prof_command(const char *args);
+void
+houji_prof_command(const char *args)
+{
+	unsigned expected = 0;
+	if (!__atomic_compare_exchange_n(&houji_prof_busy, &expected, 1u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+		printf("PRF busy\n");
+		return;
+	}
+	const char *space = strchr(args, ' ');
+	size_t n = space ? (size_t)(space - args) : strlen(args);
+	unsigned samples = 250;
+	if (space) {
+		samples = 0;
+		for (const char *c = space + 1; *c >= '0' && *c <= '9'; c++) samples = samples * 10 + (unsigned)(*c - '0');
+	}
+	if (n == 0 || n >= sizeof(houji_prof.name) || samples == 0 || samples > 2000) {
+		printf("PRF syntax: prof NAME [1..2000]\n");
+		__atomic_store_n(&houji_prof_busy, 0u, __ATOMIC_RELEASE);
+		return;
+	}
+	memcpy(houji_prof.name, args, n);
+	houji_prof.name[n] = 0;
+	houji_prof.samples = samples;
+	houji_prof.task = TASK_NULL;
+	proc_iterate(PROC_ALLPROCLIST, houji_prof_find, NULL, NULL, NULL);
+	thread_t thread;
+	if (houji_prof.task == TASK_NULL || kernel_thread_start(houji_prof_thread, NULL, &thread) != KERN_SUCCESS) {
+		printf("PRF %s not found\n", houji_prof.name);
+		if (houji_prof.task != TASK_NULL) task_deallocate(houji_prof.task);
+		houji_prof.task = TASK_NULL;
+		__atomic_store_n(&houji_prof_busy, 0u, __ATOMIC_RELEASE);
+		return;
+	}
+	thread_deallocate(thread);
+}
+
 static void
 sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
 {

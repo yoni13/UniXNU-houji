@@ -3504,7 +3504,7 @@ diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
 index 809dafa..a919f3f 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
-@@ -820,6 +820,225 @@ exception_triage(
+@@ -820,6 +820,289 @@ exception_triage(
  	return exception_triage_thread(exception, code, codeCnt, thread);
  }
  
@@ -3724,13 +3724,77 @@ index 809dafa..a919f3f 100644
 +	vm_map_deallocate(map);
 +	kfree_data(regs, sizeof(*regs) * MAX_SAMPLE_THREADS);
 +}
+++
++/*
++ * Burst profiler (houji USB console "prof NAME N"): every 2 ms, for each thread of the task that is runnable or running,
++ * print its saved user pc and a 6-frame backtrace. A thread executing user code on another CPU shows the state saved at
++ * its last kernel entry (interrupt or syscall), so this is a statistical sample of where runnable threads are.
++ */
++void houji_prof_task(const char *name, int pid, task_t task, unsigned samples);
 +
++void
++houji_prof_task(const char *name, int pid, task_t task, unsigned samples)
++{
++	enum { PROF_THREADS = 16 };
++	struct { uint64_t pc, lr, fp; unsigned index; } regs[PROF_THREADS];
++	vm_map_t map = get_task_map_reference(task);
++	uint64_t slide = 0, mh = 0;
++	vm_shared_region_t sr = vm_shared_region_get(task);
++	if (sr != NULL) {
++		slide = sr->sr_slide;
++		vm_shared_region_deallocate(sr);
++	}
++	if (map == VM_MAP_NULL) {
++		printf("PRF %s[%d] unavailable\n", name, pid);
++		return;
++	}
++	task_lock(task);
++	mh = task->mach_header_vm_address;
++	task_unlock(task);
++	printf("PRF BEGIN %s[%d] slide 0x%llx mh 0x%llx samples %u period-us 2000\n", name, pid, slide, mh, samples);
++	for (unsigned s = 0; s < samples; s++) {
++		unsigned count = 0, index = 0;
++		thread_t thread;
++		task_lock(task);
++		queue_iterate(&task->threads, thread, thread_t, task_threads) {
++			if (count < PROF_THREADS && (thread->state & TH_RUN) && !(thread->state & TH_IDLE)) {
++				arm_saved_state_t *ss = find_user_regs(thread);
++				if (ss != NULL && is_saved_state64(ss)) {
++					regs[count].pc = get_saved_state_pc(ss);
++					regs[count].lr = get_saved_state_lr(ss);
++					regs[count].fp = get_saved_state_fp(ss);
++					regs[count].index = index;
++					count++;
++				}
++			}
++			index++;
++		}
++		task_unlock(task);
++		for (unsigned i = 0; i < count; i++) {
++			char line[256];
++			uint64_t fp = regs[i].fp;
++			int n = snprintf(line, sizeof(line), "PRF %u t%u 0x%llx 0x%llx", s, regs[i].index, regs[i].pc, regs[i].lr);
++			for (int f = 0; f < 6 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; f++) {
++				uint64_t frame[2];
++				if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) break;
++				n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
++				if (frame[0] <= fp) break;
++				fp = frame[0];
++			}
++			printf("%s\n", line);
++		}
++		delay(2000);
++	}
++	printf("PRF END %s[%d]\n", name, pid);
++	vm_map_deallocate(map);
++}
+
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
 +
  kern_return_t
  bsd_exception(
  	exception_type_t        exception,
-@@ -910,3 +1129,12 @@ sys_perf_notify(thread_t thread, int pid)
+@@ -910,3 +1193,12 @@ sys_perf_notify(thread_t thread, int pid)
  
  	return ret;
  }

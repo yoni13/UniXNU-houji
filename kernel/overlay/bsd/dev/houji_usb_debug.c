@@ -468,6 +468,7 @@ static void command_line(void)
     }
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strcmp(u.command,"key power")) { sweet_hid_key(0,1); delay(120000); sweet_hid_key(0,0); }
+    else if (!strncmp(u.command,"prof ",5)) { extern void houji_prof_command(const char *); houji_prof_command(u.command+5); }
     else if (!strncmp(u.command,"camera ",7)) { extern void houji_camera_command(const char *); houji_camera_command(u.command+7); }
     else if (!strncmp(u.command,"screen ",7)) { extern void houji_screen_command(const char *); houji_screen_command(u.command+7); }
     else if (!strncmp(u.command,"type ",5)) { type_command(u.command+5); bzero(u.command,sizeof(u.command)); }
