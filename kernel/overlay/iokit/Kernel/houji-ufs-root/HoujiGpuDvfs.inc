@@ -48,7 +48,8 @@ extern "C" void houji_gpu_dvfs_tick(void){
   uint32_t enable=0,select=0;
   if(!houjiDvfsRead(0x3d7e100,&enable) || !houjiDvfsRead(0x3d7e104,&select) || enable!=1 || (select&255)!=32){v.bad=1;IOLog("HOUJI GPU DVFS: existing XO counter selection invalid; no vote changes\n");return;}
   v.last=now;v.lastBusy=busy;v.idleAt=now;v.historyAt=now;v.ready=1;
-  IOLog("HOUJI GPU OPP: 12 advertised factory levels 231..903 MHz; thermal cap now %u MHz (TSENS level %u), boot=500 MHz; SKU bin5/AB; firmware HFI votes, no PLL writes\n",hco_opp(houjiGpuCap())->khz/1000,houji_thermal_level);return;
+  {unsigned mhz=0;if(PE_parse_boot_argn("houji_gpu_touch_mhz",&mhz,sizeof(mhz)) && mhz>=231 && mhz<=903)houjiGpuTouchKhz=mhz*1000;}
+  IOLog("HOUJI GPU OPP: 12 advertised factory levels 231..903 MHz; thermal cap now %u MHz (TSENS level %u), boot=500 MHz; SKU bin5/AB; firmware HFI votes, no PLL writes; touch floor %u MHz\n",hco_opp(houjiGpuCap())->khz/1000,houji_thermal_level,houjiGpuTouchKhz/1000);return;
  }
  uint64_t us=now-v.last;if(us<16000)return;
  if(us>v.maxTickUs)v.maxTickUs=us;

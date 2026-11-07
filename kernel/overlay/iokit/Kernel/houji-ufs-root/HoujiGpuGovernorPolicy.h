@@ -3,6 +3,8 @@
 #define HOUJI_GPU_GOVERNOR_POLICY_H
 #include "HoujiGpuFactoryOpp.h"
 struct HoujiGpuGovernorPolicy {unsigned filtered,ready,low,quiet,reason;};
+/* Touch floor in kHz for the second after a touch; boot argument houji_gpu_touch_mhz sets it (default 680 MHz). */
+static unsigned houjiGpuTouchKhz=680000;
 /* Policy only: no clocks, voltages, hardware access or scheduler calls here.
  * About 55% utilisation leaves room for the next interactive frame. Rising
  * load acts immediately; four low samples precede a fall of at most two OPPs.
@@ -21,7 +23,7 @@ static inline unsigned houjiGpuChoose(struct HoujiGpuGovernorPolicy *p,
  /* Two or more queued jobs: the GPU is behind the render server; go straight to the thermal cap. */
  if(queued>=2)need=(uint64_t)houjiGpuOpps[cap-1].khz;
  unsigned want=hco_at_least(need,cap),floor=1;p->reason=1;
- if(touch){floor=hco_at_least(680000,cap);p->reason=2;}
+ if(touch){floor=hco_at_least(houjiGpuTouchKhz,cap);p->reason=2;}
  if(wake){unsigned f=hco_at_least(578000,cap);if(f>floor)floor=f;p->reason=3;}
  if(queued){unsigned f=hco_at_least(500000,cap);if(f>floor)floor=f;}
  if(want<floor)want=floor;
