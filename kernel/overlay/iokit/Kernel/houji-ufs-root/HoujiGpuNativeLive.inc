@@ -180,6 +180,10 @@ static void houjiLiveWorker(void*,wait_result_t){
     char opp[640];if(houji_gpu_dvfs_snapshot(opp,sizeof opp)){for(char *q=opp;*q;q++)if(*q=='\n'){*q=0;break;}IOLog("%s\n",opp);}
     IOLog("HOUJI DESKTOP PACE: display-callbacks=%llu; vsync notification count\n",(unsigned long long)houji_framebuffer_callback_count());
     houji_framebuffer_pace_report();
+    {static uint64_t lastWindow,lastBusy,lastAt903;const uint64_t w=gHoujiDvfs.windowNs,b=gHoujiDvfs.busyNs,a903=gHoujiDvfs.at[HCO_COUNT];
+     IOLog("HOUJI GPU UTIL: busy-permille=%llu busy-ms=%llu sampled-ms=%llu at903-ms=%llu; XO busy counter, all clients\n",
+      w>lastWindow?(b-lastBusy)*1000/(w-lastWindow):0,(b-lastBusy)/1000000,(w-lastWindow)/1000000,(a903-lastAt903)/1000000);
+     lastWindow=w;lastBusy=b;lastAt903=a903;}
     IOLog("HOUJI OVERLAP: overlapped=%llu full-gate=%llu depth-waits=%llu idle=%llu generation=%llu state=%llu guard=%llu\n",native_adreno_overlap_stats[0],native_adreno_overlap_stats[1],native_adreno_overlap_stats[2],native_adreno_overlap_stats[3],native_adreno_overlap_stats[4],native_adreno_overlap_stats[5],native_adreno_overlap_stats[6]);
     IOLog("HOUJI OVERLAP BO: calls=%llu maps-rebased=%llu rebase-refused=%llu\n",native_adreno_overlap_bo[0],native_adreno_overlap_bo[1],native_adreno_overlap_bo[2]);
     {static unsigned reports;if(!(++reports&3)){native_adreno_perf_report();houji_cpu_dvfs_history_report();}}
