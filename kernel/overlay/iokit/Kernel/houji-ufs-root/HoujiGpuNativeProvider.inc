@@ -102,7 +102,7 @@ extern "C" IOReturn native_adreno_board_quiesce(void){
    __atomic_fetch_add(&gHoujiGatePerf.audits,1ull,__ATOMIC_RELAXED);
   }
   gate.lap(2);
-  /* App launches map buffers nearly every frame, so this runs on most gates while an app opens: one GPU-table CRC, not two. */
+  /* App launches map buffers nearly every frame, so this runs on most gates while an app opens: GMU-table check only. */
   if(!houjiFullTablesRebaseGpu())return kIOReturnIOError;gate.lap(3);gate.lap(4);gHoujiProvider.audited_generation=generation;
  }
  a.phase=11;s.published=s.pending=0;s.iteration=s.seq+1;
