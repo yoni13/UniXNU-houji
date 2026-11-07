@@ -28,7 +28,7 @@ index 4b83160..f2d8bf8 100644
  # Directories for mig generated files
  #
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 4427401..06abb0f 100644
+index 4427401..e35e117 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
 @@ -103,7 +103,15 @@ bsd/dev/dtrace/fasttrap.c		optional config_dtrace
@@ -47,7 +47,7 @@ index 4427401..06abb0f 100644
  bsd/dev/mem.c				standard
  bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
-@@ -361,6 +367,9 @@ bsd/security/audit/audit_syscalls.c		standard
+@@ -361,6 +369,9 @@ bsd/security/audit/audit_syscalls.c		standard
  bsd/security/audit/audit_worker.c		optional config_audit
  
  bsd/pthread/pthread_shims.c		standard
@@ -57,7 +57,7 @@ index 4427401..06abb0f 100644
  bsd/pthread/pthread_priority.c		standard
  bsd/pthread/pthread_workqueue.c		standard
  
-@@ -378,6 +387,50 @@ bsd/kern/kern_core.c			optional config_coredump
+@@ -378,6 +389,50 @@ bsd/kern/kern_core.c			optional config_coredump
  bsd/kern/kern_credential.c		standard
  bsd/kern/kern_crossarch.c		standard
  bsd/kern/kern_cs.c			standard
@@ -108,7 +108,7 @@ index 4427401..06abb0f 100644
  bsd/kern/kern_csr.c			optional config_csr
  bsd/kern/kern_debug.c			standard
  bsd/kern/kern_symfile.c			standard
-@@ -594,3 +647,6 @@ bsd/skywalk/packet/packet_kern.c		optional skywalk
+@@ -594,3 +649,6 @@ bsd/skywalk/packet/packet_kern.c		optional skywalk
  bsd/skywalk/packet/pbufpool.c			optional skywalk
  bsd/skywalk/packet/pbufpool_kern.c		optional skywalk
  bsd/dev/cpu_copy_in_cksum_gen.c			optional skywalk
@@ -1847,9 +1847,10 @@ index d74c063..c64e952 100644
  #if defined(__i386__) || defined(__x86_64__)
  	IOService::waitForService(
 diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
+index 2613ab5..569344f 100644
 --- a/iokit/Kernel/IOUserClient.cpp
 +++ b/iokit/Kernel/IOUserClient.cpp
-@@ -2431,6 +2431,11 @@
+@@ -2431,6 +2431,11 @@ is_io_object_get_bundle_identifier(
  	return ret;
  }
  
@@ -1861,7 +1862,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  /* Routine io_object_conforms_to */
  kern_return_t
  is_io_object_conforms_to(
-@@ -2443,6 +2448,9 @@
+@@ -2443,6 +2448,9 @@ is_io_object_conforms_to(
  	}
  
  	*conforms = (NULL != object->metaCast( className ));
@@ -1871,7 +1872,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  
  	return kIOReturnSuccess;
  }
-@@ -2599,7 +2607,62 @@
+@@ -2599,7 +2607,62 @@ is_io_service_match_property_table_bin(
  	return internal_io_service_match_property_table(service, matching, matchingCnt, matches);
  }
  
@@ -1935,7 +1936,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  internal_io_service_get_matching_services(
  	mach_port_t main_port,
  	const char * matching,
-@@ -2619,7 +2682,23 @@
+@@ -2619,7 +2682,23 @@ internal_io_service_get_matching_services(
  
  	if ((dict = OSDynamicCast( OSDictionary, obj))) {
  		IOTaskRegistryCompatibilityMatching(current_task(), dict);
@@ -1960,7 +1961,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  		kr = kIOReturnSuccess;
  	} else {
  		kr = kIOReturnBadArgument;
-@@ -2704,6 +2783,13 @@
+@@ -2704,6 +2783,13 @@ internal_io_service_get_matching_service(
  		IOTaskRegistryCompatibilityMatching(current_task(), dict);
  		*service = IOService::copyMatchingService( dict );
  		kr = *service ? kIOReturnSuccess : kIOReturnNotFound;
@@ -1974,7 +1975,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  	} else {
  		kr = kIOReturnBadArgument;
  	}
-@@ -2807,6 +2893,14 @@
+@@ -2807,6 +2893,14 @@ internal_io_service_add_notification(
  			continue;
  		}
  		IOTaskRegistryCompatibilityMatching(current_task(), dict);
@@ -1989,7 +1990,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  
  		if ((sym == gIOPublishNotification)
  		    || (sym == gIOFirstPublishNotification)) {
-@@ -3274,6 +3368,15 @@
+@@ -3274,6 +3368,15 @@ is_io_registry_entry_from_path(
  	}
  
  	entry = IORegistryEntry::fromPath( path );
@@ -2005,7 +2006,27 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  
  	if (!entry && IOTaskRegistryCompatibility(current_task())) {
  		OSDictionary * matching;
-@@ -3994,7 +4097,11 @@
+@@ -3904,6 +4007,19 @@ is_io_registry_entry_get_property_bin_buf(
+ 		}
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* houji: backboardd's per-frame registry property lookups (profile: 22% of its render thread during app opens).
++	 * Every 128th lookup by backboardd: property, entry class, options, found or not. */
++	{
++		static uint32_t houji_regprop_calls;
++		char pname[32];
++		proc_selfname(pname, sizeof(pname));
++		if (strcmp(pname, "backboardd") == 0 && (__atomic_fetch_add(&houji_regprop_calls, 1, __ATOMIC_RELAXED) & 127) == 0) {
++			IOLog("HOUJI REGPROP: n=%u prop=%.48s entry=%.40s options=%x recursive-plane=%.16s found=%u\n",
++			    houji_regprop_calls, property_name, entry ? entry->getMetaClass()->getClassName() : "?", options, plane, obj != NULL);
++		}
++	}
++#endif
+ 	sym->release();
+ 	if (!obj) {
+ 		return err;
+@@ -3994,7 +4110,11 @@ is_io_registry_entry_set_properties
  		}
  #if CONFIG_MACF
  		else if (0 != mac_iokit_check_set_properties(kauth_cred_get(),
@@ -2018,7 +2039,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  			res = kIOReturnNotPermitted;
  		}
  #endif
-@@ -4083,6 +4190,14 @@
+@@ -4083,6 +4203,14 @@ is_io_registry_entry_get_child_iterator(
  
  	*iterator = IOUserIterator::withIterator(entry->getChildIterator(
  		    IORegistryEntry::getPlane( plane )));
@@ -2033,7 +2054,7 @@ diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
  
  	return kIOReturnSuccess;
  }
-@@ -4298,6 +4413,15 @@
+@@ -4298,6 +4426,15 @@ is_io_service_open_extended(
  #endif
  		res = service->newUserClient( owningTask, (void *) owningTask,
  		    connect_type, propertiesDict, &client );
@@ -2125,7 +2146,7 @@ index 5219fb0..6c48eb4 100644
  		dchar = xchar = rdBootVar[2];                                                   /* Get the actual device */
  		if ((xchar >= '0') && (xchar <= '9')) {
 diff --git a/iokit/conf/files b/iokit/conf/files
-index 5fb0a52..68a64fa 100644
+index 5fb0a52..3f0e013 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
 @@ -148,3 +148,51 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
@@ -3190,7 +3211,7 @@ index 133b07f..e01c124 100644
  
  /* I-Cache. */
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index c40c6ea..2b01a76 100644
+index c40c6ea..6c6252c 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
 @@ -32,6 +32,7 @@
@@ -3501,7 +3522,7 @@ index 0a00656..437adb1 100644
  	read_lbr();
  #endif
 diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
-index 809dafa..a919f3f 100644
+index 809dafa..9dff0af 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
 @@ -820,6 +820,289 @@ exception_triage(
@@ -3771,10 +3792,10 @@ index 809dafa..a919f3f 100644
 +		}
 +		task_unlock(task);
 +		for (unsigned i = 0; i < count; i++) {
-+			char line[256];
++			char line[480];
 +			uint64_t fp = regs[i].fp;
 +			int n = snprintf(line, sizeof(line), "PRF %u t%u 0x%llx 0x%llx", s, regs[i].index, regs[i].pc, regs[i].lr);
-+			for (int f = 0; f < 6 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; f++) {
++			for (int f = 0; f < 14 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; f++) {
 +				uint64_t frame[2];
 +				if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) break;
 +				n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
@@ -4302,7 +4323,7 @@ index 2927d4b..54edb01 100644
  
  	return kmem_get_nth_free_slot(meta, slot_idx, bitmap);
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..5d5ca9f 100644
+index 3ad743f..8709627 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -3,6 +3,7 @@
