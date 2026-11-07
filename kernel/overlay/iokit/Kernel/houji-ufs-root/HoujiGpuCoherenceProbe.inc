@@ -228,7 +228,8 @@ static void houjiCoherenceTrial(void) {
   if(!clean){
    p.active=0;p.phase=0;p.code=0;p.attempts=0;p.dirty=0;p.read_new=p.read_old=0;
    p.write_new=p.dram_new=0;p.direction=0;p.copies=0;p.command_mapped=0;p.unmapped=0;
-   p.handle=0;status=houjiCoherenceRun();
+   /* The failed attempt left the client in the trial phase (12); its precondition wants the idle client phase. */
+   p.handle=0;gHoujiApi.phase=10;status=houjiCoherenceRun();
   }else {IOLog("HOUJI COHERENCE: retry cleanup failed code=%u; not retrying\n",clean);break;}
  }
  IOLog("HOUJI COHERENCE: status=%u phase=%u io=%x attempts=%u dirty=%u/64 GPU-read=%u/%u CPU-write=%u DRAM-write=%u copies=%u unmapped=%u proof=%u; scratch=%u CPU-page=%u coherent-enabled=0\n",status,p.phase,p.code,p.attempts,p.dirty,p.read_new,p.read_old,p.write_new,p.dram_new,p.copies,p.unmapped,!status && p.pass,HoujiCoherenceBytes,HoujiCoherencePage);
