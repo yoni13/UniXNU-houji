@@ -1,5 +1,12 @@
 # Desktop regression post-mortem: 1.5 days lost to uncommitted UEFI flags
 
+> **Evidence correction:** This historical account contains earlier hypotheses
+> stated too confidently. In particular, the cause of the `backboardd` nil-path
+> exception, GPU resets, and frame-rate regression is not established. Present
+> counts and display callbacks are not measurements of panel FPS. The later
+> weak-link bisect is inconclusive. Do not use this document as proof that the
+> keyboard, 60 FPS, or reboot stability is fixed.
+
 2026-11-05. The iOS desktop (lock screen, SpringBoard, backboardd) worked on 2026-11-01
 images and failed on every later boot. This page records the actual causes so the same
 class of failure does not repeat.
@@ -212,7 +219,15 @@ on the old root. The A/B in flight: the pre-apps `-sched` base image
 trigger, unstable points at an environmental or hardware-adjacent race
 the software cannot control.
 
-## Follow-up 6: the weak-link bisect — the load command itself kills the machine
+## Follow-up 6: weak-link bisect — inconclusive observations
+
+**Correction:** Earlier versions of this document claimed the weak load
+command itself caused the resets and that the problem was solved. Those
+claims were not established by the tests. The linked and unlinked images
+also differ in signature validity and possible runtime loading of the dylib;
+the available boots do not isolate a cause. In particular, a dylib present
+but not loaded cannot establish whether its constructor is safe. No panel
+frame rate or long-term stability conclusion follows from callback counts.
 
 The hard reset at backboardd/SpringBoard's GPU-adjacent window was
 bisected across the root-image content. Each leg is a full verified
@@ -227,32 +242,47 @@ restore of a 32 GiB image; the boot kernel was identical throughout
 | Leg 1 | yes | v1 (corrupted) | no | crash |
 | V2 | yes | v2 (byte-clean) | yes | crash at +57 s |
 
-Conclusions:
+The v2 Calculator sample differed from a pristine copy in 42 bytes in the
+header and padding, but this does not establish that all patched executables
+were equivalent, correctly signed, or safe. Earlier claims about the cause
+of the v1 file-size difference, page-hash enforcement, and `codesign`
+rewriting fixup chains were not verified. The unlinked-dylib leg only tests
+the dylib's presence, not its execution.
 
-1. The **`LC_LOAD_WEAK_DYLIB` load command itself is the trigger**.
-   The v2 patch was byte-clean — a 42-byte diff confined to the Mach-O
-   header padding (two count fields plus the 40-byte command), file
-   size unchanged, all commands walking correctly, verified by guestfs
-   read-back and a lief parse — and the boot still reset at ~57 s,
-   exactly like the corrupted v1. The dylib is exonerated: present but
-   unlinked (leg 3) the machine is stable for 14+ minutes.
+The Nov 4 record describes weak-linking and ad-hoc re-signing while preserving
+entitlements. Reproduce and independently verify that procedure on macOS on
+private local copies before considering another device restore. The repository
+must not contain vendor binaries; do not publish them as public CI artifacts.
+Keyboard geometry, desktop performance, and reboot stability remain unverified.
 
-2. The first patcher (v1) was additionally **corrupting the binaries**
-   (269,621 differing bytes, file size +13 — a bytearray slice
-   assignment shifted the whole file). That masked the cleaner signal:
-   even a perfect header patch dies. Something in this iOS 16's dyld
-   (most plausibly the chained-fixups rebasing interacting with a
-   modified header page) hard-faults the machine at SpringBoard's
-   exec. The kernel logs nothing; the reset is silent.
+### Private macOS signing pass (2026-11-07)
 
-3. The Nov 4 era that shipped working weak links must have relied on
-   the full macOS `codesign` re-sign (which rewrites `__LINKEDIT` and
-   the fixup chain), not header patching. Reproducing it requires
-   running the patch and sign on macOS with real tooling
-   (`install_name_tool`/lief + `codesign --force`), not an offline
-   Linux byte patch.
+On a privately accessed macOS 15.8.2 / Xcode 16.4 host, 172 executables
+extracted from the offline `houji-root32-pristine-apps.hfsx` copy were patched
+with a weak load command in validated zero header padding, then ad-hoc signed
+with their existing identifiers and entitlements (including absence of an
+entitlement blob). Each passed `codesign --verify --strict`, a load-command
+inspection using `otool -l`, and a comparison of entitlement plist content
+before and after signing. The resulting private archive was transferred back
+with matching SHA-256. This is an offline result, not a device test; it does
+not establish that the keyboard hook loads, fixes geometry, or avoids resets.
+No vendor binaries from this pass belong in the public source repository.
 
-Current shipped state: leg 3 (apps + registrar + dylib present,
-unlinked). The keyboard/status-bar geometry is inert until the
-macOS-side patch-and-sign pipeline lands; the desktop, apps and 120 FPS
-rendering are stable.
+### Device result (2026-11-07)
+
+The macOS-signed executables were installed into a copy of the pristine-apps
+root (bytes, inode, owner and mode verified per file), restored to userdata
+(host and device SHA-256 matched over the full 32 GiB) and booted with
+`fps-final.img`. Observed:
+
+- No reset in 6+ minutes, past the ~57 s window where the Linux-patched images
+  reset. Only `driverkitd` (memory limit), `CommCenter` and one `mediaserverd`
+  crashed; none of the 172 re-signed apps did.
+- By visual inspection on the panel: keyboard full width and normal height,
+  status bar correctly placed, home-screen scrolling smooth.
+
+This is one boot. The dylib logs nothing, so the console does not prove it
+loaded; the geometry result is visual. Smoothness is a visual observation,
+not a measured panel frame rate. Compared with the failing v2 image, the
+difference is the macOS ad-hoc re-sign, which is consistent with, but does not
+prove, an invalid signature on the Linux-patched binaries as the reset cause.
