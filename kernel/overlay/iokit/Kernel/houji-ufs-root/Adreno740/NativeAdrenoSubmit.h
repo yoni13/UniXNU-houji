@@ -44,6 +44,8 @@ class NativeAdrenoSubmit final {
     NativeAdrenoSubmitStats stats_{};
     bool attached_=false,poisoned_=false;
     uint32_t audit_tick_=0;   /* submissions since attach; every eighth one audits its IB lines */
+    uint64_t light_generation_=0;   /* VM table generation at the previous submission (light prologue opt-in) */
+    bool light_generation_valid_=false;
     /* All methods are serialized by the issuer. Keep larger batches off the
      * kernel stack, as in the upstream 128-IB submit path. */
     uint64_t scratch_handles_[NativeAdrenoSubmitMaxBuffers]{};

@@ -101,6 +101,7 @@ static int houjiFullKeepLive(void*){return gHoujiLive.requested && gHoujiLive.re
 #include "HoujiGpuNativeProvider.inc"
 extern "C" uint64_t houji_framebuffer_callback_count(void);   // SweetFramebuffer.cpp: vsync notification count
 extern "C" void houji_framebuffer_pace_report(void);   // SweetFramebuffer.cpp: per-window SwapEnd interval histogram
+extern "C" {extern volatile uint32_t native_adreno_light_prologue;}   // NativeAdrenoSubmit.cpp: board opt-in for the light prologue
 #include "HoujiGpuCoherenceProbe.inc"
 #include "HoujiGpuProbeLog.inc"
 static void houjiLiveDeadline(void*,wait_result_t){
@@ -113,6 +114,8 @@ static void houjiLiveDeadline(void*,wait_result_t){
 static void houjiLiveWorker(void*,wait_result_t){
  thread_set_thread_name(current_thread(),"houji-gpu-owner");auto&l=gHoujiLive;uint64_t started=houjiSubmitNow(nullptr),busy_since=0,last_saved=UINT64_MAX,last_report=0,last_desktop_save=0,first_draw=0,first_fence=0,base_swaps=0,base_presents=0;unsigned checks=0,probe_state=0;
  if(l.mode>=1)houji_framebuffer_counts(&base_swaps,&base_presents);
+ {unsigned light=0;PE_parse_boot_argn("houji_gpu_light",&light,sizeof(light));
+  if(light){native_adreno_light_prologue=1;IOLog("HOUJI GPU LIGHT: light prologue when the VM tables are unchanged since the previous submission\n");}}
  for(;;){
   IOSleep(l.mode==2?250:500);++checks;
   if(l.mode==2 && !(checks&3)){

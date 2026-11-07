@@ -212,7 +212,11 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
     IOReturn status;
     {SubmitDiagScope measured(6);status=vm_->publishMapped();}
     /* Before invalidateTlb records the current tables: a change since the previous submission keeps the full prologue. */
-    ring_->requestLightPrologue(native_adreno_light_prologue && vm_->tlbCurrent());
+    /* Board opt-in (native_adreno_light_prologue): also light when no map or unmap happened since the previous submission
+     * on this VM. A changed generation keeps the full flush, invalidate and wait-for-idle, since freed GPU VAs are reused. */
+    {const uint64_t generation=vm_->generationNow();const bool unchanged=light_generation_valid_ && generation==light_generation_;
+     light_generation_=generation;light_generation_valid_=true;
+     ring_->requestLightPrologue(native_adreno_light_prologue && (vm_->tlbCurrent() || unchanged));}
     if(!status) {
         if(sample){PartScope part(3);(void)vm_->sampleWord(buffers[0].iova,&ignored,&after);}
         native_adreno_coherence[0]=native_adreno_coherence[0]+1;

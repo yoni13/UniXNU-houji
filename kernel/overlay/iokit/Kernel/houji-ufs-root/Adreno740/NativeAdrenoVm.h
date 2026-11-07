@@ -117,6 +117,8 @@ public:
     /* No table change since the last TLBIALL: maps fill only invalid leaves (never cached) and unmaps synchronize themselves, so
      * a further TLBIALL adds nothing. Any map/unmap advances the generation and makes the next submission invalidate again. */
     bool tlbCurrent() const {return tlb_valid_ && tableGeneration()==tlb_generation_;}
+    /* Table generation for callers that compare it between submissions (any map or unmap advances it). */
+    uint64_t generationNow() const {return tableGeneration();}
     /* Cleans and invalidates the CPU caches over every mapped BO (whole objects; imported ones through their physical pages), so
      * no CPU cache line can hold data the GPU should see or hide what it wrote. Lines are physically tagged, so this also reaches
      * lines a user mapping of the same pages left behind. int-070 runs it before every submission. */
