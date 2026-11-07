@@ -127,6 +127,28 @@ extern "C" IOReturn native_adreno_board_prepare_submit(void){
  IOReturn ready=gHoujiApi.submit.waitAll(&gHoujiApi.clock,0);
  return ready?ready:native_adreno_board_quiesce();
 }
+/* houji_gpu_overlap=N (default 0 = off): a submission may queue behind at most N-1 unfinished ones instead of waiting for an
+ * idle GPU, so the CPU prepares the next frame while the GPU runs the last. Only when nothing a full quiesce would verify has
+ * changed: the VM generation is the audited one, no VM transaction is open, and the previous submission was both published
+ * and written. Ring-word validation, publishMapped and the WPTR protocol still run for every submission. Unsupported means
+ * "use the full gate"; Timeout means the queue is at its depth. BO mutations never come here. */
+extern "C" {volatile uint64_t native_adreno_overlap_stats[3];}   /* [0] overlapped submits, [1] full-gate fallbacks, [2] depth waits */
+extern "C" IOReturn native_adreno_board_prepare_overlap(void){
+ static unsigned depth=UINT32_MAX;if(depth==UINT32_MAX){unsigned v=0;PE_parse_boot_argn("houji_gpu_overlap",&v,sizeof(v));depth=v>8?8:v;}
+ if(depth<2)return kIOReturnUnsupported;
+ if(!native_adreno_board_running() || !gHoujiVm.binding.state)return kIOReturnNotReady;
+ auto&a=gHoujiApi;auto&s=gHoujiSubmit;
+ if(!a.submit.outstanding() || gHoujiProvider.audited_generation!=gHoujiVm.binding.state->generation || s.published!=s.pending ||
+  !houjiVmIdle()){native_adreno_overlap_stats[1]=native_adreno_overlap_stats[1]+1;return kIOReturnUnsupported;}
+ const IOReturn room=a.submit.waitDepth(depth,&a.clock,0);
+ if(room==kIOReturnTimeout){native_adreno_overlap_stats[2]=native_adreno_overlap_stats[2]+1;return kIOReturnTimeout;}
+ if(room)return room;
+ if(!a.submit.outstanding()){native_adreno_overlap_stats[1]=native_adreno_overlap_stats[1]+1;return kIOReturnUnsupported;}
+ s.seq=s.ring.lastSubmitted();s.observed=s.ring.completedFence();
+ a.phase=11;s.published=s.pending=0;s.iteration=s.seq+1;
+ native_adreno_overlap_stats[0]=native_adreno_overlap_stats[0]+1;
+ return kIOReturnSuccess;
+}
 static bool houjiProviderTlbValue(uint64_t v){return native_adreno_board_running() && houjiApiInOperation() && (v>>48)==0x751 && (v&UINT64_C(0x0000ffffffffffff))>=0x10000 && (v&UINT64_C(0x0000ffffffffffff))<HOUJI_GPU_APERTURE/4096;}
 static int houjiProviderPublish(const volatile uint32_t*words,size_t bytes){
  auto&s=gHoujiSubmit;auto&p=gHoujiProvider;

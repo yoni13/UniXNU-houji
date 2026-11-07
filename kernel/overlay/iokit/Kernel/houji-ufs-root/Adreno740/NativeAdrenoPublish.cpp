@@ -27,6 +27,7 @@
 
 extern "C" IOReturn native_adreno_board_quiesce(void);
 extern "C" IOReturn native_adreno_board_prepare_submit(void);
+extern "C" IOReturn native_adreno_board_prepare_overlap(void);
 extern "C" void native_adreno_board_teardown_checkpoint(const char*,uint32_t,uint32_t);
 static_assert(__is_same(decltype(((IOUserClient*)nullptr)->removeMappingForDescriptor(nullptr)),IOMemoryMap*),"This integrated XNU uses raw OSPtr; map references require explicit release");
 extern "C" bool native_adreno_board_va_window(uint64_t,uint64_t);
@@ -574,7 +575,9 @@ static IOReturn nativeAdrenoRunGuarded(AGXDeviceUserClient *connection,uint32_t 
         else if(nativeAdrenoMutationOwner && nativeAdrenoMutationOwner!=&timing)status=kIOReturnTimeout;
         else {
             if(!nativeAdrenoSubmitMethod(method))nativeAdrenoMutationOwner=&timing;
-            status=native_adreno_board_prepare_submit();
+            // Submissions may queue behind unfinished GPU work when the board allows it (houji_gpu_overlap).
+            status=nativeAdrenoSubmitMethod(method)?native_adreno_board_prepare_overlap():kIOReturnUnsupported;
+            if(status==kIOReturnUnsupported)status=native_adreno_board_prepare_submit();
         }
         timing.lap(1);
         // BO mutations use the same zero-timeout readiness poll as submits.

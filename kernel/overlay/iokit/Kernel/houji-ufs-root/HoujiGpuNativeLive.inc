@@ -176,6 +176,7 @@ static void houjiLiveWorker(void*,wait_result_t){
     char opp[640];if(houji_gpu_dvfs_snapshot(opp,sizeof opp)){for(char *q=opp;*q;q++)if(*q=='\n'){*q=0;break;}IOLog("%s\n",opp);}
     IOLog("HOUJI DESKTOP PACE: display-callbacks=%llu; vsync notification count\n",(unsigned long long)houji_framebuffer_callback_count());
     houji_framebuffer_pace_report();
+    IOLog("HOUJI OVERLAP: overlapped=%llu full-gate=%llu depth-waits=%llu\n",native_adreno_overlap_stats[0],native_adreno_overlap_stats[1],native_adreno_overlap_stats[2]);
    }
   }else if(checks>=100)break;
  }
