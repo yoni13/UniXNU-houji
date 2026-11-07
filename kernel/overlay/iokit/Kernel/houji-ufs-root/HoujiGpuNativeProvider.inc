@@ -129,17 +129,18 @@ extern "C" IOReturn native_adreno_board_prepare_submit(void){
 }
 /* houji_gpu_overlap=N (default 0 = off): a submission may queue behind at most N-1 unfinished ones instead of waiting for an
  * idle GPU, so the CPU prepares the next frame while the GPU runs the last. Only when nothing a full quiesce would verify has
- * changed: the VM generation is the audited one, no VM transaction is open, and the previous submission was both published
+ * changed: the VM generation is the audited one (page tables only change in BO mutations, which hold the issuer lock and
+ * always take the full gate), the CP passes its guard, and the previous submission was both published
  * and written. Ring-word validation, publishMapped and the WPTR protocol still run for every submission. Unsupported means
  * "use the full gate"; Timeout means the queue is at its depth. BO mutations never come here. */
-extern "C" {volatile uint64_t native_adreno_overlap_stats[7];}   /* [0] overlapped, [1] full gate, [2] depth waits; full gate because [3] GPU idle [4] new VM generation [5] submission state [6] VM transaction */
+extern "C" {volatile uint64_t native_adreno_overlap_stats[7];}   /* [0] overlapped, [1] full gate, [2] depth waits; full gate because [3] GPU idle [4] new VM generation [5] submission state [6] CP guard */
 extern "C" IOReturn native_adreno_board_prepare_overlap(void){
  static unsigned depth=UINT32_MAX;if(depth==UINT32_MAX){unsigned v=0;PE_parse_boot_argn("houji_gpu_overlap",&v,sizeof(v));depth=v>8?8:v;}
  if(depth<2)return kIOReturnUnsupported;
  if(!native_adreno_board_running() || !gHoujiVm.binding.state)return kIOReturnNotReady;
  auto&a=gHoujiApi;auto&s=gHoujiSubmit;
  if(!a.submit.outstanding() || gHoujiProvider.audited_generation!=gHoujiVm.binding.state->generation || s.published!=s.pending ||
-  !houjiVmIdle()){
+  houjiSubmitGuard() || !s.adopted){
   const unsigned why=!a.submit.outstanding()?3:gHoujiProvider.audited_generation!=gHoujiVm.binding.state->generation?4:s.published!=s.pending?5:6;
   native_adreno_overlap_stats[why]=native_adreno_overlap_stats[why]+1;native_adreno_overlap_stats[1]=native_adreno_overlap_stats[1]+1;return kIOReturnUnsupported;}
  const IOReturn room=a.submit.waitDepth(depth,&a.clock,0);
