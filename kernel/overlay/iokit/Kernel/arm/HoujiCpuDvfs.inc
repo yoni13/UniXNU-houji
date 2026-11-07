@@ -29,6 +29,8 @@ struct Domain {
 static Domain d[domains];
 static bool started;
 static unsigned enabled;
+/* houji_thermal_spike=1: repeated single-sample spikes below the 80 C trigger stay ignored (app-launch hotspots), A/B only. */
+static unsigned spikePolicy;
 struct History {
  uint64_t upMs,us,boostUs,frameUs,maxTickUs;
  uint32_t core[8],request[4],stateMin[4],stateMax[4],throttled[4],changes[4];
@@ -104,7 +106,7 @@ static void worker(void*,wait_result_t){
     static uint32_t sample,spikeAt[3]={0,0,0};++sample;
     if(heatLevel+1<HoujiThermal::levels && heat.hottest>=HoujiThermal::trigger[heatLevel+1] && confirmed<HoujiThermal::trigger[heatLevel+1]){
      spikeAt[0]=spikeAt[1];spikeAt[1]=spikeAt[2];spikeAt[2]=sample;
-     if(spikeAt[0] && sample-spikeAt[0]<=42){confirmed=heat.hottest;++spikesActed;}
+     if(spikeAt[0] && sample-spikeAt[0]<=42 && !(spikePolicy && heat.hottest<HoujiThermal::trigger[3])){confirmed=heat.hottest;++spikesActed;}
      else ++spikesIgnored;
     }
     previous=heat.hottest;
@@ -148,7 +150,7 @@ static void worker(void*,wait_result_t){
  }
 }
 static void start(){
- if(started)return;started=true;PE_parse_boot_argn("houji_dvfs",&enabled,sizeof(enabled));
+ if(started)return;started=true;PE_parse_boot_argn("houji_dvfs",&enabled,sizeof(enabled));PE_parse_boot_argn("houji_thermal_spike",&spikePolicy,sizeof(spikePolicy));
  if(!(enabled&1))return;
  {char text[32]={};
   if(PE_parse_boot_arg_str("houji_cpuf",text,sizeof text)){
@@ -156,7 +158,7 @@ static void start(){
    while(*p && i<3){unsigned x=0;bool any=false;while(*p>='0'&&*p<='9'){x=x*10+unsigned(*p-'0');p++;any=true;}if(any&&x<=100)v[i]=x;i++;if(*p==',')p++;else break;}
    for(unsigned k=0;k<3;k++)houjiDvfsFloors[k]=v[k];
   }
-  IOLog("HOUJI CPU DVFS FLOORS: frame=%u%% touch=%u%% recent=%u%%\n",houjiDvfsFloors[0],houjiDvfsFloors[1],houjiDvfsFloors[2]);}
+  IOLog("HOUJI CPU DVFS FLOORS: frame=%u%% touch=%u%% recent=%u%% thermal-spike=%u\n",houjiDvfsFloors[0],houjiDvfsFloors[1],houjiDvfsFloors[2],spikePolicy);}
  for(unsigned id=0;id<domains;id++)if(!init(id)){IOLog("HOUJI CPU DVFS: domain=%u factory validation refused; no frequency writes\n",id);return;}
  for(unsigned id=0;id<domains;id++)if(!vote(id,d[id].cur)){IOLog("HOUJI CPU DVFS: initial readback refused domain=%u\n",id);return;}
  thread_t t;if(kernel_thread_start(worker,nullptr,&t)==KERN_SUCCESS)thread_deallocate(t);
