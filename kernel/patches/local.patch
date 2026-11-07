@@ -1847,7 +1847,7 @@ index d74c063..c64e952 100644
  #if defined(__i386__) || defined(__x86_64__)
  	IOService::waitForService(
 diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
-index 2613ab5..569344f 100644
+index 2613ab5..700fd36 100644
 --- a/iokit/Kernel/IOUserClient.cpp
 +++ b/iokit/Kernel/IOUserClient.cpp
 @@ -2431,6 +2431,11 @@ is_io_object_get_bundle_identifier(
@@ -2006,7 +2006,17 @@ index 2613ab5..569344f 100644
  
  	if (!entry && IOTaskRegistryCompatibility(current_task())) {
  		OSDictionary * matching;
-@@ -3904,6 +4007,19 @@ is_io_registry_entry_get_property_bin_buf(
+@@ -3860,6 +3963,9 @@ is_io_registry_entry_get_property_bin_buf(
+ 	const OSSymbol *    sym;
+ 
+ 	CHECK( IORegistryEntry, registry_entry, entry );
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	const uint64_t houji_regprop_began = mach_absolute_time();
++#endif
+ 
+ #if CONFIG_MACF
+ 	if (0 != mac_iokit_check_get_property(kauth_cred_get(), entry, property_name)) {
+@@ -3904,6 +4010,29 @@ is_io_registry_entry_get_property_bin_buf(
  		}
  	}
  
@@ -2017,16 +2027,26 @@ index 2613ab5..569344f 100644
 +		static uint32_t houji_regprop_calls;
 +		char pname[32];
 +		proc_selfname(pname, sizeof(pname));
-+		if (strcmp(pname, "backboardd") == 0 && (__atomic_fetch_add(&houji_regprop_calls, 1, __ATOMIC_RELAXED) & 127) == 0) {
-+			IOLog("HOUJI REGPROP: n=%u prop=%.48s entry=%.40s options=%x recursive-plane=%.16s found=%u\n",
-+			    houji_regprop_calls, property_name, entry ? entry->getMetaClass()->getClassName() : "?", options, plane, obj != NULL);
++		static uint64_t houji_regprop_ticks, houji_regprop_max;
++		if (strcmp(pname, "backboardd") == 0) {
++			const uint64_t spent = mach_absolute_time() - houji_regprop_began;
++			__atomic_fetch_add(&houji_regprop_ticks, spent, __ATOMIC_RELAXED);
++			if (spent > houji_regprop_max) houji_regprop_max = spent;
++			if ((__atomic_fetch_add(&houji_regprop_calls, 1, __ATOMIC_RELAXED) & 127) == 0) {
++				uint64_t total_ns = 0, max_ns = 0;
++				absolutetime_to_nanoseconds(__atomic_exchange_n(&houji_regprop_ticks, 0, __ATOMIC_RELAXED), &total_ns);
++				absolutetime_to_nanoseconds(houji_regprop_max, &max_ns);houji_regprop_max = 0;
++				IOLog("HOUJI REGPROP: n=%u prop=%.48s entry=%.40s options=%x recursive-plane=%.16s found=%u last128-total-us=%llu max-us=%llu\n",
++				    houji_regprop_calls, property_name, entry ? entry->getMetaClass()->getClassName() : "?", options, plane, obj != NULL,
++				    total_ns / 1000, max_ns / 1000);
++			}
 +		}
 +	}
 +#endif
  	sym->release();
  	if (!obj) {
  		return err;
-@@ -3994,7 +4110,11 @@ is_io_registry_entry_set_properties
+@@ -3994,7 +4123,11 @@ is_io_registry_entry_set_properties
  		}
  #if CONFIG_MACF
  		else if (0 != mac_iokit_check_set_properties(kauth_cred_get(),
@@ -2039,7 +2059,7 @@ index 2613ab5..569344f 100644
  			res = kIOReturnNotPermitted;
  		}
  #endif
-@@ -4083,6 +4203,14 @@ is_io_registry_entry_get_child_iterator(
+@@ -4083,6 +4216,14 @@ is_io_registry_entry_get_child_iterator(
  
  	*iterator = IOUserIterator::withIterator(entry->getChildIterator(
  		    IORegistryEntry::getPlane( plane )));
@@ -2054,7 +2074,7 @@ index 2613ab5..569344f 100644
  
  	return kIOReturnSuccess;
  }
-@@ -4298,6 +4426,15 @@ is_io_service_open_extended(
+@@ -4298,6 +4439,15 @@ is_io_service_open_extended(
  #endif
  		res = service->newUserClient( owningTask, (void *) owningTask,
  		    connect_type, propertiesDict, &client );
