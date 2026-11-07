@@ -3724,7 +3724,7 @@ index 809dafa..a919f3f 100644
 +	vm_map_deallocate(map);
 +	kfree_data(regs, sizeof(*regs) * MAX_SAMPLE_THREADS);
 +}
-++
++
 +/*
 + * Burst profiler (houji USB console "prof NAME N"): every 2 ms, for each thread of the task that is runnable or running,
 + * print its saved user pc and a 6-frame backtrace. A thread executing user code on another CPU shows the state saved at
