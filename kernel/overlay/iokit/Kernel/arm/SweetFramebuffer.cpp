@@ -630,6 +630,21 @@ extern "C" void houji_framebuffer_history_report(void) {
   IOLog("HOUJI DISPLAY HISTORY: sample=%u up-ms=%llu window-ms=%llu swaps=%llu presents=%llu copy-us=%llu max-us=%llu missed=%llu; CPU copy windows, not panel FPS\n",n,v[0],v[1],v[2],v[3],v[4],v[5],v[6]);
  }
 }
+/* Mode 1 desktop: SwapEnd interval histogram for the last window, and a fresh hitch-log allowance. Windows with no
+ * frames under 50 ms are skipped, so an idle desktop adds nothing to the log. */
+extern "C" void houji_framebuffer_pace_report(void)
+{
+ static uint64_t prevHist[7],prevFrames,prevTicks;uint64_t h[7],frames,ticks,ns=0;
+ for(unsigned i=0;i<7;i++)h[i]=__atomic_load_n(&houji_fb_interval_hist[i],__ATOMIC_RELAXED);
+ frames=__atomic_load_n(&houji_fb_anim_frames,__ATOMIC_RELAXED);ticks=__atomic_load_n(&houji_fb_anim_ticks,__ATOMIC_RELAXED);
+ absolutetime_to_nanoseconds(ticks-prevTicks,&ns);
+ if(frames!=prevFrames)
+  IOLog("HOUJI FRAME PACE: <10=%llu 10-14=%llu 14-20=%llu 20-25=%llu 25-36=%llu 36-50=%llu idle=%llu animating-fps-milli=%llu animating-ms=%llu; SwapEnd intervals this window\n",
+   h[0]-prevHist[0],h[1]-prevHist[1],h[2]-prevHist[2],h[3]-prevHist[3],h[4]-prevHist[4],h[5]-prevHist[5],h[6]-prevHist[6],
+   ns?(frames-prevFrames)*1000000000000ULL/ns:0,ns/1000000);
+ for(unsigned i=0;i<7;i++)prevHist[i]=h[i];prevFrames=frames;prevTicks=ticks;
+ houji_fb_hitch_logged=0;
+}
 extern "C" void houji_framebuffer_counts(uint64_t *swaps, uint64_t *presents)
 {
 	if (swaps) *swaps = __atomic_load_n(&sweet_fb_swap_count, __ATOMIC_RELAXED);
