@@ -152,6 +152,32 @@ extern "C" IOReturn native_adreno_board_prepare_overlap(void){
  native_adreno_overlap_stats[0]=native_adreno_overlap_stats[0]+1;
  return kIOReturnSuccess;
 }
+/* houji_gpu_overlap, BO side: BoAlloc, BoMap and BoCpuMap skip the idle wait under the same conditions as an overlapped
+ * submission. A map's new entries were invalid, so no running job can use them; frees, unmaps and imports keep the full
+ * gate. After a successful overlapped map the provider takes the new generation as audited (GMU table checked, GPU-table
+ * baseline marked stale), exactly as a full gate would before the next submission, minus the idle wait. */
+extern "C" {volatile uint64_t native_adreno_overlap_bo[3];}   /* [0] overlapped BO calls, [1] maps rebased, [2] rebase refusals */
+static uint64_t houjiOverlapBoGeneration;
+extern "C" IOReturn native_adreno_board_prepare_bo_overlap(uint32_t method){
+ if(method!=NativeAdrenoMethodBoAlloc && method!=NativeAdrenoMethodBoMap && method!=NativeAdrenoMethodBoCpuMap)return kIOReturnUnsupported;
+ static unsigned depth=UINT32_MAX;if(depth==UINT32_MAX){unsigned v=0;PE_parse_boot_argn("houji_gpu_overlap",&v,sizeof(v));depth=v;}
+ if(depth<2 || !native_adreno_board_running() || !gHoujiVm.binding.state)return kIOReturnUnsupported;
+ auto&a=gHoujiApi;auto&s=gHoujiSubmit;
+ if(!a.submit.outstanding() || gHoujiProvider.audited_generation!=gHoujiVm.binding.state->generation || s.published!=s.pending ||
+  houjiSubmitGuard() || !s.adopted)return kIOReturnUnsupported;
+ houjiOverlapBoGeneration=gHoujiVm.binding.state->generation;
+ houjiOverlapMapping=method==NativeAdrenoMethodBoMap;
+ native_adreno_overlap_bo[0]=native_adreno_overlap_bo[0]+1;
+ return kIOReturnSuccess;
+}
+extern "C" void native_adreno_board_finish_bo_overlap(uint32_t method,IOReturn status){
+ houjiOverlapMapping=false;
+ if(method!=NativeAdrenoMethodBoMap || status || !gHoujiVm.binding.state)return;
+ const uint64_t now=gHoujiVm.binding.state->generation;
+ if(gHoujiProvider.audited_generation!=houjiOverlapBoGeneration || now==houjiOverlapBoGeneration)return;
+ if(houjiFullTablesRebaseGpu()){gHoujiProvider.audited_generation=now;native_adreno_overlap_bo[1]=native_adreno_overlap_bo[1]+1;}
+ else native_adreno_overlap_bo[2]=native_adreno_overlap_bo[2]+1;
+}
 static bool houjiProviderTlbValue(uint64_t v){return native_adreno_board_running() && houjiApiInOperation() && (v>>48)==0x751 && (v&UINT64_C(0x0000ffffffffffff))>=0x10000 && (v&UINT64_C(0x0000ffffffffffff))<HOUJI_GPU_APERTURE/4096;}
 static int houjiProviderPublish(const volatile uint32_t*words,size_t bytes){
  auto&s=gHoujiSubmit;auto&p=gHoujiProvider;

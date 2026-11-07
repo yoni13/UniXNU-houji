@@ -28,6 +28,8 @@
 extern "C" IOReturn native_adreno_board_quiesce(void);
 extern "C" IOReturn native_adreno_board_prepare_submit(void);
 extern "C" IOReturn native_adreno_board_prepare_overlap(void);
+extern "C" IOReturn native_adreno_board_prepare_bo_overlap(uint32_t method);
+extern "C" void native_adreno_board_finish_bo_overlap(uint32_t method,IOReturn status);
 extern "C" void native_adreno_board_teardown_checkpoint(const char*,uint32_t,uint32_t);
 static_assert(__is_same(decltype(((IOUserClient*)nullptr)->removeMappingForDescriptor(nullptr)),IOMemoryMap*),"This integrated XNU uses raw OSPtr; map references require explicit release");
 extern "C" bool native_adreno_board_va_window(uint64_t,uint64_t);
@@ -565,6 +567,7 @@ static IOReturn nativeAdrenoRunGuarded(AGXDeviceUserClient *connection,uint32_t 
     IOReturn status;
     const uint64_t began=g.clock.now_us?g.clock.now_us(g.clock.cookie):0;
     for(;;) {
+        bool boOverlap=false;
         timing.lap(3);
         nativeAdrenoIssuerLock(__LINE__);
         timing.lap(0);
@@ -576,7 +579,8 @@ static IOReturn nativeAdrenoRunGuarded(AGXDeviceUserClient *connection,uint32_t 
         else {
             if(!nativeAdrenoSubmitMethod(method))nativeAdrenoMutationOwner=&timing;
             // Submissions may queue behind unfinished GPU work when the board allows it (houji_gpu_overlap).
-            status=nativeAdrenoSubmitMethod(method)?native_adreno_board_prepare_overlap():kIOReturnUnsupported;
+            status=nativeAdrenoSubmitMethod(method)?native_adreno_board_prepare_overlap():native_adreno_board_prepare_bo_overlap(method);
+            boOverlap=!status && !nativeAdrenoSubmitMethod(method);
             if(status==kIOReturnUnsupported)status=native_adreno_board_prepare_submit();
         }
         timing.lap(1);
@@ -610,6 +614,7 @@ static IOReturn nativeAdrenoRunGuarded(AGXDeviceUserClient *connection,uint32_t 
             } else status=connection->core_->dispatch(method,input,input_size,output,output_size,&g.clock);
         }
         timing.lap(2);
+        if(boOverlap)native_adreno_board_finish_bo_overlap(method,status);
         if(!status && nativeAdrenoSubmitMethod(method) && output && output_size==sizeof(NativeAdrenoAbiSubmitReply)) {
             const uint64_t fence=static_cast<const NativeAdrenoAbiSubmitReply*>(output)->fence;
             __atomic_store_n(&nativeAdrenoHintIssued,fence<=UINT32_MAX?(uint32_t)fence:0u,__ATOMIC_RELEASE);

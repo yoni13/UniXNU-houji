@@ -19,7 +19,10 @@ static bool houjiVmIdle(void){
   !houjiFullRaw32(0x3d02018,&rp) && !houjiFullRaw32(0x3d0201c,&wp) && rp==s.end && wp==s.end &&
   !houjiFullRaw32(0x3d00840,&status) && !(status&~1u) && !houjiFullRaw32(0x3d8ec30,&busy) && !(busy&(1u<<23));
 }
-static bool houjiVmIoLease(void){return ((gHoujiVm.active && gHoujiVm.in_update) || houjiApiInOperation()) && houjiVmIdle();}
+/* Set only while an overlapped BoMap (houji_gpu_overlap) runs under the issuer lock: its PTE publish, TLB invalidate and
+ * TLB sync may then proceed while the GPU still runs earlier jobs, which cannot use the new, previously invalid entries. */
+static bool houjiOverlapMapping;
+static bool houjiVmIoLease(void){return ((gHoujiVm.active && gHoujiVm.in_update) || houjiApiInOperation()) && (houjiOverlapMapping || houjiVmIdle());}
 static int houjiVmRead32(void*,size_t at,uint32_t*v){
  bool yes=houjiNativeSmmuRead32Offset(at);auto&g=gHoujiVm;g.last_offset=(uint32_t)at;g.last_op=1;
  if(!v || !yes || !houjiVmIoLease())return 1;int e=houjiFullRaw32(0x3da0000+(uint32_t)at,v);if(!e)g.last_value=*v;return e;

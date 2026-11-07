@@ -177,6 +177,7 @@ static void houjiLiveWorker(void*,wait_result_t){
     IOLog("HOUJI DESKTOP PACE: display-callbacks=%llu; vsync notification count\n",(unsigned long long)houji_framebuffer_callback_count());
     houji_framebuffer_pace_report();
     IOLog("HOUJI OVERLAP: overlapped=%llu full-gate=%llu depth-waits=%llu idle=%llu generation=%llu state=%llu guard=%llu\n",native_adreno_overlap_stats[0],native_adreno_overlap_stats[1],native_adreno_overlap_stats[2],native_adreno_overlap_stats[3],native_adreno_overlap_stats[4],native_adreno_overlap_stats[5],native_adreno_overlap_stats[6]);
+    IOLog("HOUJI OVERLAP BO: calls=%llu maps-rebased=%llu rebase-refused=%llu\n",native_adreno_overlap_bo[0],native_adreno_overlap_bo[1],native_adreno_overlap_bo[2]);
     {static unsigned reports;if(!(++reports&3))native_adreno_perf_report();}
    }
   }else if(checks>=100)break;
