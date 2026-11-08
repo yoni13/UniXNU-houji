@@ -26,9 +26,10 @@ struct partition {
     uint64_t cached;  // block in block (UINT64_MAX: none)
     uint8_t block[4096];
 };
-// Volume 0: the firmware partition (modem_a, else modem_b); volume 1 (houji): the modem's own, modemfirmware_a or _b ("modemfw:" paths).
-static struct partition *gParts[2];
-static FatVolume *gVolumes[2];
+// Volume 0: the firmware partition (modem_a, else modem_b); volume 1 (houji): the modem's own, modemfirmware_a or _b ("modemfw:" paths);
+// volume 2: the Bluetooth controller's, bluetooth_a or _b.
+static struct partition *gParts[3];
+static FatVolume *gVolumes[3];
 #define gVolume gVolumes[0]
 // The ADSP and Wi-Fi threads share the volume and its one-block cache.
 static lck_grp_t *gFwLockGroup;
@@ -75,7 +76,7 @@ static int partitionRead(void *context, uint64_t offset, void *to, size_t length
 
 static int mountVolume(unsigned which)
 {
-    static const char *const names[2][2] = {{"modem_a", "modem_b"}, {"modemfirmware_a", "modemfirmware_b"}};
+    static const char *const names[3][2] = {{"modem_a", "modem_b"}, {"modemfirmware_a", "modemfirmware_b"}, {"bluetooth_a", "bluetooth_b"}};
     if (gVolumes[which]) return 0;
     struct partition *p = IOMallocType(struct partition);
     FatVolume *v = IOMallocType(FatVolume);
@@ -173,11 +174,12 @@ void sheng_fw_close(void *handle)
 
 // A whole file of the firmware partition (such as "image/kiwi/amss20.bin"), read into memory from IOMallocData; the caller frees it with
 // IOFreeData(*data, *size). Returns 0, ENXIO while the storage driver is not up yet, ENOENT, EFBIG (over max bytes), ENOMEM or EIO.
-// which: 0 the firmware partition (modem_a), 1 the modem's (modemfirmware_a). An empty file comes back as one allocated byte, size 0.
+// which: 0 the firmware partition (modem_a), 1 the modem's (modemfirmware_a), 2 Bluetooth's (bluetooth_a). An empty file comes back as one
+// allocated byte, size 0.
 int houji_fw_file(unsigned which, const char *path, uint8_t **data, size_t *size, size_t max)
 {
     fwLock();
-    int rc = which > 1 ? EINVAL : mountVolume(which);
+    int rc = which > 2 ? EINVAL : mountVolume(which);
     FatFile file;
     if (!rc) {
         const int found = fat_open(gVolumes[which], path, &file);
