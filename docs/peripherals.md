@@ -23,12 +23,17 @@ Safari loading a page by name.
   after each join); a heartbeat HTT stats request crashed this firmware (removed).
 - USB console: `wifi scan | join SSID PASS | leave | status`; `type TEXT` (`\n` = Return) types through a virtual keyboard.
 
-## Bluetooth — on in iOS: Settings row, scanning (WCN7850 on QUP2 SE6 UART)
+## Bluetooth — working: pairing and connection verified (WCN7850 on QUP2 SE6 UART)
 `iokit/Kernel/houji-bt/HoujiBluetooth.cpp`, `houji_bt=1` (default off). USB console `bt probe`, `bt init` (without `houji_bt`),
 `bt stat`. Wiring from the SteamOS houji port: uart14 = QUPv3 wrapper 2 SE6 (`0x898000`), GPIO 24-27, BT_EN GPIO 17 on the WCN7850
 PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s until the controller answers).
 - Verified on the phone: Settings shows Bluetooth "On"; its page scans (HCI Inquiry repeated, Extended Inquiry Results and LE
-  advertising reports arrive); bluetoothd stays up ("Stack Did Start", "Power state changed: PoweredOn"). Pairing not yet tested.
+  advertising reports arrive); bluetoothd stays up ("Stack Did Start", "Power state changed: PoweredOn").
+- Verified pairing with a Linux PC (Intel AX210, BlueZ): it appears under Other Devices, Secure Simple Pairing with numeric
+  comparison (the same 6-digit code on both sides), bonded on both; after a reboot the phone reconnects with the stored key;
+  Settings lists it under My Devices as Connected; AVDTP opens an A2DP stream (AAC 44.1 kHz) and BlueZ creates the audio card.
+- Skywalk: the stand-in sandbox policy (`sweet_amfi.c`) now grants Skywalk privileges for their `com.apple.private.skywalk.*`
+  entitlements; before, `__nexus_register` failed with EPERM and bluetoothd crashed on a NULL channel when an A2DP stream opened.
 - Kernel: rampatch `image/hmtbtfw20.tlv` and NVM `image/hmtnv20.bin` from the stock `bluetooth_a` partition, 3.2 Mbaud, Qualcomm
   in-band sleep handled in the bridge; the received stream is framed by H4 lengths.
 - Published for iOS: IOService `bluetooth` (also /arm-io/bluetooth: `local-mac-address`, `transport-encoding` 1 = H4,
