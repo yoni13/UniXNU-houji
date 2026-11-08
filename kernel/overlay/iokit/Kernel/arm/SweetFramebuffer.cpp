@@ -296,7 +296,7 @@ public:
 	bool          fConsolePaused;
 	HoujiFrameQueue<HoujiDisplayFrame,8> fFrames;
 	/* GPU-sync and cached copies on by default, as every houji boot line sets them; the boot arguments still override. */
-	int           fGpuSync=1,fGpuCache=1,fImmediate=1;
+	int           fGpuSync=1,fGpuCache=1,fImmediate=1,fSwapLag=0;
 	uint32_t      fCacheLine=64;
 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
 	SweetSurface *fScanout;
@@ -397,6 +397,7 @@ AppleCLCD::start(IOService *provider)
 	PE_parse_boot_argn("houji_fb_immediate",&fImmediate,sizeof(fImmediate));
 	PE_parse_boot_argn("houji_fb_gpu_sync",&fGpuSync,sizeof(fGpuSync));
 	PE_parse_boot_argn("houji_fb_gpu_cache",&fGpuCache,sizeof(fGpuCache));
+	PE_parse_boot_argn("houji_fb_swap_lag",&fSwapLag,sizeof(fSwapLag));
 	uint64_t ctr=0;__asm__ volatile("mrs %0, ctr_el0":"=r"(ctr));
 	fCacheLine=4u<<((ctr>>16)&15);
 	if(fCacheLine<16 || fCacheLine>2048)fGpuCache=0;
@@ -815,11 +816,14 @@ AppleCLCD::waitSwap(uint32_t id,uint64_t timeoutRaw)
  IOLockLock(fLock);
  if(!id){if(!fFrames.count()){IOLockUnlock(fLock);return kIOReturnSuccess;}id=fFrames.latest();}
  bool blocked=false;
- while(!fFrames.complete(id) && mach_absolute_time()<deadline){
+ /* houji_fb_swap_lag=1: one frame in flight. The wait ends once the awaited frame is the only one queued, so the client
+  * encodes the next frame while this one's GPU work and copy finish. The queue still retains its surfaces until the copy. */
+ auto ready=[&]{return fFrames.complete(id) || (fSwapLag && fFrames.count()==1 && fFrames.contains(id));};
+ while(!ready() && mach_absolute_time()<deadline){
   if(!blocked){blocked=true;__atomic_fetch_add(&houji_fb_wait_blocked,1ull,__ATOMIC_RELAXED);}
   if(IOLockSleepDeadline(fLock,&fFrames,deadline,THREAD_ABORTSAFE)!=THREAD_AWAKENED)break;
  }
- bool done=fFrames.complete(id);IOLockUnlock(fLock);
+ bool done=ready();IOLockUnlock(fLock);
  if(blocked)__atomic_fetch_add(&houji_fb_wait_ticks,mach_absolute_time()-(deadline-ticks),__ATOMIC_RELAXED);
  if(!done)__atomic_fetch_add(&houji_fb_wait_timeout,1ull,__ATOMIC_RELAXED);
  return done?kIOReturnSuccess:kIOReturnTimeout;
