@@ -192,6 +192,16 @@ unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
         IODelay(50);
     }
 }
+// Whatever arrives within ms milliseconds, raw (then discarded)
+void rawDump(const char *what, unsigned ms) {
+    const uint64_t end = nowMs() + ms;
+    while (nowMs() < end) {pump(); IODelay(100);}
+    uint8_t b[48]; const unsigned n = ringCount() < sizeof b ? ringCount() : (unsigned)sizeof b;
+    for (unsigned i = 0; i < n; ++i) b[i] = ringAt(i);
+    IOLog("HOUJI BT: raw %s: %u bytes\n", what, ringCount());
+    if (n) dump("raw", b, n);
+    gTail = gHead;
+}
 bool sendCommand(uint16_t opcode, const uint8_t *params, uint8_t plen) {
     uint8_t pkt[4 + 255];
     pkt[0] = 1; pkt[1] = (uint8_t)opcode; pkt[2] = (uint8_t)(opcode >> 8); pkt[3] = plen;
@@ -217,9 +227,9 @@ int command(uint16_t opcode, const uint8_t *params, uint8_t plen, uint8_t *ret, 
     return -1;
 }
 // EDL (opcode 0xfc00) request with one sub-command byte: the reply's EDL data after {status, sub-command} into out
-int edl(uint8_t sub, uint8_t *out, unsigned room) {
+int edl(uint8_t sub, uint8_t *out, unsigned room, unsigned ms = 1000) {
     uint8_t r[260];
-    const int n = command(0xfc00, &sub, 1, r, sizeof r);
+    const int n = command(0xfc00, &sub, 1, r, sizeof r, ms);
     if (n < 2 || r[0] != 0 || r[1] != sub) {if (n > 0) dump("EDL reply", r, (unsigned)n); return -1;}
     const unsigned d = (unsigned)n - 2 < room ? (unsigned)n - 2 : room;
     memcpy(out, r + 2, d);
@@ -303,7 +313,7 @@ bool download(const char *name, const uint8_t *data, size_t size, unsigned mode)
         if (mode == 0 || last) {
             uint8_t r[16];
             const int rn = command(0xfc00, seg, (uint8_t)(n + 2), r, sizeof r, 2000);
-            if (rn < 2 || r[0] != 0) {IOLog("HOUJI BT: %s segment %u at %zu: reply %d %02x %02x\n", name, segments, done, rn, rn > 0 ? r[0] : 0, rn > 1 ? r[1] : 0); return false;}
+            if (rn < 2 || r[0] != 0 || r[1] != 0x1e) {IOLog("HOUJI BT: %s segment %u at %zu: reply %d %02x %02x\n", name, segments, done, rn, rn > 0 ? r[0] : 0, rn > 1 ? r[1] : 0); return false;}
         } else if (!sendCommand(0xfc00, seg, (uint8_t)(n + 2))) {IOLog("HOUJI BT: %s segment %u not sent\n", name, segments); return false;}
         done += n; segments++;
     }
@@ -359,7 +369,7 @@ bool bringUp() {
     IOSleep(10);
     bs[0] = 10;
     uint8_t b[8] = {};
-    n = edl(0x23, b, sizeof b);   // {length, id high, id low}
+    n = edl(0x23, b, sizeof b, 3000);   // {length, id high, id low}
     const unsigned board = n >= 3 ? (unsigned)(b[1] << 8 | b[2]) : 0;
     bs[6] = (int32_t)board;
     char path[40];
@@ -373,7 +383,14 @@ bool bringUp() {
     IOFreeData(fw, fwSize);
     if (!nvmOk) {bs[0] = -10; IOLog("HOUJI BT: NVM %s\n", patched ? "download failed" : "tags 2/17/27 not found"); return false;}
     bs[0] = 11;
+    rawDump("after the NVM", 300);
     uint8_t r[260];
+    if (command(0x0c03, nullptr, 0, r, sizeof r) < 1) {
+        IOLog("HOUJI BT: no HCI_Reset reply at 3.2 Mbaud; trying 115200\n");
+        readStop(); seClock(384, 15625); setDivider(7372800u / (115200u * gSampling)); gHead = gTail = 0; readStart();
+        if (command(0x0c03, nullptr, 0, r, sizeof r) >= 1) {bs[5] = 115200; IOLog("HOUJI BT: the controller is at 115200 after the NVM\n");}
+        else rawDump("at 115200", 300);
+    }
     static const uint8_t noLogs[] = {0x14, 0x00};
     if (command(0xfc17, noLogs, sizeof noLogs, r, sizeof r) < 1) IOLog("HOUJI BT: logging off: no reply\n");
     n = command(0x0c03, nullptr, 0, r, sizeof r);
