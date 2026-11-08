@@ -28,6 +28,7 @@
 extern "C" IOReturn native_adreno_board_quiesce(void);
 extern "C" IOReturn native_adreno_board_prepare_submit(void);
 extern "C" IOReturn native_adreno_board_prepare_overlap(void);
+extern "C" void houji_frame_note_submit(void);
 extern "C" IOReturn native_adreno_board_prepare_bo_overlap(uint32_t method);
 extern "C" void native_adreno_board_finish_bo_overlap(uint32_t method,IOReturn status);
 extern "C" void native_adreno_board_teardown_checkpoint(const char*,uint32_t,uint32_t);
@@ -618,6 +619,7 @@ static IOReturn nativeAdrenoRunGuarded(AGXDeviceUserClient *connection,uint32_t 
         if(!status && nativeAdrenoSubmitMethod(method) && output && output_size==sizeof(NativeAdrenoAbiSubmitReply)) {
             const uint64_t fence=static_cast<const NativeAdrenoAbiSubmitReply*>(output)->fence;
             __atomic_store_n(&nativeAdrenoHintIssued,fence<=UINT32_MAX?(uint32_t)fence:0u,__ATOMIC_RELEASE);
+            if(!strncmp(connection->name_,"backboardd",sizeof(connection->name_)))houji_frame_note_submit();
             nativeAdrenoIssuerTrace.subject(fence);
         }
         if(method<20) {

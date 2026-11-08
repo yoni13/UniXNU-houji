@@ -601,9 +601,33 @@ static uint8_t houji_fb_frame_ring[4096];
 static uint32_t houji_fb_frame_head,houji_fb_frame_tail;
 extern "C" uint64_t houji_dvfs_touch_time(void);
 static void houjiFrameRingPut(uint8_t v){const uint32_t h=__atomic_load_n(&houji_fb_frame_head,__ATOMIC_RELAXED);houji_fb_frame_ring[h&4095]=v;__atomic_store_n(&houji_fb_frame_head,h+1,__ATOMIC_RELEASE);}
+/* Frame stages for backboardd (houji_frame_note_submit from the GPU submit path, SwapEnd here): per frame 4 bytes in 0.25 ms
+ * units, capped at 255: vsync notification -> first submit (render-server CPU before GPU work), first -> last submit,
+ * last submit -> SwapEnd, number of submits. 255,255,255,255 marks a touch-down. Printed as HOUJI FSTAGE. */
+static uint8_t houji_fs_ring[4096][4];
+static uint32_t houji_fs_head,houji_fs_tail,houji_fs_submits;
+static uint64_t houji_fs_first,houji_fs_last,houji_fs_vsync;
+extern "C" void houji_frame_note_submit(void){
+ const uint64_t now=mach_absolute_time();
+ if(!__atomic_load_n(&houji_fs_submits,__ATOMIC_RELAXED)){houji_fs_first=now;houji_fs_vsync=__atomic_load_n(&houji_fb_last_notify_at,__ATOMIC_RELAXED);}
+ houji_fs_last=now;__atomic_fetch_add(&houji_fs_submits,1u,__ATOMIC_RELAXED);
+}
+static uint8_t houjiQuarterMs(uint64_t ticks){uint64_t ns=0;absolutetime_to_nanoseconds(ticks,&ns);ns/=250000;return (uint8_t)(ns>254?254:ns);}
+static void houjiFrameStageAtSwap(uint64_t now){
+ static uint64_t seenTouch;const uint64_t touch=houji_dvfs_touch_time();
+ uint32_t h=houji_fs_head;
+ if(touch!=seenTouch){seenTouch=touch;for(int i=0;i<4;i++)houji_fs_ring[h&4095][i]=255;h++;}
+ const uint32_t n=__atomic_exchange_n(&houji_fs_submits,0u,__ATOMIC_RELAXED);
+ uint8_t *r=houji_fs_ring[h&4095];
+ if(n){r[0]=houji_fs_vsync && houji_fs_first>=houji_fs_vsync?houjiQuarterMs(houji_fs_first-houji_fs_vsync):254;r[1]=houjiQuarterMs(houji_fs_last-houji_fs_first);r[2]=now>=houji_fs_last?houjiQuarterMs(now-houji_fs_last):0;}
+ else{r[0]=r[1]=r[2]=0;}
+ r[3]=(uint8_t)(n>254?254:n);
+ __atomic_store_n(&houji_fs_head,h+1,__ATOMIC_RELEASE);
+}
 /* SwapEnd is serialized per client; backboardd is the only one, so the previous snapshot needs no lock. */
 static void houjiNoteSwapInterval(void){
  const uint64_t now=mach_absolute_time(),last=__atomic_exchange_n(&houji_fb_last_swap,now,__ATOMIC_RELAXED);
+ houjiFrameStageAtSwap(now);
  static uint64_t previous[16];uint64_t snap[16];
  native_adreno_hitch_snapshot(snap);
  if(!last){memcpy(previous,snap,sizeof(snap));return;}
@@ -659,6 +683,11 @@ extern "C" void houji_framebuffer_pace_report(void)
    for(uint32_t i=tail;i!=head;i++){static const char hex[]="0123456789abcdef";const uint8_t v=houji_fb_frame_ring[i&4095];line[n++]=hex[v>>4];line[n++]=hex[v&15];
     if(n==2*96 || i+1==head){line[n]=0;IOLog("HOUJI FRAMES: part=%u %s\n",part++,line);n=0;}}}
   houji_fb_frame_tail=head;}
+ {const uint32_t head=__atomic_load_n(&houji_fs_head,__ATOMIC_ACQUIRE);uint32_t tail=houji_fs_tail;if(head-tail>4096)tail=head-4096;
+  if(head-tail>20){char line[2*4*40+1];unsigned n=0,part=0;static const char hex[]="0123456789abcdef";
+   for(uint32_t i=tail;i!=head;i++){for(int k=0;k<4;k++){const uint8_t v=houji_fs_ring[i&4095][k];line[n++]=hex[v>>4];line[n++]=hex[v&15];}
+    if(n==2*4*40 || i+1==head){line[n]=0;IOLog("HOUJI FSTAGE: part=%u %s\n",part++,line);n=0;}}}
+  houji_fs_tail=head;}
 }
 extern "C" void houji_framebuffer_counts(uint64_t *swaps, uint64_t *presents)
 {
