@@ -527,7 +527,10 @@ void clientBytes(const uint8_t *p, size_t n) {
                 continue;
             }
             if (gTxAsm[0] == 1 && (opcode >> 10) == 0x3f) {
-                const uint8_t done[] = {0x04, 0x0e, 0x04, 0x01, gTxAsm[1], gTxAsm[2], 0x00};
+                // Success and 32 zero bytes of return parameters: bluetoothd's Broadcom parsers read a few fields and assert that they
+                // are there (bcm_vsc.c). 0xfd48 creates a multi-advertising instance: its number, 1.
+                uint8_t done[7 + 32] = {0x04, 0x0e, 4 + 32, 0x01, gTxAsm[1], gTxAsm[2], 0x00};
+                if (opcode == 0xfd48) done[7] = 1;
                 if (gVendorLogged++ < 200) IOLog("HOUJI BT: vendor command %04x (%u bytes) answered here\n", opcode, gTxAsm[3]);
                 deliver(done, sizeof done);
                 gTxHave = 0;
