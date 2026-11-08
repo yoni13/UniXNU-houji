@@ -28,7 +28,9 @@ int fat_mount(FatVolume *v, uint64_t size, FatRead read, void *context)
         return FatNotFat;
     const uint64_t root_sectors = ((uint64_t)root * 32 + bps - 1) / bps;
     const uint64_t data_sector = reserved + (uint64_t)fats * fat_sectors + root_sectors;
-    if (total <= data_sector || (uint64_t)total * bps > size) return FatNotFat;
+    /* The volume may claim more sectors than its partition holds (houji's 4 MiB bluetooth partition says 64 MiB, and Linux vfat mounts
+     * it): only the tables and the root must fit; every read is still checked against the real size. */
+    if (total <= data_sector || data_sector * bps >= size) return FatNotFat;
     const uint64_t clusters = (total - data_sector) / spc;
     if (clusters < 4085) return FatNotFat;  /* FAT12 */
     v->fat32 = clusters >= 65525;

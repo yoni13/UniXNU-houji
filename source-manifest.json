@@ -1826,7 +1826,7 @@
     "kernel/overlay/iokit/Kernel/arm/hid/SweetHID.cpp": "71df063effdaff42e2297b101aed99c56108477092fcb01bc8a92d491e8e56e6",
     "kernel/overlay/iokit/Kernel/arm/hid/ev_keymap.h": "42ccb8c878af69187731b57fa9e13981439d9a41ddb1a0fd82bcd4db6a0a56ac",
     "kernel/overlay/iokit/Kernel/houji-adsp/AdspFirmware.c": "0a550ce6d1afdfe31af9c23784afa34ef8ee7bec200f38a5b9e916c49283eafd",
-    "kernel/overlay/iokit/Kernel/houji-adsp/FatVolume.c": "6e00c31149c4d52733bce0eea360e2db3647c32f01f14ae7c4550ac641f62779",
+    "kernel/overlay/iokit/Kernel/houji-adsp/FatVolume.c": "2fc5645cd99fc12f6f29545dc0ee17df0214e391662db947ab8b98205c0d49ac",
     "kernel/overlay/iokit/Kernel/houji-adsp/FatVolume.h": "a438bcc5519bacfbfa6b6c55646fe4a3f7787f37a50c52103d8094c6871b67e7",
     "kernel/overlay/iokit/Kernel/houji-adsp/HoujiAdsp.cpp": "1ef80a5f78432c53d5ddd92318a8b933778f16743a731232470d48ef7848598c",
     "kernel/overlay/iokit/Kernel/houji-adsp/LICENSE.UniXNU-sheng": "5b1d3d911103cb0f41641ec0964c5ac1f7e229f57aa072b6ac38bae913a1307b",
