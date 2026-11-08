@@ -156,7 +156,19 @@ void pump() {
 unsigned ringCount() {return gHead - gTail;}
 uint8_t ringAt(unsigned i) {return gRing[(gTail + i) % sizeof gRing];}
 
-IOLock *gTxLock, *gRxLock;
+IOLock *gTxLock, *gRxLock, *gUartLock;   // client packets in order; the receive ring; one UART transfer at a time
+// Qualcomm in-band sleep (IBS, hci_qca.c): at a packet boundary 0xfd = wake indication (answered 0xfc), 0xfc = wake acknowledgement,
+// 0xfe = sleep indication. The controller sends them although the NVM leaves software IBS off.
+volatile bool gCtlAsleep;
+volatile uint32_t gWakeAcks;
+unsigned gIbsIn[3];
+bool uartWrite(const uint8_t *p, unsigned n);
+bool uartSend(const uint8_t *p, unsigned n) {
+    if (gUartLock) IOLockLock(gUartLock);
+    const bool ok = uartWrite(p, n);
+    if (gUartLock) IOLockUnlock(gUartLock);
+    return ok;
+}
 // Receive while transmitting; at run time the receive thread pumps too, so under its lock
 void pumpSafe() {if (gRxLock) {IOLockLock(gRxLock); pump(); IOLockUnlock(gRxLock);} else pump();}
 // Transmit n bytes as one GENI transfer, feeding the TX FIFO as it drains (pumping RX meanwhile).
@@ -469,6 +481,7 @@ volatile bool gCtlUp;
 unsigned gLogged;          // packets logged so far (the first 200 in each direction)
 uint8_t gTxAsm[1100]; unsigned gTxHave;   // H4 packet being assembled from the client
 unsigned gVendorLogged;
+void deliver(const uint8_t *p, unsigned n);
 volatile uint64_t gRxLoops, gRxBytes, gTxBytes;
 
 // Length of a complete H4 packet at p (n bytes available), 0 if more bytes are needed, -1 if the type is unknown
@@ -507,13 +520,24 @@ void clientBytes(const uint8_t *p, size_t n) {
             if (gTxAsm[0] == 1 && (opcode >> 10) == 0x3f) {
                 const uint8_t done[] = {0x04, 0x0e, 0x04, 0x01, gTxAsm[1], gTxAsm[2], 0x00};
                 if (gVendorLogged++ < 200) IOLog("HOUJI BT: vendor command %04x (%u bytes) answered here\n", opcode, gTxAsm[3]);
-                if (gUnit) ctl_enqueuedata(gCtl, gUnit, const_cast<uint8_t *>(done), sizeof done, 0);
+                deliver(done, sizeof done);
                 gTxHave = 0;
                 continue;
             }
             IOLockLock(gTxLock);
             gTxBytes += (unsigned)len;
-            if (!uartWrite(gTxAsm, (unsigned)len)) IOLog("HOUJI BT: UART write of %d bytes timed out\n", len);
+            if (gCtlAsleep) {   // wake it: 0xfd, then wait for its 0xfc (the receive thread sees it), up to three tries
+                bool awake = false;
+                for (unsigned tries = 0; tries < 3 && !awake; ++tries) {
+                    const uint32_t before = gWakeAcks;
+                    static const uint8_t wake[] = {0xfd};
+                    uartSend(wake, 1);
+                    for (unsigned ms = 0; ms < 100 && !awake; ++ms) {IOSleep(1); awake = gWakeAcks != before;}
+                }
+                if (!awake) IOLog("HOUJI BT: controller did not acknowledge the wake indication\n");
+                gCtlAsleep = false;
+            }
+            if (!uartSend(gTxAsm, (unsigned)len)) IOLog("HOUJI BT: UART write of %d bytes timed out\n", len);
             IOLockUnlock(gTxLock);
             gTxHave = 0;
         }
@@ -557,6 +581,14 @@ errno_t ctlGetopt(kern_ctl_ref, u_int32_t, void *, int opt, void *data, size_t *
     return ENOPROTOOPT;
 }
 // Controller bytes to the client
+void deliver(const uint8_t *p, unsigned n) {
+    if (!gUnit || !n) return;   // no client: dropped
+    for (unsigned tries = 0; tries < 200; ++tries) {
+        const errno_t e = ctl_enqueuedata(gCtl, gUnit, const_cast<uint8_t *>(p), n, 0);
+        if (e != ENOBUFS) {if (e) IOLog("HOUJI BT: delivering %u bytes: error %d\n", n, e); break;}
+        IOSleep(1);
+    }
+}
 void rxThread(void *, wait_result_t) {
     uint8_t chunk[512], pkt[1100]; unsigned have = 0;
     for (;;) {
@@ -568,17 +600,18 @@ void rxThread(void *, wait_result_t) {
         IOLockUnlock(gRxLock);
         if (!n) {IOSleep(1); continue;}
         gRxBytes += n;
-        for (unsigned i = 0; i < n; ++i) {   // packets, for the log only
-            if (have < sizeof pkt) pkt[have++] = chunk[i];
+        for (unsigned i = 0; i < n; ++i) {
+            const uint8_t b = chunk[i];
+            if (!have && (b == 0xfd || b == 0xfc || b == 0xfe)) {   // IBS, between packets only
+                if (b == 0xfd) {static const uint8_t ack[] = {0xfc}; uartSend(ack, 1); gCtlAsleep = false; gIbsIn[0]++;}
+                else if (b == 0xfc) {gCtlAsleep = false; gWakeAcks++; gIbsIn[1]++;}
+                else {gCtlAsleep = true; gIbsIn[2]++;}
+                continue;
+            }
+            if (have < sizeof pkt) pkt[have++] = b;
             const int len = h4Length(pkt, have);
-            if (len < 0) have = 0;
-            else if (len && have >= (unsigned)len) {logPacket("ctl->host", pkt, (unsigned)len); have = 0;}
-        }
-        if (!gUnit) continue;   // no client: dropped
-        for (unsigned tries = 0; tries < 200; ++tries) {
-            const errno_t e = ctl_enqueuedata(gCtl, gUnit, chunk, n, 0);
-            if (e != ENOBUFS) {if (e) IOLog("HOUJI BT: delivering %u bytes: error %d\n", n, e); break;}
-            IOSleep(1);
+            if (len < 0) {IOLog("HOUJI BT: stray byte %02x from the controller\n", pkt[0]); have = 0; continue;}
+            if (len && have >= (unsigned)len) {logPacket("ctl->host", pkt, (unsigned)len); deliver(pkt, (unsigned)len); have = 0;}
         }
     }
 }
@@ -617,8 +650,8 @@ bool publishIos() {
 }
 void startIos() {
     if (gCtlUp) return;
-    gTxLock = IOLockAlloc(); gRxLock = IOLockAlloc();
-    if (!gTxLock || !gRxLock || !publishIos()) return;
+    gTxLock = IOLockAlloc(); gRxLock = IOLockAlloc(); gUartLock = IOLockAlloc();
+    if (!gTxLock || !gRxLock || !gUartLock || !publishIos()) return;
     gCtlUp = true;
     thread_t t = nullptr;
     if (kernel_thread_start(rxThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
@@ -658,8 +691,9 @@ extern "C" void houji_bt_command(const char *what) {
     if (gCtlUp) {
         if (!strncmp(what, "stat", 4))
             IOLog("HOUJI BT: stat rx-loops %llu rx-bytes %llu tx-bytes %llu ring %u/%u dropped %u; RX FIFO %x S-IRQ %x M-IRQ %x GENI %x IOS %x RFR %x"
-                  " TX FIFO %x client %u\n", gRxLoops, gRxBytes, gTxBytes, gHead, gTail, gDropped, se(kRxFifoStatus), se(kSIrqStatus),
-                  se(kMIrqStatus), se(kStatus), se(kIos), se(kManualRfr), se(kTxFifoStatus), gUnit);
+                  " TX FIFO %x client %u; IBS in wake/ack/sleep %u/%u/%u asleep %d\n", gRxLoops, gRxBytes, gTxBytes, gHead, gTail, gDropped,
+                  se(kRxFifoStatus), se(kSIrqStatus), se(kMIrqStatus), se(kStatus), se(kIos), se(kManualRfr), se(kTxFifoStatus), gUnit,
+                  gIbsIn[0], gIbsIn[1], gIbsIn[2], (int)gCtlAsleep);
         if (!strncmp(what, "stat", 4)) {
             uint8_t last[48]; const unsigned n = gHead < sizeof last ? gHead : (unsigned)sizeof last;
             for (unsigned i = 0; i < n; ++i) last[i] = gRing[(gHead - n + i) % sizeof gRing];
