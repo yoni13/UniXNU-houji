@@ -1188,6 +1188,36 @@ index 6ae9b6b..8bda864 100644
  	struct vnode_attr attr, va, *vap = &va;
  	int len, nlen, rem, xfer, error, attrerr, gotfh, gotattr;
  	int siz, dircount, maxcount, fullsiz, eofflag, dirlen, nentries, isdotdot;
+diff --git a/bsd/skywalk/nexus/nexus.c b/bsd/skywalk/nexus/nexus.c
+index 91b7c60..bf8f0cc 100644
+--- a/bsd/skywalk/nexus/nexus.c
++++ b/bsd/skywalk/nexus/nexus.c
+@@ -1896,6 +1896,11 @@ nx_create(struct nxctl *nxctl, const uuid_t nxprov_uuid,
+ 	/* this nexus is alive; tell the nexus constructor to set it up */
+ 	if (nxprov->nxprov_dom_prov->nxdom_prov_nx_ctor != NULL) {
+ 		*err = nxprov->nxprov_dom_prov->nxdom_prov_nx_ctor(nx);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		if (*err != 0) {
++			printf("SKYWALK: nexus ctor of %s failed: %d\n", nxprov->nxprov_dom_prov->nxdom_prov_name, *err);
++		}
++#endif
+ 		if (*err != 0) {
+ 			nx->nx_prov = NULL;
+ 			goto done;
+diff --git a/bsd/skywalk/nexus/nexus_syscalls.c b/bsd/skywalk/nexus/nexus_syscalls.c
+index 3768752..a825dec 100644
+--- a/bsd/skywalk/nexus/nexus_syscalls.c
++++ b/bsd/skywalk/nexus/nexus_syscalls.c
+@@ -337,6 +337,9 @@ __nexus_create(struct proc *p, struct __nexus_create_args *uap, int *retval)
+ 	if (__improbable(nx == NULL)) {
+ 		ASSERT(err != 0);
+ 		SK_DSC(p, "nx_create: %d", err);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		printf("SKYWALK: %s[%d] __nexus_create failed: %d\n", proc_best_name(p), proc_pid(p), err);
++#endif
+ 		goto done;
+ 	}
+ 	err = copyout(&nx->nx_uuid, uap->nx_uuid, sizeof(uuid_t));
 diff --git a/bsd/skywalk/packet/os_packet.h b/bsd/skywalk/packet/os_packet.h
 index 170382f..9ad34ed 100644
 --- a/bsd/skywalk/packet/os_packet.h
