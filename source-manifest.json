@@ -1778,7 +1778,7 @@
     "kernel/overlay/bsd/sweet_hfs/tests/hfs_extents_test.h": "28e6413e7d2eed4c41b1ae07f67b7288bc73393a91eb83573a8154a6792768bf",
     "kernel/overlay/bsd/sys/memdev_ops.h": "079b00b2dab56bddaa96a20d91e0557871985ccfd4b6a786bb84b87e7709c554",
     "kernel/overlay/config/MASTER.arm64.sweet": "6857a5a9a5b1444fc58f06e6f1e3da66efcc53ef7249bb36c9c32e646255ab02",
-    "kernel/overlay/iokit/Kernel/arm/HoujiCpuDvfs.inc": "328ec96e91fa83e6824062147d5b55fe0ee076f8f482a4a63a31113197b5af51",
+    "kernel/overlay/iokit/Kernel/arm/HoujiCpuDvfs.inc": "4d2c7e5c178360aadb4400efe666acf774fe5d9aa634f68903acee8e933176f7",
     "kernel/overlay/iokit/Kernel/arm/HoujiCpuPolicy.h": "98948cefb093836e5acad54851f8cb72b24a29656e5f641bd05962127247449a",
     "kernel/overlay/iokit/Kernel/arm/HoujiDvfsPolicy.h": "47225f92dfba482c5067ab833292877a0390cd352b96a0bf4268bc738c93370f",
     "kernel/overlay/iokit/Kernel/arm/HoujiFrameQueue.h": "067b25de960da0db783c3c75dcd964ea614c96f7abd2e6cb77b5a78ef0c789a0",

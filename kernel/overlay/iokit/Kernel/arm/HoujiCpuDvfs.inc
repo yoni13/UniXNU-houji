@@ -78,7 +78,9 @@ static void worker(void*,wait_result_t){
  int cpuMax=-1000,gpuMax=-1000,hotMax=-1000;
  if(!sensing)IOLog("HOUJI THERMAL: sensors unavailable; fixed level 2 CPU cap\n");
  unsigned recent=0,quiet[4]={},stateMin[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX},stateMax[4]={},throttled[4]={},changes[4]={};
- nanoseconds_to_absolutetime(300000000,&boost);
+ /* Touch boost window: houji_cpu_touch_ms (default 300, at most 1500). Only after a real touch-down; it ends on its own. */
+ {unsigned ms=300;PE_parse_boot_argn("houji_cpu_touch_ms",&ms,sizeof(ms));if(ms<50)ms=50;if(ms>1500)ms=1500;
+  nanoseconds_to_absolutetime((uint64_t)ms*1000000ULL,&boost);IOLog("HOUJI CPU TOUCH BOOST: %u ms at %u%% of the P-core maximum\n",ms,houjiDvfsFloors[1]);}
  nanoseconds_to_absolutetime(300000000,&frameTicks);
  for(unsigned c=0;c<8;c++)idle[c]=houji_cpu_idle_mach(c);
  for(;;){
@@ -163,6 +165,7 @@ static void start(){
    while(*p && i<3){unsigned x=0;bool any=false;while(*p>='0'&&*p<='9'){x=x*10+unsigned(*p-'0');p++;any=true;}if(any&&x<=100)v[i]=x;i++;if(*p==',')p++;else break;}
    for(unsigned k=0;k<3;k++)houjiDvfsFloors[k]=v[k];
   }
+  {unsigned pct=0;if(PE_parse_boot_argn("houji_cpu_touch_pct",&pct,sizeof(pct)) && pct<=100)houjiDvfsFloors[1]=pct;}
   IOLog("HOUJI CPU DVFS FLOORS: frame=%u%% touch=%u%% recent=%u%% thermal-spike=%u\n",houjiDvfsFloors[0],houjiDvfsFloors[1],houjiDvfsFloors[2],spikePolicy);}
  for(unsigned id=0;id<domains;id++)if(!init(id)){IOLog("HOUJI CPU DVFS: domain=%u factory validation refused; no frequency writes\n",id);return;}
  for(unsigned id=0;id<domains;id++)if(!vote(id,d[id].cur)){IOLog("HOUJI CPU DVFS: initial readback refused domain=%u\n",id);return;}
