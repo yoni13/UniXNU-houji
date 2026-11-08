@@ -697,8 +697,19 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
     native_adreno_metal_diag.inflight_since_calls=native_adreno_metal_diag.calls;
     IOReturn status;
     NativeAdrenoDispatchClock timing;
+    const NativeAdrenoStatus *boardStatus=method==NativeAdrenoMethodGetStatus?native_adreno_board_status():nullptr;
     if(method==NativeAdrenoMethodWaitFence && connection->live_ && input && input_size==sizeof(NativeAdrenoAbiWaitFence) && g.clock.now_us) {
         status=nativeAdrenoWaitFence(connection,input,output,output_size,timing);
+    } else if(boardStatus && connection->live_ && output && output_size==sizeof(NativeAdrenoAbiStatus)) {
+        /* Turnip asks for the fault/suspend counts around every submission. They are two monotonic 64-bit counters of the
+         * board-lifetime status object (single-copy atomic loads), so answer without the issuer lock: under it, the query
+         * queued behind submits and allocations for 1.1 ms on average during app opens. */
+        NativeAdrenoAbiStatus reply{};
+        reply.faults=__atomic_load_n(&boardStatus->counts_ref().faults,__ATOMIC_ACQUIRE);
+        reply.suspends=__atomic_load_n(&boardStatus->counts_ref().suspends,__ATOMIC_ACQUIRE);
+        memcpy(output,&reply,sizeof(reply));status=kIOReturnSuccess;
+        __atomic_fetch_add(&nativeAdrenoDispatchPerf[method][0],1ull,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&nativeAdrenoDispatchPerf[method][3],1ull,__ATOMIC_RELAXED);
     } else {
         status=nativeAdrenoRunGuarded(connection,method,input,input_size,output,output_size,timing);
     }

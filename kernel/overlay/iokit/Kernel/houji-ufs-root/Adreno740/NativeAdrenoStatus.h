@@ -15,12 +15,14 @@ struct NativeAdrenoStatusCounts {
     uint64_t suspends;
 };
 class NativeAdrenoStatus final {
-    uint64_t faults_=0,suspends_=0;
+    NativeAdrenoStatusCounts counts_{0,0};
 public:
-    void noteFault() {if(faults_!=UINT64_MAX)++faults_;}
-    void noteSuspend() {if(suspends_!=UINT64_MAX)++suspends_;}
-    uint64_t faults() const {return faults_;}
-    uint64_t suspends() const {return suspends_;}
-    NativeAdrenoStatusCounts counts() const {return {faults_,suspends_};}
+    /* For lock-free readers: the counters only grow, and aligned 64-bit loads are single-copy atomic. */
+    const NativeAdrenoStatusCounts &counts_ref() const {return counts_;}
+    void noteFault() {if(counts_.faults!=UINT64_MAX)__atomic_store_n(&counts_.faults,counts_.faults+1,__ATOMIC_RELEASE);}
+    void noteSuspend() {if(counts_.suspends!=UINT64_MAX)__atomic_store_n(&counts_.suspends,counts_.suspends+1,__ATOMIC_RELEASE);}
+    uint64_t faults() const {return __atomic_load_n(&counts_.faults,__ATOMIC_ACQUIRE);}
+    uint64_t suspends() const {return __atomic_load_n(&counts_.suspends,__ATOMIC_ACQUIRE);}
+    NativeAdrenoStatusCounts counts() const {return {faults(),suspends()};}
 };
 #endif
