@@ -550,7 +550,9 @@ Termios gTermios = {0, 0, 0x300 | 0x800 | 0x8000 | 0x10000 | 0x20000, 0, {}, 0, 
 constexpr int kTiocGeta = 0x40487413, kTiocSeta = 0x80487414;
 errno_t ctlConnect(kern_ctl_ref, struct sockaddr_ctl *sac, void **) {
     if (!gReady) return ENXIO;
-    if (gUnit) return EBUSY;
+    // The newest client owns the channel: BlueTool stays connected after its boot script, and bluetoothd connects next (refusing it
+    // made its transport open fail, fatal error 1201). The previous client's later sends are dropped.
+    if (gUnit) IOLog("HOUJI BT: unit %u takes over from unit %u\n", sac->sc_unit, gUnit);
     gUnit = sac->sc_unit; gTxHave = 0;
     IOLog("HOUJI BT: client connected (unit %u)\n", gUnit);
     return 0;
