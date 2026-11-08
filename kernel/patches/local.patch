@@ -2166,10 +2166,10 @@ index 5219fb0..6c48eb4 100644
  		dchar = xchar = rdBootVar[2];                                                   /* Get the actual device */
  		if ((xchar >= '0') && (xchar <= '9')) {
 diff --git a/iokit/conf/files b/iokit/conf/files
-index 5fb0a52..3f0e013 100644
+index 5fb0a52..3bda734 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
-@@ -148,3 +148,51 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
+@@ -148,3 +148,52 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
  
  # Skywalk
  iokit/bsddev/skywalk/IOSkywalkSupport.cpp		optional iokitcpp skywalk
@@ -2221,6 +2221,7 @@ index 5fb0a52..3f0e013 100644
 +iokit/Kernel/houji-buttons/HoujiButtons.cpp optional iokitcpp
 +iokit/Kernel/houji-buttons/HoujiScreen.cpp optional iokitcpp
 +iokit/Kernel/houji-camera/HoujiCamera.cpp optional iokitcpp
++iokit/Kernel/houji-bt/HoujiBluetooth.cpp optional iokitcpp
 diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
 index f731d43..da6c812 100644
 --- a/iokit/conf/files.arm64

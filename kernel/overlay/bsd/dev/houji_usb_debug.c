@@ -472,6 +472,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"camera ",7)) { extern void houji_camera_command(const char *); houji_camera_command(u.command+7); }
     else if (!strncmp(u.command,"screen ",7)) { extern void houji_screen_command(const char *); houji_screen_command(u.command+7); }
     else if (!strncmp(u.command,"type ",5)) { type_command(u.command+5); bzero(u.command,sizeof(u.command)); }
+    else if (!strncmp(u.command,"bt ",3)) { extern void houji_bt_command(const char *); houji_bt_command(u.command+3); }
     else if (!strncmp(u.command,"wifi ",5)) { extern void houji_wifi_command(const char *); houji_wifi_command(u.command+5); bzero(u.command,sizeof(u.command)); }
     else if (!strcmp(u.command,"reboot")) {
         static bool requested;thread_t t;
@@ -484,7 +485,7 @@ static void command_line(void)
             __DATE__,__TIME__,u.events,u.tx_bytes,u.rx_bytes,houji_debug_total(),houji_debug_dropped());
     else if (!strcmp(u.command,"replay")) {
         u.cursor=0;printf("HOUJI DEBUG: replay retained RAM log\n");
-    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi\n");
+    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt\n");
     u.command_n=0;u.command_overflow=false;
 }
 static void receive_done(unsigned length)
