@@ -657,6 +657,13 @@ bool publishIos() {
     bt->setProperty("transport-encoding", (void *)&encoding, sizeof encoding);
     bt->setProperty("transport-speed", (void *)&speed, sizeof speed);
     if (IORegistryEntry *armio = IORegistryEntry::fromPath("/arm-io", gIODTPlane)) {bt->attachToParent(armio, gIODTPlane); armio->release();}
+    // MobileGestalt's Bluetooth capabilities: /product bluetooth-le (1 in the stock D22 tree)
+    if (IORegistryEntry *product = IORegistryEntry::fromPath("/product", gIODTPlane)) {
+        const bool had = product->getProperty("bluetooth-le") != nullptr;
+        if (!had) {const uint32_t one = 1; product->setProperty("bluetooth-le", (void *)&one, sizeof one);}
+        IOLog("HOUJI BT: /product bluetooth-le %s\n", had ? "present" : "added");
+        product->release();
+    } else IOLog("HOUJI BT: no /product node\n");
     // MobileGestalt's BluetoothAddress comes from /chosen, as on Apple hardware (beside mac-address-wifi0)
     if (IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane)) {
         if (!chosen->getProperty("mac-address-bluetooth0")) chosen->setProperty("mac-address-bluetooth0", gAddr, sizeof gAddr);
