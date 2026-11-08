@@ -3606,10 +3606,10 @@ index 0a00656..437adb1 100644
  	read_lbr();
  #endif
 diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
-index 809dafa..35d6106 100644
+index 809dafa..617495f 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
-@@ -820,6 +820,327 @@ exception_triage(
+@@ -820,6 +820,330 @@ exception_triage(
  	return exception_triage_thread(exception, code, codeCnt, thread);
  }
  
@@ -3650,6 +3650,9 @@ index 809dafa..35d6106 100644
 +	printf("CRASH %s pc 0x%llx lr 0x%llx sp 0x%llx fp 0x%llx far 0x%llx\n", name,
 +	    get_saved_state_pc(ss), get_saved_state_lr(ss), get_saved_state_sp(ss), fp,
 +	    (uint64_t)saved_state64(ss)->far);
++	printf("CRASH %s x0 0x%llx x1 0x%llx x19 0x%llx x20 0x%llx x21 0x%llx x22 0x%llx\n", name,
++	    get_saved_state_reg(ss, 0), get_saved_state_reg(ss, 1), get_saved_state_reg(ss, 19), get_saved_state_reg(ss, 20),
++	    get_saved_state_reg(ss, 21), get_saved_state_reg(ss, 22));
 +
 +	char line[200];
 +	int n = snprintf(line, sizeof(line), "CRASH %s bt", name);
@@ -3937,7 +3940,7 @@ index 809dafa..35d6106 100644
  kern_return_t
  bsd_exception(
  	exception_type_t        exception,
-@@ -910,3 +1231,12 @@ sys_perf_notify(thread_t thread, int pid)
+@@ -910,3 +1234,12 @@ sys_perf_notify(thread_t thread, int pid)
  
  	return ret;
  }
