@@ -237,6 +237,7 @@ struct HoujiDisplayFrame {
  uint8_t rec[SWEET_FB_SWAP_REC_SIZE]{};
  SweetSurface *surfaces[SWEET_FB_LAYERS]{};
  uint32_t id=0,fence=0;
+ uint64_t swapAt=0;bool touchMark=false;   /* FPRES: SwapEnd time, first frame after a touch-down */
 };
 extern "C" void native_adreno_present_end(void);
 static bool houjiFramebufferAcquire(SweetSurface*s,uintptr_t src,int32_t sx,int32_t sy,int32_t w,int32_t h,unsigned line){
@@ -689,6 +690,11 @@ extern "C" void houji_framebuffer_pace_report(void)
    for(uint32_t i=tail;i!=head;i++){for(int k=0;k<4;k++){const uint8_t v=houji_fs_ring[i&4095][k];line[n++]=hex[v>>4];line[n++]=hex[v&15];}
     if(n==2*4*24 || i+1==head){line[n]=0;IOLog("HOUJI FSTAGE: part=%u %s\n",part++,line);n=0;}}}
   houji_fs_tail=head;}
+ {const uint32_t head=__atomic_load_n(&houji_fp_head,__ATOMIC_ACQUIRE);uint32_t tail=houji_fp_tail;if(head-tail>4096)tail=head-4096;
+  if(head-tail>20){char line[2*2*48+1];unsigned n=0,part=0;static const char hex[]="0123456789abcdef";
+   for(uint32_t i=tail;i!=head;i++){for(int k=0;k<2;k++){const uint8_t v=houji_fp_ring[i&4095][k];line[n++]=hex[v>>4];line[n++]=hex[v&15];}
+    if(n==2*2*48 || i+1==head){line[n]=0;IOLog("HOUJI FPRES: part=%u %s\n",part++,line);n=0;}}}
+  houji_fp_tail=head;}
 }
 extern "C" void houji_framebuffer_counts(uint64_t *swaps, uint64_t *presents)
 {
@@ -775,6 +781,8 @@ AppleCLCD::swap(const uint8_t *rec)
   }
  }
  frame.fence=native_adreno_present_capture_fence(); /* never while holding fLock */
+ frame.swapAt=mach_absolute_time();
+ {static uint64_t seen;const uint64_t touch=houji_dvfs_touch_time();if(touch!=seen){seen=touch;frame.touchMark=true;}}
  uint64_t ticks=0;nanoseconds_to_absolutetime(500000000ull,&ticks);uint64_t deadline=mach_absolute_time()+ticks;
  IOLockLock(fLock);
  while(fFrames.full() && mach_absolute_time()<deadline){
@@ -814,6 +822,17 @@ AppleCLCD::waitSwap(uint32_t id,uint64_t timeoutRaw)
  return done?kIOReturnSuccess:kIOReturnTimeout;
 }
 
+/* FPRES: per presented frame, in 0.25 ms units (254 = 63.5 ms or more): SwapEnd -> GPU completion seen by the presenter
+ * (start of the copy), and the CPU copy into scanout. 255,255 marks the first frame after a touch-down. */
+static uint8_t houji_fp_ring[4096][2];
+static uint32_t houji_fp_head,houji_fp_tail;
+static void houjiPresentStage(const HoujiDisplayFrame &frame,uint64_t started,uint64_t ended){
+ uint32_t h=houji_fp_head;
+ if(frame.touchMark){houji_fp_ring[h&4095][0]=houji_fp_ring[h&4095][1]=255;h++;}
+ houji_fp_ring[h&4095][0]=frame.swapAt && started>=frame.swapAt?houjiQuarterMs(started-frame.swapAt):254;
+ houji_fp_ring[h&4095][1]=houjiQuarterMs(ended-started);
+ __atomic_store_n(&houji_fp_head,h+1,__ATOMIC_RELEASE);
+}
 bool
 AppleCLCD::present(const HoujiDisplayFrame &frame)
 {
@@ -918,6 +937,7 @@ AppleCLCD::present(const HoujiDisplayFrame &frame)
 	}
  __asm__ volatile("dsb sy":::"memory"); /* all scanout stores before retirement */
 	uint64_t elapsed = mach_absolute_time() - started;
+	houjiPresentStage(frame,started,started+elapsed);
 	__atomic_add_fetch(&houji_fb_present_count,1ull,__ATOMIC_RELAXED);
 	__atomic_add_fetch(&houji_fb_copy_bytes, copied, __ATOMIC_RELAXED);
 	__atomic_add_fetch(&houji_fb_present_ticks, elapsed, __ATOMIC_RELAXED);
