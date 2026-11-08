@@ -2091,7 +2091,7 @@
     "kernel/overlay/pexpert/arm/HoujiSpi.h": "153c75a3642ffeccfe7fcd8cad5b734f109c29c919799de561dca02887d13756",
     "kernel/overlay/pexpert/arm/HoujiSpi.inc": "e69abb43d142bce21b911a0aa626f18cc6475e2ffb5098d4ed1cab773fa68f82",
     "kernel/overlay/pexpert/pexpert/arm64/SWEET.h": "ba29cf52815a78a8f869c939c479774c3f287126bec959831bf46a1d7ef660ed",
-    "kernel/patches/local.patch": "ed3b61c66ffc9f658271b313a1797e52ff3b8ec1107e7580e6e2edec910ff232",
+    "kernel/patches/local.patch": "df78e9f5fa57756a5a14321aab1f038f026d5e7b945e2637af104766e56f820c",
     "sources.lock.json": "750b0532179e0d4fe417557cff894354757e86a8ff513266036546519360fe3c",
     "tools/analyze-cpu-profile.py": "be76cb1f86b813e648904e833bc6a2d381efb1662765fcaf76549b710649643f",
     "tools/analyze-gpu-issuer.py": "94643293e145de46001f2612fa11cfd89199f71c88572bac3099e8871abfb060",

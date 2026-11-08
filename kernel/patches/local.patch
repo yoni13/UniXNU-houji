@@ -3542,10 +3542,10 @@ index 0a00656..437adb1 100644
  	read_lbr();
  #endif
 diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
-index 809dafa..9dff0af 100644
+index 809dafa..78a9cb8 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
-@@ -820,6 +820,289 @@ exception_triage(
+@@ -820,6 +820,297 @@ exception_triage(
  	return exception_triage_thread(exception, code, codeCnt, thread);
  }
  
@@ -3767,17 +3767,32 @@ index 809dafa..9dff0af 100644
 +}
 +
 +/*
-+ * Burst profiler (houji USB console "prof NAME N"): every 2 ms, for each thread of the task that is runnable or running,
-+ * print its saved user pc and a 6-frame backtrace. A thread executing user code on another CPU shows the state saved at
-+ * its last kernel entry (interrupt or syscall), so this is a statistical sample of where runnable threads are.
++ * Burst profiler (houji USB console "prof NAME N"): every 2 ms a cross-CPU call samples, on every CPU, the thread running
++ * there at that instant. For a thread of the task interrupted in user mode the interrupted state is exact (U); one that
++ * was in the kernel shows its saved user state, the call into the kernel (K). Then a 14-frame user backtrace.
 + */
++#include <arm/cpu_data_internal.h>
++#include <arm/machine_routines.h>
 +void houji_prof_task(const char *name, int pid, task_t task, unsigned samples);
++struct houji_prof_cpu { uint64_t pc, lr, fp; uint32_t user, valid; };
++struct houji_prof_ctx { task_t task; struct houji_prof_cpu cpu[16]; };
++static void
++houji_prof_xcall(void *arg)
++{
++	struct houji_prof_ctx *ctx = arg;
++	int n = cpu_number();
++	if (n < 0 || n >= 16) return;
++	thread_t th = current_thread();
++	if (th == THREAD_NULL || get_threadtask(th) != ctx->task) return;
++	arm_saved_state_t *is = getCpuDatap()->cpu_int_state;
++	arm_saved_state_t *ss = (is != NULL && is_saved_state64(is) && PSR64_IS_USER(get_saved_state_cpsr(is))) ? is : find_user_regs(th);
++	if (ss == NULL || !is_saved_state64(ss)) return;
++	ctx->cpu[n] = (struct houji_prof_cpu){ get_saved_state_pc(ss), get_saved_state_lr(ss), get_saved_state_fp(ss), ss == is, 1 };
++}
 +
 +void
 +houji_prof_task(const char *name, int pid, task_t task, unsigned samples)
 +{
-+	enum { PROF_THREADS = 16 };
-+	struct { uint64_t pc, lr, fp; unsigned index; } regs[PROF_THREADS];
 +	vm_map_t map = get_task_map_reference(task);
 +	uint64_t slide = 0, mh = 0;
 +	vm_shared_region_t sr = vm_shared_region_get(task);
@@ -3789,32 +3804,24 @@ index 809dafa..9dff0af 100644
 +		printf("PRF %s[%d] unavailable\n", name, pid);
 +		return;
 +	}
++	struct houji_prof_ctx *ctx = kalloc_data(sizeof(*ctx), Z_WAITOK | Z_ZERO);
++	if (ctx == NULL) {
++		vm_map_deallocate(map);
++		return;
++	}
 +	task_lock(task);
 +	mh = task->mach_header_vm_address;
 +	task_unlock(task);
-+	printf("PRF BEGIN %s[%d] slide 0x%llx mh 0x%llx samples %u period-us 2000\n", name, pid, slide, mh, samples);
++	printf("PRF BEGIN %s[%d] slide 0x%llx mh 0x%llx samples %u period-us 2000 xcall\n", name, pid, slide, mh, samples);
 +	for (unsigned s = 0; s < samples; s++) {
-+		unsigned count = 0, index = 0;
-+		thread_t thread;
-+		task_lock(task);
-+		queue_iterate(&task->threads, thread, thread_t, task_threads) {
-+			if (count < PROF_THREADS && (thread->state & TH_RUN) && !(thread->state & TH_IDLE)) {
-+				arm_saved_state_t *ss = find_user_regs(thread);
-+				if (ss != NULL && is_saved_state64(ss)) {
-+					regs[count].pc = get_saved_state_pc(ss);
-+					regs[count].lr = get_saved_state_lr(ss);
-+					regs[count].fp = get_saved_state_fp(ss);
-+					regs[count].index = index;
-+					count++;
-+				}
-+			}
-+			index++;
-+		}
-+		task_unlock(task);
-+		for (unsigned i = 0; i < count; i++) {
++		bzero(ctx->cpu, sizeof(ctx->cpu));
++		ctx->task = task;
++		(void)cpu_broadcast_xcall_simple(FALSE, houji_prof_xcall, ctx);
++		for (unsigned c = 0; c < 16; c++) {
++			if (!ctx->cpu[c].valid) continue;
 +			char line[480];
-+			uint64_t fp = regs[i].fp;
-+			int n = snprintf(line, sizeof(line), "PRF %u t%u 0x%llx 0x%llx", s, regs[i].index, regs[i].pc, regs[i].lr);
++			uint64_t fp = ctx->cpu[c].fp;
++			int n = snprintf(line, sizeof(line), "PRF %u c%u %c 0x%llx 0x%llx", s, c, ctx->cpu[c].user ? 'U' : 'K', ctx->cpu[c].pc, ctx->cpu[c].lr);
 +			for (int f = 0; f < 14 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; f++) {
 +				uint64_t frame[2];
 +				if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) break;
@@ -3827,6 +3834,7 @@ index 809dafa..9dff0af 100644
 +		delay(2000);
 +	}
 +	printf("PRF END %s[%d]\n", name, pid);
++	kfree_data(ctx, sizeof(*ctx));
 +	vm_map_deallocate(map);
 +}
 +
@@ -3835,7 +3843,7 @@ index 809dafa..9dff0af 100644
  kern_return_t
  bsd_exception(
  	exception_type_t        exception,
-@@ -910,3 +1193,12 @@ sys_perf_notify(thread_t thread, int pid)
+@@ -910,3 +1201,12 @@ sys_perf_notify(thread_t thread, int pid)
  
  	return ret;
  }
