@@ -506,7 +506,7 @@ void clientBytes(const uint8_t *p, size_t n) {
             if (gTxAsm[0] == 1 && (opcode >> 10) == 0x3f) {
                 const uint8_t done[] = {0x04, 0x0e, 0x04, 0x01, gTxAsm[1], gTxAsm[2], 0x00};
                 if (gVendorLogged++ < 200) IOLog("HOUJI BT: vendor command %04x (%u bytes) answered here\n", opcode, gTxAsm[3]);
-                if (gUnit) ctl_enqueuedata(gCtl, gUnit, done, sizeof done, 0);
+                if (gUnit) ctl_enqueuedata(gCtl, gUnit, const_cast<uint8_t *>(done), sizeof done, 0);
                 gTxHave = 0;
                 continue;
             }
