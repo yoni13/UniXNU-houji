@@ -16,6 +16,7 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
 #include <IOKit/IORegistryEntry.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <libkern/c++/OSData.h>
 #include <kern/thread.h>
 #include <string.h>
