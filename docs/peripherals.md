@@ -23,36 +23,28 @@ Safari loading a page by name.
   after each join); a heartbeat HTT stats request crashed this firmware (removed).
 - USB console: `wifi scan | join SSID PASS | leave | status`; `type TEXT` (`\n` = Return) types through a virtual keyboard.
 
-## Bluetooth — controller up, iOS stack not yet (WCN7850 on QUP2 SE6 UART)
-`iokit/Kernel/houji-bt/HoujiBluetooth.cpp`. `houji_bt=1` (default off) brings the controller up at boot and publishes it to iOS; USB
-console `bt probe [nocts]`, `bt init` (without `houji_bt`), `bt stat`. Wiring from the SteamOS houji port, where this controller pairs:
-uart14 = QUPv3 wrapper 2 SE6 (`0x898000`), GPIO 24 CTS, 25 RTS, 26 TX, 27 RX (function 1), BT_EN GPIO 17 on the WCN7850 PMU whose
-rails and RF clock the Wi-Fi driver turns on (the controller answers only after that; the boot thread retries every 5 s).
-- Verified controller bring-up (about 2.3 s): ROM version at 115200 (product 0x19, patch 0x43fb, SoC 0x40170200), vendor 0xfc48 to
-  3.2 Mbaud (SE6 at 51.2 MHz), rampatch `image/hmtbtfw20.tlv` and NVM `image/hmtnv20.bin` (board id 0) from the stock `bluetooth_a`
-  partition in 243-byte EDL segments, HCI_Reset; firmware `BTFW.HAMILTON.2.0.1-00355-PATCHZ-1`, HCI/LMP 13, manufacturer 0x001d,
-  address set from the device (locally administered). NVM: tag 2 address, tag 27 deep sleep off. The partition's FAT16 boot sector
-  claims 64 MiB in a 4 MiB partition; the FAT reader accepts that (only tables and root must fit).
-- UART details: received bytes one per GENI FIFO word (with four per word, a reply's partial last word waited for the next packet);
-  the controller's output is framed by H4 lengths (after the NVM it streams its debug log as ACL on handle 0x2edc). Idle it uses
-  Qualcomm in-band sleep although tag 17 leaves software IBS off: the bridge answers 0xfd with 0xfc, tracks 0xfe/0xfc, and wakes the
-  controller (0xfd, wait for 0xfc) before sending.
-- iOS side, published: an IOService `bluetooth` (also /arm-io/bluetooth: `local-mac-address`, `transport-encoding` 1 = H4,
-  `transport-speed` 3200000), which bluetoothd needs instead of `errx(0, "No bluetooth on this device.")`; the stream kernel control
-  `com.apple.uart.bluetooth` (bluetoothd's job gets `BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth,3200000`; its default
-  `com.apple.uart.sk.bluetooth` wants a Skywalk channel), with TIOCGETA/TIOCSETA as socket options; an `AppleOLYHAL` service with
-  vendor-id `Murata` (MobileGestalt's WifiVendor, which BlueTool waits for). Vendor-group commands (OGF 0x3f, Broadcom/Apple) are
-  answered in the bridge with success; standard HCI goes to the controller.
-- Keychain: AppleKeyStore selectors 10/11 (aks_wrap_key/unwrap) now work (RFC 3394 AES-256 under a key derived from
-  `houji,platform-uuid`; no hardware-held secret). Before, every new keychain item failed and bluetoothd exited with status 1.
-- Where it stops: bluetoothd boots the chip through BlueTool (XPC `RunBuiltinScript`). BlueTool's built-in Broadcom script runs over the
-  bridge (HCI_Reset, 0xfc18 baud, Read_Local_Version, 0xfc2e minidriver) and then gives up: the controller reports Qualcomm (0x001d), and
-  this root has no `/usr/share/firmware/bluetooth` patchram. bluetoothd then exits with status 1 and launchd restarts it. Override
-  scripts in `/private/etc/bluetool/<model>.{boot,init,deepsleep}.script` (installed for D22AP/d22ap) are not consulted on this path.
-  Next: make BlueTool's boot report success (its RunBuiltinScript handler, or bluetoothd's BlueTool result), then follow bluetoothd's
-  own vendor commands.
-- Until bluetoothd runs, sharingd's main thread blocks on it and Settings waits 10 s for Wi-Fi password sharing before each password
-  prompt.
+## Bluetooth — on in iOS: Settings row, scanning (WCN7850 on QUP2 SE6 UART)
+`iokit/Kernel/houji-bt/HoujiBluetooth.cpp`, `houji_bt=1` (default off). USB console `bt probe`, `bt init` (without `houji_bt`),
+`bt stat`. Wiring from the SteamOS houji port: uart14 = QUPv3 wrapper 2 SE6 (`0x898000`), GPIO 24-27, BT_EN GPIO 17 on the WCN7850
+PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s until the controller answers).
+- Verified on the phone: Settings shows Bluetooth "On"; its page scans (HCI Inquiry repeated, Extended Inquiry Results and LE
+  advertising reports arrive); bluetoothd stays up ("Stack Did Start", "Power state changed: PoweredOn"). Pairing not yet tested.
+- Kernel: rampatch `image/hmtbtfw20.tlv` and NVM `image/hmtnv20.bin` from the stock `bluetooth_a` partition, 3.2 Mbaud, Qualcomm
+  in-band sleep handled in the bridge; the received stream is framed by H4 lengths.
+- Published for iOS: IOService `bluetooth` (also /arm-io/bluetooth: `local-mac-address`, `transport-encoding` 1 = H4,
+  `transport-speed`); `/chosen mac-address-bluetooth0` set before launchd (MobileGestalt's `bluetooth` capability, which Settings'
+  row requires, is computed early); `AppleOLYHAL` with vendor-id `Murata` (WifiVendor, BlueTool waits for it); the stream kernel
+  control `com.apple.uart.bluetooth` (the newest client owns it: BlueTool stays connected after its script).
+- Bridge emulation: vendor-group commands (OGF 0x3f) answered with success, 32 bytes of parameters echoing the first command byte
+  (LE meta sub-commands are matched on it; 0xfd48 returns instance 1); Read/Write Default Erroneous Data Reporting answered (bits
+  added to the supported-commands mask; bluetoothd's HCI init requires them); LE_Read_Periodic_Advertiser_List_Size answered with
+  0 so the controller stays in legacy LE mode (otherwise it refuses legacy scan and advertising commands).
+- Root image (installed over NBD): bluetoothd's job gets `BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth,3200000`;
+  `/usr/sbin/BlueTool` patched (`perf-test/patch-bluetool.py`: its XPC script reply always carries result 0, the ad-hoc signature's
+  page hash rewritten), since its built-in scripts are Broadcom patchram sequences for a chip this phone does not have.
+- Keychain: AppleKeyStore selectors 10/11 (wrap/unwrap item keys) implemented; before, bluetoothd could not store its identity keys.
+- Diagnostics used: `houji_exit_trace=NAME`, `houji_path_trace=NAME`, and the unified log parsed on the host
+  (mandiant/macos-UnifiedLogs on /private/var/db/diagnostics and uuidtext copied over NBD).
 
 ## Display power and brightness — working
 `houji-buttons/HoujiScreen.cpp` owns the panel's DSI0 command FIFO (`0x0ae94000`, lonzzi/UniXNU-houji's HoujiBacklightProtocol.h).
