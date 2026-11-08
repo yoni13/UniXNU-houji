@@ -1648,7 +1648,7 @@
     "kernel/overlay/bsd/kern/HoujiExitObserver.inc": "6c6068d09d7f6c30359aa83e63a4cfbaf4c0b302045835c436e2249ad00ba2b5",
     "kernel/overlay/bsd/kern/HoujiSystemAppPaths.h": "7c57b5ae1553137ec942929149097c2f962f15ff3673ae438c4f8781603718d5",
     "kernel/overlay/bsd/kern/HoujiTccCompatibility.h": "2478cade99ecabc10b13d50950914f5c0120ef046d992810d0da7901295894ed",
-    "kernel/overlay/bsd/kern/sweet_amfi.c": "f78f17cff682fab3a9ef7218398f26018350221b7d4480440a080f51a972138d",
+    "kernel/overlay/bsd/kern/sweet_amfi.c": "24e0af34a01a9b845752d10ef32b13c4f7b1c3b54de63027b993d2f6f7ca1f67",
     "kernel/overlay/bsd/pthread/sweet_libpthread/TargetConditionals.h": "af113bd46c407e305aeda0b7bb1a488c31cfb674afe2cef28416caee1666bb33",
     "kernel/overlay/bsd/pthread/sweet_libpthread/include/darwin_posix_pthread.modulemap": "09a692cf878a8d10c6ee83671c71209480fe0238932c31c004139ff8b852e18c",
     "kernel/overlay/bsd/pthread/sweet_libpthread/include/pthread/introspection.h": "20c4bc646045d17c06c20abce76c731714870ebffed87b1702614a01be9aa338",

@@ -38,6 +38,7 @@
 #include <security/mac_policy.h>
 #include "HoujiSystemAppPaths.h"
 extern boolean_t IOTaskHasEntitlement(task_t task, const char *entitlement);
+extern task_t current_task(void);
 
 /* iokit/Kernel/arm/SweetEntitlements.cpp */
 void *sweet_entitlements_create(const CS_GenericBlob *blob, size_t blob_len);
