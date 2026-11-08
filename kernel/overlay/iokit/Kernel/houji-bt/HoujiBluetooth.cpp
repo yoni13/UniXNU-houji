@@ -657,6 +657,11 @@ bool publishIos() {
     bt->setProperty("transport-encoding", (void *)&encoding, sizeof encoding);
     bt->setProperty("transport-speed", (void *)&speed, sizeof speed);
     if (IORegistryEntry *armio = IORegistryEntry::fromPath("/arm-io", gIODTPlane)) {bt->attachToParent(armio, gIODTPlane); armio->release();}
+    // MobileGestalt's BluetoothAddress comes from /chosen, as on Apple hardware (beside mac-address-wifi0)
+    if (IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane)) {
+        if (!chosen->getProperty("mac-address-bluetooth0")) chosen->setProperty("mac-address-bluetooth0", gAddr, sizeof gAddr);
+        chosen->release();
+    }
     const bool attached = bt->attach(IOService::getPlatform());
     if (attached) bt->registerService();
     bt->release();

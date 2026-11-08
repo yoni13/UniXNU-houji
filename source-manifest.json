@@ -1851,7 +1851,7 @@
     "kernel/overlay/iokit/Kernel/houji-adsp/ShengBattmgr.c": "5425de1fdf42f81bc2f61795a2a54af660b2ac7558b1344e8046597977c94b9e",
     "kernel/overlay/iokit/Kernel/houji-adsp/ShengBattmgr.h": "fb4869102e79d20ab0c73c205b546c71a476e66204ec4dfbc3c99bc6942bc83f",
     "kernel/overlay/iokit/Kernel/houji-adsp/ShengQrtr.c": "6584dd43500281ec3606665fda56b8b5394b2c559fcbcea4ebaea124fd6108e0",
-    "kernel/overlay/iokit/Kernel/houji-bt/HoujiBluetooth.cpp": "4eae59a29ee43c4436034af87fc698f84162c7374cf1ef095e823b54b4987bef",
+    "kernel/overlay/iokit/Kernel/houji-bt/HoujiBluetooth.cpp": "fbb59313c877dadeb8dec74b2585ed8d3e6396e5aa0d6798d4323a67c56f986c",
     "kernel/overlay/iokit/Kernel/houji-buttons/BootResetCore.h": "9211ed8aa8174a8999829c29b51351fb839807c1473c6239ae09e069e294a5f6",
     "kernel/overlay/iokit/Kernel/houji-buttons/HoujiBacklightProtocol.h": "621f4761779e1d2fc4088304a038aaad034ac5d6a382fe471b956f73ddb0dddc",
     "kernel/overlay/iokit/Kernel/houji-buttons/HoujiButtons.cpp": "6c93023f57684fa98f55902a8fd5ba50ab851b92f5617f56ea57b066ce3b0429",
