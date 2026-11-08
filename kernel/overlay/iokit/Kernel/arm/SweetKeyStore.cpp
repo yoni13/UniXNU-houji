@@ -13,6 +13,13 @@
  * Every call is logged (selector, caller, argument shapes, result) so the
  * next selectors the system needs show up on the console; unknown ones fail
  * with kIOReturnUnsupported.
+ *
+ * Keychain item keys (aks_wrap_key / aks_unwrap_key, selectors 10 and 11):
+ * RFC 3394 AES-256 key wrap under one key derived from this device's
+ * houji,platform-uuid (/chosen), so items written in one boot read back in
+ * the next. Without a SEP there is no hardware-held secret: anyone who can
+ * read the kernel's view of /chosen and the keychain database can unwrap
+ * them. The class is not bound into the wrap (every class is "unlocked" here).
  */
 #include <pexpert/arm64/board_config.h>
 
@@ -24,6 +31,11 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <libkern/c++/OSString.h>
 #include <sys/proc.h>
+#include <IOKit/IODeviceTreeSupport.h>
+#include <IOKit/IORegistryEntry.h>
+#include <libkern/c++/OSData.h>
+#include <libkern/crypto/aes.h>
+#include <libkern/crypto/sha2.h>
 
 /* libaks selectors (AppleKeyStore.framework, iOS 16.7). */
 enum {
@@ -170,6 +182,126 @@ sweet_aks_struct_out_size(IOExternalMethodArguments *args)
 	       (uint32_t)args->structureOutputDescriptor->getLength() : args->structureOutputSize;
 }
 
+/* The wrapping key: SHA-256 of a label and the platform UUID; false when the UUID is missing. */
+static bool
+sweet_aks_kek(uint8_t kek[32])
+{
+	static uint8_t cached[32];
+	static int state;       /* 0 unknown, 1 ready, -1 no UUID */
+	if (state == 0) {
+		IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
+		OSData *uuid = chosen ? OSDynamicCast(OSData, chosen->getProperty("houji,platform-uuid")) : NULL;
+		if (uuid != NULL && uuid->getLength() == 16) {
+			static const char label[] = "houji AppleKeyStore item key wrap v1";
+			SHA256_CTX c;
+			SHA256_Init(&c);
+			SHA256_Update(&c, label, sizeof(label));
+			SHA256_Update(&c, uuid->getBytesNoCopy(), 16);
+			SHA256_Final(cached, &c);
+			state = 1;
+		} else {
+			state = -1;
+			IOLog("SWEET AKS: no houji,platform-uuid in /chosen; keychain item keys cannot be wrapped\n");
+		}
+		if (chosen != NULL) {
+			chosen->release();
+		}
+	}
+	if (state != 1) {
+		return false;
+	}
+	memcpy(kek, cached, 32);
+	return true;
+}
+
+/* RFC 3394 key wrap of n 64-bit blocks (2..8): out gets 8 * (n + 1) bytes. */
+static bool
+sweet_aks_wrap(const uint8_t *in, uint32_t len, uint8_t *out)
+{
+	uint8_t kek[32], b[16], a[8];
+	aes_encrypt_ctx ctx;
+	const uint32_t n = len / 8;
+	if (len % 8 || n < 2 || n > 8 || !sweet_aks_kek(kek)) {
+		return false;
+	}
+	aes_encrypt_key256(kek, &ctx);
+	memset(a, 0xa6, sizeof(a));
+	memcpy(out + 8, in, len);
+	for (uint32_t j = 0; j < 6; j++) {
+		for (uint32_t i = 1; i <= n; i++) {
+			memcpy(b, a, 8);
+			memcpy(b + 8, out + 8 * i, 8);
+			aes_encrypt_cbc(b, NULL, 1, b, &ctx);
+			const uint64_t t = (uint64_t)n * j + i;
+			for (int k = 0; k < 8; k++) {
+				a[k] = b[k] ^ (uint8_t)(t >> (56 - 8 * k));
+			}
+			memcpy(out + 8 * i, b + 8, 8);
+		}
+	}
+	memcpy(out, a, 8);
+	bzero(kek, sizeof(kek));
+	bzero(&ctx, sizeof(ctx));
+	bzero(b, sizeof(b));
+	return true;
+}
+
+/* RFC 3394 unwrap of len = 8 * (n + 1) bytes into 8 * n; false when the integrity check fails. */
+static bool
+sweet_aks_unwrap(const uint8_t *in, uint32_t len, uint8_t *out)
+{
+	uint8_t kek[32], b[16], a[8];
+	aes_decrypt_ctx ctx;
+	if (len % 8 || len < 24 || len > 72 || !sweet_aks_kek(kek)) {
+		return false;
+	}
+	const uint32_t n = len / 8 - 1;
+	aes_decrypt_key256(kek, &ctx);
+	memcpy(a, in, 8);
+	memcpy(out, in + 8, 8 * n);
+	for (int j = 5; j >= 0; j--) {
+		for (uint32_t i = n; i >= 1; i--) {
+			const uint64_t t = (uint64_t)n * (uint32_t)j + i;
+			for (int k = 0; k < 8; k++) {
+				b[k] = a[k] ^ (uint8_t)(t >> (56 - 8 * k));
+			}
+			memcpy(b + 8, out + 8 * (i - 1), 8);
+			aes_decrypt_cbc(b, NULL, 1, b, &ctx);
+			memcpy(a, b, 8);
+			memcpy(out + 8 * (i - 1), b + 8, 8);
+		}
+	}
+	bool ok = true;
+	for (int k = 0; k < 8; k++) {
+		ok = ok && a[k] == 0xa6;
+	}
+	if (!ok) {
+		bzero(out, 8 * n);
+	}
+	bzero(kek, sizeof(kek));
+	bzero(&ctx, sizeof(ctx));
+	bzero(b, sizeof(b));
+	return ok;
+}
+
+/* The caller's input structure (inband or descriptor) into buf; its length, or -1 when it does not fit. */
+static int
+sweet_aks_struct_in(IOExternalMethodArguments *args, uint8_t *buf, uint32_t room)
+{
+	if (args->structureInputDescriptor != NULL) {
+		const uint32_t len = (uint32_t)args->structureInputDescriptor->getLength();
+		if (len > room || args->structureInputDescriptor->readBytes(0, buf, len) != len) {
+			return -1;
+		}
+		return (int)len;
+	}
+	if (args->structureInput == NULL || args->structureInputSize > room) {
+		return -1;
+	}
+	memcpy(buf, args->structureInput, args->structureInputSize);
+	return (int)args->structureInputSize;
+}
+
 IOReturn
 AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
@@ -227,6 +359,35 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 		args->scalarOutputCount = 0;
 		ret = sweet_aks_device_state(args);
 		break;
+	case kAKSWrapKey:
+	case kAKSUnwrapKey: {
+		/* scalars {bag handle, key class}; wrap also answers the class in scalar 0 */
+		uint8_t in[72], out[72];
+		const int len = in_scalars >= 2 ? sweet_aks_struct_in(args, in, sizeof(in)) : -1;
+		bool ok = false;
+		uint32_t outLen = 0;
+		if (len > 0 && selector == kAKSWrapKey && len <= 64) {
+			ok = sweet_aks_wrap(in, (uint32_t)len, out);
+			outLen = (uint32_t)len + 8;
+		} else if (len > 0 && selector == kAKSUnwrapKey) {
+			ok = sweet_aks_unwrap(in, (uint32_t)len, out);
+			outLen = (uint32_t)len - 8;
+		}
+		if (!ok) {
+			ret = len < 0 ? kIOReturnBadArgument : kIOReturnError;
+		} else {
+			ret = sweet_aks_struct_out(args, out, outLen);
+		}
+		if (ret == kIOReturnSuccess && selector == kAKSWrapKey && out_scalars >= 1) {
+			args->scalarOutput[0] = args->scalarInput[1];
+			args->scalarOutputCount = 1;
+		} else {
+			args->scalarOutputCount = 0;
+		}
+		bzero(in, sizeof(in));
+		bzero(out, sizeof(out));
+		break;
+	}
 	default:
 		ret = kIOReturnUnsupported;
 		break;
