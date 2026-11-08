@@ -23,6 +23,19 @@ Safari loading a page by name.
   after each join); a heartbeat HTT stats request crashed this firmware (removed).
 - USB console: `wifi scan | join SSID PASS | leave | status`; `type TEXT` (`\n` = Return) types through a virtual keyboard.
 
+## Bluetooth — controller answers (WCN7850 on QUP2 SE6 UART)
+`iokit/Kernel/houji-bt/HoujiBluetooth.cpp`, USB console `bt probe [nocts]` only; nothing runs at boot. Wiring from the SteamOS houji
+port, where this controller pairs: uart14 = QUPv3 wrapper 2 SE6 (`0x898000`), GPIO 24 CTS, 25 RTS, 26 TX, 27 RX (function 1), BT_EN
+GPIO 17 on the WCN7850 PMU whose rails and RF clock the Wi-Fi driver turns on.
+- Verified: SE6 carries the UART protocol (QUP 3.13, 48-word FIFOs); at 115200 8N1 with RTS/CTS the ROM answers the EDL version
+  request (product 0x19, patch 0x43fb, ROM 0x0200, SoC 0x40170200, the same as the SteamOS port's Linux boot) and HCI_Reset (Command
+  Complete, status 0).
+- Only after Wi-Fi has powered the shared rails: a probe before that (40 s into the boot) saw CTS off and RX low.
+- Next: patch and NVM download (`hmtbtfw20.tlv`, `hmtnv20.bin`), 3.2 Mbaud, then the iOS side. bluetoothd exits with
+  `errx(0, "No bluetooth on this device.")` while no `bluetooth` service exists; it wants a `bluetooth` node (`local-mac-address`,
+  `transport-encoding` 1 = H4, `transport-speed`) and the kernel control socket `com.apple.uart.sk.bluetooth`. Until then sharingd's
+  main thread blocks on bluetoothd and Settings waits 10 s for Wi-Fi password sharing before each password prompt.
+
 ## Display power and brightness — working
 `houji-buttons/HoujiScreen.cpp` owns the panel's DSI0 command FIFO (`0x0ae94000`, lonzzi/UniXNU-houji's HoujiBacklightProtocol.h).
 - **Display power follows iOS.** backboardd calls IOMobileFramebuffer selector 12 with 0 on sleep and 1 on wake (seen on every
