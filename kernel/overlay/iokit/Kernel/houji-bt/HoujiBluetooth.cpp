@@ -468,6 +468,7 @@ uint32_t gUnit;            // connected unit, 0: none
 volatile bool gCtlUp;
 unsigned gLogged;          // packets logged so far (the first 200 in each direction)
 uint8_t gTxAsm[1100]; unsigned gTxHave;   // H4 packet being assembled from the client
+unsigned gVendorLogged;
 
 // Length of a complete H4 packet at p (n bytes available), 0 if more bytes are needed, -1 if the type is unknown
 int h4Length(const uint8_t *p, unsigned n) {
@@ -498,6 +499,17 @@ void clientBytes(const uint8_t *p, size_t n) {
         if (len < 0) {IOLog("HOUJI BT: client sent packet type %u; resynchronising\n", gTxAsm[0]); gTxHave = 0; continue;}
         if (len && gTxHave >= (unsigned)len) {
             logPacket("host->ctl", gTxAsm, (unsigned)len);
+            // Vendor-group commands (OGF 0x3f) are Broadcom's and Apple's: BlueTool's boot script (patchram, baud, sleep and audio
+            // set-up) and bluetoothd's own. This controller was booted by the kernel and would refuse them, so they are answered here
+            // with success and no return parameters, never sent.
+            const uint16_t opcode = (uint16_t)(gTxAsm[1] | gTxAsm[2] << 8);
+            if (gTxAsm[0] == 1 && (opcode >> 10) == 0x3f) {
+                const uint8_t done[] = {0x04, 0x0e, 0x04, 0x01, gTxAsm[1], gTxAsm[2], 0x00};
+                if (gVendorLogged++ < 200) IOLog("HOUJI BT: vendor command %04x (%u bytes) answered here\n", opcode, gTxAsm[3]);
+                if (gUnit) ctl_enqueuedata(gCtl, gUnit, done, sizeof done, 0);
+                gTxHave = 0;
+                continue;
+            }
             IOLockLock(gTxLock);
             if (!uartWrite(gTxAsm, (unsigned)len)) IOLog("HOUJI BT: UART write of %d bytes timed out\n", len);
             IOLockUnlock(gTxLock);
@@ -566,7 +578,11 @@ void rxThread(void *, wait_result_t) {
         }
     }
 }
+// MobileGestalt's WifiVendor (which BlueTool asks for before anything else, and waits for) is the vendor-id string of the IOService of
+// class AppleOLYHAL, Apple's wireless module HAL; BlueTool compares it with module makers' names (Murata among them).
+void publishWifiHal();
 bool publishIos() {
+    publishWifiHal();
     // The service bluetoothd matches, also placed in the device tree under /arm-io as on Apple hardware
     IOService *bt = OSTypeAlloc(IOService);
     if (!bt || !bt->init()) {OSSafeReleaseNULL(bt); return false;}
@@ -657,4 +673,21 @@ extern "C" void houji_bt_start(void) {
     thread_t t = nullptr;
     if (kernel_thread_start(bootThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
     else __atomic_store_n(&gBusy, 0u, __ATOMIC_RELEASE);
+}
+
+// The class MobileGestalt matches by name (IOServiceMatching("AppleOLYHAL")); nothing else here.
+class AppleOLYHAL : public IOService {
+    OSDeclareDefaultStructors(AppleOLYHAL);
+};
+OSDefineMetaClassAndStructors(AppleOLYHAL, IOService);
+namespace {
+void publishWifiHal() {
+    AppleOLYHAL *hal = OSTypeAlloc(AppleOLYHAL);
+    if (!hal || !hal->init()) {OSSafeReleaseNULL(hal); return;}
+    hal->setProperty("vendor-id", "Murata");
+    const bool attached = hal->attach(IOService::getPlatform());
+    if (attached) hal->registerService();
+    hal->release();
+    IOLog("HOUJI BT: AppleOLYHAL %s (vendor-id Murata, for MobileGestalt WifiVendor)\n", attached ? "registered" : "not attached");
+}
 }
