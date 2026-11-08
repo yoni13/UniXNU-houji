@@ -18,6 +18,7 @@
 #include <IOKit/IORegistryEntry.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOService.h>
+#include <IOKit/IOPlatformExpert.h>
 #include <IOKit/IOLocks.h>
 #include <pexpert/pexpert.h>
 extern "C" {
