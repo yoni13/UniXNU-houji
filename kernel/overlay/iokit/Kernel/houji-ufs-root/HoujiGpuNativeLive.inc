@@ -101,7 +101,7 @@ static int houjiFullKeepLive(void*){return gHoujiLive.requested && gHoujiLive.re
 #include "HoujiGpuNativeProvider.inc"
 extern "C" uint64_t houji_framebuffer_callback_count(void);   // SweetFramebuffer.cpp: vsync notification count
 extern "C" void houji_framebuffer_pace_report(void);   // SweetFramebuffer.cpp: per-window SwapEnd interval histogram
-extern "C" {extern volatile uint32_t native_adreno_light_prologue;}
+extern "C" {extern volatile uint32_t native_adreno_light_prologue;extern volatile uint32_t native_adreno_wc_lazy;extern volatile uint64_t native_adreno_wc_lazy_stats[4];}
 extern "C" void houji_cpu_dvfs_history_report(void);   // HoujiCpuDvfs.inc: 5 s per-core busy, CPU requests, thermal   // NativeAdrenoSubmit.cpp: board opt-in for the light prologue
 #include "HoujiGpuCoherenceProbe.inc"
 #include "HoujiGpuProbeLog.inc"
@@ -116,6 +116,7 @@ static void houjiLiveWorker(void*,wait_result_t){
  thread_set_thread_name(current_thread(),"houji-gpu-owner");auto&l=gHoujiLive;uint64_t started=houjiSubmitNow(nullptr),busy_since=0,last_saved=UINT64_MAX,last_report=0,last_desktop_save=0,first_draw=0,first_fence=0,base_swaps=0,base_presents=0;unsigned checks=0,probe_state=0;
  if(l.mode>=1)houji_framebuffer_counts(&base_swaps,&base_presents);
  {unsigned light=0;PE_parse_boot_argn("houji_gpu_light",&light,sizeof(light));
+  {unsigned lazy=0;PE_parse_boot_argn("houji_gpu_wc_lazy",&lazy,sizeof(lazy));if(lazy){native_adreno_wc_lazy=1;IOLog("HOUJI GPU WC LAZY: full write-combined re-check after view changes and every 32nd submit; command streams every submit\n");}}
   if(light){native_adreno_light_prologue=1;IOLog("HOUJI GPU LIGHT: light prologue when the VM tables are unchanged since the previous submission\n");}}
  for(;;){
   IOSleep(l.mode==2?250:500);++checks;
@@ -185,6 +186,7 @@ static void houjiLiveWorker(void*,wait_result_t){
       w>lastWindow?(b-lastBusy)*1000/(w-lastWindow):0,(b-lastBusy)/1000000,(w-lastWindow)/1000000,(a903-lastAt903)/1000000);
      lastWindow=w;lastBusy=b;lastAt903=a903;}
     IOLog("HOUJI OVERLAP: overlapped=%llu full-gate=%llu depth-waits=%llu idle=%llu generation=%llu state=%llu guard=%llu\n",native_adreno_overlap_stats[0],native_adreno_overlap_stats[1],native_adreno_overlap_stats[2],native_adreno_overlap_stats[3],native_adreno_overlap_stats[4],native_adreno_overlap_stats[5],native_adreno_overlap_stats[6]);
+    IOLog("HOUJI WC LAZY: lazy=%llu full=%llu audits=%llu audit-resets=%llu\n",native_adreno_wc_lazy_stats[0],native_adreno_wc_lazy_stats[1],native_adreno_wc_lazy_stats[2],native_adreno_wc_lazy_stats[3]);
     IOLog("HOUJI OVERLAP BO: calls=%llu maps-rebased=%llu rebase-refused=%llu\n",native_adreno_overlap_bo[0],native_adreno_overlap_bo[1],native_adreno_overlap_bo[2]);
     {static unsigned reports;if(!(++reports&3)){native_adreno_perf_report();houji_cpu_dvfs_history_report();}}
    }

@@ -141,6 +141,8 @@ public:
     /* Before a submission while write-combined BOs are trusted: every page of every mapped write-combined BO that XNU set back to the
      * default attribute is write-combined again (and its lines written back); *reset counts the pages. */
     IOReturn reassertWriteCombined(uint32_t *reset) const;
+    /* The same for the objects behind these handles only (the submission's command streams). */
+    IOReturn reassertWriteCombinedHandles(const uint64_t *handles,size_t count,uint32_t *reset) const;
     IOReturn auditRange(uint64_t iova,size_t bytes,uint32_t *lines,uint32_t *dirty,uint32_t *stale) const;
     /* Read-only description of a live mapping; never pins or extends it. */
     IOReturn describe(uint64_t handle,uint64_t *iova,size_t *bytes,unsigned *permissions) const;

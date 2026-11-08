@@ -29,6 +29,10 @@ extern "C" IOReturn native_adreno_board_quiesce(void);
 extern "C" IOReturn native_adreno_board_prepare_submit(void);
 extern "C" IOReturn native_adreno_board_prepare_overlap(void);
 extern "C" void houji_frame_note_submit(void);
+extern "C" {extern volatile uint64_t native_adreno_view_epoch;}
+/* Calls that can change the CPU views (and so XNU's cache attribute) of BO pages; see houji_gpu_wc_lazy. */
+/* Stores the time of the latest such call (the CPU mapping itself is made by IOKit after clientMemoryForType returns). */
+static void nativeAdrenoViewsChanged(void){__atomic_store_n(&native_adreno_view_epoch,mach_absolute_time(),__ATOMIC_RELEASE);}
 extern "C" IOReturn native_adreno_board_prepare_bo_overlap(uint32_t method);
 extern "C" void native_adreno_board_finish_bo_overlap(uint32_t method,IOReturn status);
 extern "C" void native_adreno_board_teardown_checkpoint(const char*,uint32_t,uint32_t);
@@ -335,6 +339,7 @@ bool AGXDeviceUserClient::mount(bool kernel)
  * PTE still points at them, whether or not the client unmapped. */
 IOReturn AGXDeviceUserClient::dropViews(uint32_t token)
 {
+    nativeAdrenoViewsChanged();
     IOReturn previous=__atomic_load_n(&view_error_,__ATOMIC_ACQUIRE);
     if(previous)return previous;
     for(;;) {
@@ -403,6 +408,7 @@ void AGXDeviceUserClient::free()
 }
 IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *options,IOMemoryDescriptor **memory)
 {
+    nativeAdrenoViewsChanged();
     if(memory)*memory=nullptr;
     if(g.dying)return kIOReturnNotReady;
     if(__atomic_load_n(&view_error_,__ATOMIC_ACQUIRE))return kIOReturnNotReady;
@@ -615,6 +621,8 @@ static IOReturn nativeAdrenoRunGuarded(AGXDeviceUserClient *connection,uint32_t 
             } else status=connection->core_->dispatch(method,input,input_size,output,output_size,&g.clock);
         }
         timing.lap(2);
+        if(method==NativeAdrenoMethodBoAlloc || method==NativeAdrenoMethodBoImport || method==NativeAdrenoMethodBoFree ||
+           method==NativeAdrenoMethodBoCpuMap || method==NativeAdrenoMethodBoCpuUnmap)nativeAdrenoViewsChanged();
         if(boOverlap)native_adreno_board_finish_bo_overlap(method,status);
         if(!status && nativeAdrenoSubmitMethod(method) && output && output_size==sizeof(NativeAdrenoAbiSubmitReply)) {
             const uint64_t fence=static_cast<const NativeAdrenoAbiSubmitReply*>(output)->fence;

@@ -2,6 +2,7 @@
 #include "NativeAdrenoSubmit.h"
 #include "AdrenoPM4.h"
 #include <IOKit/IOLib.h>
+#include <kern/clock.h>
 // Optional board clock: host checks without a published driver collect no
 // timings. Observations never change submission, references or cache policy.
 extern "C" uint64_t (*native_adreno_vm_now_us)(void);
@@ -21,6 +22,10 @@ static void submitDiagRecord(unsigned slot,uint64_t began) {
 /* Finer parts, [part][0]=count [1]=us: 0 retireCompleted, 1 acquireImported (job release), 2 holdJob, 3 sample/peek words,
  * 4 ring write, 5 TLB step; 6 depth wait and 7 light gate are recorded by the board. */
 extern "C" {volatile uint64_t native_adreno_submit_parts[12][2];volatile uint32_t native_adreno_light_prologue;}
+/* houji_gpu_wc_lazy (board opt-in): the epoch the issuer bumps on every call that can change CPU views of BO pages (alloc,
+ * import, CPU map/unmap, view drop, free). [0] lazy submits, [1] full re-checks, [2] periodic audits, [3] audits that reset a
+ * page the lazy rule would have missed. */
+extern "C" {volatile uint32_t native_adreno_wc_lazy;volatile uint64_t native_adreno_view_epoch;volatile uint64_t native_adreno_wc_lazy_stats[4];}
 extern "C" void native_adreno_submit_part(unsigned part,uint64_t began)
 {
     if(!began || part>=12)return;
@@ -167,7 +172,22 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
          * pmap writes its lines back on the way, so the audit below should then find none. */
         uint32_t reset=0;
         IOReturn reasserted;
-        {SubmitDiagScope measured(3);reasserted=vm_->reassertWriteCombined(&reset);}
+        {SubmitDiagScope measured(3);
+         /* Full re-check within 50 ms of any view-changing call, or every 32nd submission as an audit. */
+         static uint64_t window=0;if(!window)nanoseconds_to_absolutetime(50000000ULL,&window);
+         const uint64_t changed=__atomic_load_n(&native_adreno_view_epoch,__ATOMIC_ACQUIRE),now=mach_absolute_time();
+         const bool recent=!changed || now-changed<window;
+         const bool audit=(audit_tick_&31)==0;
+         if(!native_adreno_wc_lazy || recent || audit) {
+          reasserted=vm_->reassertWriteCombined(&reset);
+          if(native_adreno_wc_lazy) {
+           if(!recent){native_adreno_wc_lazy_stats[2]=native_adreno_wc_lazy_stats[2]+1;if(reset)native_adreno_wc_lazy_stats[3]=native_adreno_wc_lazy_stats[3]+1;}
+           else native_adreno_wc_lazy_stats[1]=native_adreno_wc_lazy_stats[1]+1;
+          }
+         } else {
+          reasserted=vm_->reassertWriteCombinedHandles(handles,handle_count,&reset);
+          native_adreno_wc_lazy_stats[0]=native_adreno_wc_lazy_stats[0]+1;
+         }}
         native_adreno_wc_audit[5]=native_adreno_wc_audit[5]+reset;
         if(reasserted) {
             /* Mandatory page-attribute correction failed. Its error is not

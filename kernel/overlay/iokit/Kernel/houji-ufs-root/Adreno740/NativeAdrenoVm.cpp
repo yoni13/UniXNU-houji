@@ -473,6 +473,19 @@ IOReturn NativeAdrenoVm::reassertWriteCombined(uint32_t *reset) const
     }
     return kIOReturnSuccess;
 }
+IOReturn NativeAdrenoVm::reassertWriteCombinedHandles(const uint64_t *handles,size_t count,uint32_t *reset) const
+{
+    if(!reset || (!handles && count))return kIOReturnBadArgument;
+    if(!attached_ || poisoned_)return kIOReturnNotReady;
+    for(size_t h=0;h<count;++h)for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
+        const Mapping &m=mappings_[i];
+        if(!m.memory || m.handle!=handles[h])continue;
+        const IOReturn status=m.memory->reassertWriteCombined(reset);
+        if(status) {m.memory->quarantine();return status;}
+        break;
+    }
+    return kIOReturnSuccess;
+}
 IOReturn NativeAdrenoVm::auditRange(uint64_t iova,size_t bytes,uint32_t *lines,uint32_t *dirty,uint32_t *stale) const
 {
     if(!lines || !dirty || !stale)return kIOReturnBadArgument;
