@@ -1512,11 +1512,13 @@ extern "C" void houji_wifi_report(void);
 extern "C" void houji_buttons_start(void);
 extern "C" void houji_screen_start(void);
 extern "C" void houji_camera_start(void);
+extern "C" void houji_bt_start(void);
 extern "C" void houji_camera_report(void);
 extern "C" void houji_screen_report(void);
 extern "C" void houji_buttons_report(void);
 extern "C" void houji_power_start(void) {
     houji_wifi_start();
+    houji_bt_start();
     houji_buttons_start();
     houji_screen_start();
     houji_camera_start();

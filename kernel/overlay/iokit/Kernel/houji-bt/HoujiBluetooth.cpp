@@ -17,6 +17,13 @@
 #include <IOKit/IODeviceMemory.h>
 #include <IOKit/IORegistryEntry.h>
 #include <IOKit/IODeviceTreeSupport.h>
+#include <IOKit/IOService.h>
+#include <IOKit/IOLocks.h>
+#include <pexpert/pexpert.h>
+extern "C" {
+#include <sys/kern_control.h>
+#include <sys/kpi_mbuf.h>
+}
 #include <libkern/c++/OSData.h>
 #include <kern/thread.h>
 #include <string.h>
@@ -148,6 +155,9 @@ void pump() {
 unsigned ringCount() {return gHead - gTail;}
 uint8_t ringAt(unsigned i) {return gRing[(gTail + i) % sizeof gRing];}
 
+IOLock *gTxLock, *gRxLock;
+// Receive while transmitting; at run time the receive thread pumps too, so under its lock
+void pumpSafe() {if (gRxLock) {IOLockLock(gRxLock); pump(); IOLockUnlock(gRxLock);} else pump();}
 // Transmit n bytes as one GENI transfer, feeding the TX FIFO as it drains (pumping RX meanwhile).
 bool uartWrite(const uint8_t *p, unsigned n) {
     if (!n) return true;
@@ -157,13 +167,13 @@ bool uartWrite(const uint8_t *p, unsigned n) {
     dsb();
     for (unsigned i = 0; i < n; i += 4) {
         unsigned spins = 0;
-        while ((se(kTxFifoStatus) & 0xfffffff) >= gTxDepth - 1) {pump(); if (++spins > 200000) return false; IODelay(5);}
+        while ((se(kTxFifoStatus) & 0xfffffff) >= gTxDepth - 1) {pumpSafe(); if (++spins > 200000) return false; IODelay(5);}
         uint32_t w = 0;
         for (unsigned k = 0; k < 4 && i + k < n; ++k) w |= (uint32_t)p[i + k] << (8 * k);
         se(kTxFifo) = w;
     }
     dsb();
-    for (unsigned i = 0; i < 40000; ++i) {if (se(kMIrqStatus) & 1u) {se(kMIrqClear) = se(kMIrqStatus); return true;} pump(); IODelay(5);}
+    for (unsigned i = 0; i < 40000; ++i) {if (se(kMIrqStatus) & 1u) {se(kMIrqClear) = se(kMIrqStatus); return true;} pumpSafe(); IODelay(5);}
     return false;
 }
 
@@ -439,6 +449,165 @@ bool bringUp() {
     return true;
 }
 
+// ---- iOS side ----
+// bluetoothd (iOS 16.7) leaves at once ("No bluetooth on this device.") unless IOServiceNameMatching("bluetooth") finds a service, from
+// which it also takes local-mac-address. With BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth,3200000 in its launchd job its POSIX
+// driver connects a stream kernel control of that name (the default, com.apple.uart.sk.bluetooth, wants a Skywalk channel), reads and
+// writes termios through getsockopt TIOCGETA / setsockopt TIOCSETA at SYSPROTO_CONTROL, and then sends and receives H4 packets.
+kern_ctl_ref gCtl;
+uint32_t gUnit;            // connected unit, 0: none
+volatile bool gCtlUp;
+unsigned gLogged;          // packets logged so far (the first 200 in each direction)
+uint8_t gTxAsm[1100]; unsigned gTxHave;   // H4 packet being assembled from the client
+
+// Length of a complete H4 packet at p (n bytes available), 0 if more bytes are needed, -1 if the type is unknown
+int h4Length(const uint8_t *p, unsigned n) {
+    if (!n) return 0;
+    switch (p[0]) {
+    case 1: return n < 4 ? 0 : 4 + p[3];
+    case 2: return n < 5 ? 0 : 5 + (p[3] | p[4] << 8);
+    case 3: return n < 4 ? 0 : 4 + p[3];
+    case 4: return n < 3 ? 0 : 3 + p[2];
+    case 5: return n < 5 ? 0 : 5 + ((p[3] | p[4] << 8) & 0x3fff);
+    default: return -1;
+    }
+}
+void logPacket(const char *dir, const uint8_t *p, unsigned n) {
+    if (gLogged >= 400) return;
+    gLogged++;
+    if (p[0] == 1 && n >= 4) IOLog("HOUJI BT: %s command %04x len %u\n", dir, p[1] | p[2] << 8, p[3]);
+    else if (p[0] == 4 && n >= 3 && p[1] == 0x0e && n >= 7) IOLog("HOUJI BT: %s complete %04x status %02x\n", dir, p[4] | p[5] << 8, p[6]);
+    else if (p[0] == 4 && n >= 3 && p[1] == 0x0f && n >= 7) IOLog("HOUJI BT: %s status %04x status %02x\n", dir, p[5] | p[6] << 8, p[3]);
+    else if (p[0] == 4 && n >= 3) IOLog("HOUJI BT: %s event %02x len %u\n", dir, p[1], p[2]);
+    else IOLog("HOUJI BT: %s packet type %u len %u\n", dir, p[0], n);
+}
+// Client bytes to the controller, a whole H4 packet at a time
+void clientBytes(const uint8_t *p, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        if (gTxHave < sizeof gTxAsm) gTxAsm[gTxHave++] = p[i];
+        const int len = h4Length(gTxAsm, gTxHave);
+        if (len < 0) {IOLog("HOUJI BT: client sent packet type %u; resynchronising\n", gTxAsm[0]); gTxHave = 0; continue;}
+        if (len && gTxHave >= (unsigned)len) {
+            logPacket("host->ctl", gTxAsm, (unsigned)len);
+            IOLockLock(gTxLock);
+            if (!uartWrite(gTxAsm, (unsigned)len)) IOLog("HOUJI BT: UART write of %d bytes timed out\n", len);
+            IOLockUnlock(gTxLock);
+            gTxHave = 0;
+        }
+    }
+}
+// termios as the client sees it (struct termios, LP64): raw, 8 data bits, RTS/CTS, 3.2 Mbaud
+struct Termios {uint64_t iflag, oflag, cflag, lflag; uint8_t cc[20]; uint32_t pad; uint64_t ispeed, ospeed;};
+static_assert(sizeof(Termios) == 72, "struct termios");
+Termios gTermios = {0, 0, 0x300 | 0x800 | 0x8000 | 0x10000 | 0x20000, 0, {}, 0, 3200000, 3200000};
+constexpr int kTiocGeta = 0x40487413, kTiocSeta = 0x80487414;
+errno_t ctlConnect(kern_ctl_ref, struct sockaddr_ctl *sac, void **) {
+    if (!gReady) return ENXIO;
+    if (gUnit) return EBUSY;
+    gUnit = sac->sc_unit; gTxHave = 0;
+    IOLog("HOUJI BT: client connected (unit %u)\n", gUnit);
+    return 0;
+}
+errno_t ctlDisconnect(kern_ctl_ref, u_int32_t unit, void *) {
+    if (unit == gUnit) {gUnit = 0; IOLog("HOUJI BT: client disconnected\n");}
+    return 0;
+}
+errno_t ctlSend(kern_ctl_ref, u_int32_t unit, void *, mbuf_t m, int) {
+    if (unit != gUnit) {mbuf_freem(m); return ENOTCONN;}
+    for (mbuf_t q = m; q; q = mbuf_next(q)) clientBytes(static_cast<const uint8_t *>(mbuf_data(q)), mbuf_len(q));
+    mbuf_freem(m);
+    return 0;
+}
+errno_t ctlSetopt(kern_ctl_ref, u_int32_t, void *, int opt, void *data, size_t len) {
+    if (opt == kTiocSeta && len >= sizeof(Termios)) {
+        const Termios *t = static_cast<const Termios *>(data);
+        IOLog("HOUJI BT: client TIOCSETA cflag %llx speed %llu\n", t->cflag, t->ospeed);
+        gTermios.cflag = t->cflag;
+        return 0;
+    }
+    IOLog("HOUJI BT: client setsockopt %x (%zu bytes) accepted\n", opt, len);
+    return 0;
+}
+errno_t ctlGetopt(kern_ctl_ref, u_int32_t, void *, int opt, void *data, size_t *len) {
+    if (opt == kTiocGeta && data && *len >= sizeof(Termios)) {memcpy(data, &gTermios, sizeof gTermios); *len = sizeof gTermios; return 0;}
+    IOLog("HOUJI BT: client getsockopt %x (%zu bytes) unsupported\n", opt, len ? *len : 0);
+    return ENOPROTOOPT;
+}
+// Controller bytes to the client
+void rxThread(void *, wait_result_t) {
+    uint8_t chunk[512], pkt[1100]; unsigned have = 0;
+    for (;;) {
+        unsigned n = 0;
+        IOLockLock(gRxLock);
+        pump();
+        while (ringCount() && n < sizeof chunk) {chunk[n++] = ringAt(0); gTail++;}
+        IOLockUnlock(gRxLock);
+        if (!n) {IOSleep(1); continue;}
+        for (unsigned i = 0; i < n; ++i) {   // packets, for the log only
+            if (have < sizeof pkt) pkt[have++] = chunk[i];
+            const int len = h4Length(pkt, have);
+            if (len < 0) have = 0;
+            else if (len && have >= (unsigned)len) {logPacket("ctl->host", pkt, (unsigned)len); have = 0;}
+        }
+        if (!gUnit) continue;   // no client: dropped
+        for (unsigned tries = 0; tries < 200; ++tries) {
+            const errno_t e = ctl_enqueuedata(gCtl, gUnit, chunk, n, 0);
+            if (e != ENOBUFS) {if (e) IOLog("HOUJI BT: delivering %u bytes: error %d\n", n, e); break;}
+            IOSleep(1);
+        }
+    }
+}
+bool publishIos() {
+    // The service bluetoothd matches, also placed in the device tree under /arm-io as on Apple hardware
+    IOService *bt = OSTypeAlloc(IOService);
+    if (!bt || !bt->init()) {OSSafeReleaseNULL(bt); return false;}
+    static const char name[] = "bluetooth", compatible[] = "bluetooth,wcn7850", type[] = "bluetooth";
+    const uint32_t encoding = 1, speed = 3200000;   // H4
+    bt->setName(name);
+    bt->setProperty("name", (void *)name, sizeof name);
+    bt->setProperty("compatible", (void *)compatible, sizeof compatible);
+    bt->setProperty("device_type", (void *)type, sizeof type);
+    bt->setProperty("local-mac-address", gAddr, sizeof gAddr);
+    bt->setProperty("transport-encoding", (void *)&encoding, sizeof encoding);
+    bt->setProperty("transport-speed", (void *)&speed, sizeof speed);
+    if (IORegistryEntry *armio = IORegistryEntry::fromPath("/arm-io", gIODTPlane)) {bt->attachToParent(armio, gIODTPlane); armio->release();}
+    const bool attached = bt->attach(IOService::getPlatform());
+    if (attached) bt->registerService();
+    bt->release();
+    // The H4 channel
+    kern_ctl_reg reg = {};
+    strlcpy(reg.ctl_name, "com.apple.uart.bluetooth", sizeof reg.ctl_name);
+    reg.ctl_flags = CTL_FLAG_REG_SOCK_STREAM;
+    reg.ctl_sendsize = 64 * 1024; reg.ctl_recvsize = 64 * 1024;
+    reg.ctl_connect = ctlConnect; reg.ctl_disconnect = ctlDisconnect; reg.ctl_send = ctlSend;
+    reg.ctl_setopt = ctlSetopt; reg.ctl_getopt = ctlGetopt;
+    const errno_t e = ctl_register(&reg, &gCtl);
+    IOLog("HOUJI BT: service bluetooth %s, address %02x:%02x:%02x:%02x:%02x:%02x; control com.apple.uart.bluetooth: %d\n",
+          attached ? "registered" : "not attached", gAddr[0], gAddr[1], gAddr[2], gAddr[3], gAddr[4], gAddr[5], e);
+    return attached && !e;
+}
+void startIos() {
+    if (gCtlUp) return;
+    gTxLock = IOLockAlloc(); gRxLock = IOLockAlloc();
+    if (!gTxLock || !gRxLock || !publishIos()) return;
+    gCtlUp = true;
+    thread_t t = nullptr;
+    if (kernel_thread_start(rxThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
+}
+// houji_bt=1 at boot: bring the controller up once the Wi-Fi driver has powered the shared rails (it answers only then), then publish
+void bootThread(void *, wait_result_t) {
+    makeAddress();
+    IOSleep(20000);
+    for (unsigned attempt = 0; attempt < 32 && !gReady; ++attempt) {
+        if (bringUp()) break;
+        IOSleep(5000);
+    }
+    if (gReady) startIos();
+    else IOLog("HOUJI BT: controller did not come up; Bluetooth stays off\n");
+    __atomic_store_n(&gBusy, 0u, __ATOMIC_RELEASE);
+    thread_terminate(current_thread());
+}
+
 bool gInit;
 void btThread(void *, wait_result_t) {
     makeAddress();
@@ -457,6 +626,7 @@ void btThread(void *, wait_result_t) {
 
 // USB console "bt probe [nocts]" | "bt init"
 extern "C" void houji_bt_command(const char *what) {
+    if (gCtlUp) {IOLog("HOUJI BT: running for iOS; console commands are off\n"); return;}
     const bool probe = !strncmp(what, "probe", 5), init = !strncmp(what, "init", 4);
     if (!probe && !init) {IOLog("HOUJI BT: commands: bt probe [nocts] | bt init\n"); return;}
     uint32_t idle = 0;
@@ -465,5 +635,17 @@ extern "C" void houji_bt_command(const char *what) {
     gCts = !(probe && !strncmp(what + 5, " nocts", 6));
     thread_t t = nullptr;
     if (kernel_thread_start(btThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
+    else __atomic_store_n(&gBusy, 0u, __ATOMIC_RELEASE);
+}
+
+// Boot: houji_bt=1 runs the bring-up and publishes Bluetooth to iOS (off by default)
+extern "C" void houji_bt_start(void) {
+    unsigned on = 0;
+    PE_parse_boot_argn("houji_bt", &on, sizeof on);
+    if (!on) return;
+    uint32_t idle = 0;
+    if (!__atomic_compare_exchange_n(&gBusy, &idle, 1u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+    thread_t t = nullptr;
+    if (kernel_thread_start(bootThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
     else __atomic_store_n(&gBusy, 0u, __ATOMIC_RELEASE);
 }
