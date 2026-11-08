@@ -519,10 +519,14 @@ void clientBytes(const uint8_t *p, size_t n) {
             const uint16_t opcode = (uint16_t)(gTxAsm[1] | gTxAsm[2] << 8);
             // Read/Write Default Erroneous Data Reporting (0x0c5a/0x0c5b): bluetoothd's HCI initialisation requires them (status
             // 628, "HCI initialization failed"); this controller does not list them. Answered here: reporting off, the default.
-            if (gTxAsm[0] == 1 && (opcode == 0x0c5a || opcode == 0x0c5b)) {
-                const uint8_t done[] = {0x04, 0x0e, (uint8_t)(opcode == 0x0c5a ? 5 : 4), 0x01, gTxAsm[1], gTxAsm[2], 0x00, 0x00};
+            // LE_Read_Periodic_Advertiser_List_Size (0x204a) is one of the extended advertising commands; after one, the WCN7850
+            // refuses legacy advertising and scanning commands (Command Disallowed, as the specification allows), which bluetoothd
+            // uses with extended advertising off. Answered here: list size 0.
+            if (gTxAsm[0] == 1 && (opcode == 0x0c5a || opcode == 0x0c5b || opcode == 0x204a)) {
+                const bool value = opcode != 0x0c5b;
+                const uint8_t done[] = {0x04, 0x0e, (uint8_t)(value ? 5 : 4), 0x01, gTxAsm[1], gTxAsm[2], 0x00, 0x00};
                 IOLog("HOUJI BT: command %04x answered here\n", opcode);
-                deliver(done, opcode == 0x0c5a ? 8u : 7u);
+                deliver(done, value ? 8u : 7u);
                 gTxHave = 0;
                 continue;
             }
