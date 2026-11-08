@@ -294,7 +294,8 @@ public:
 	uint32_t      fSwapID;
 	bool          fConsolePaused;
 	HoujiFrameQueue<HoujiDisplayFrame,8> fFrames;
-	int           fGpuSync=0,fGpuCache=0,fImmediate=1;
+	/* GPU-sync and cached copies on by default, as every houji boot line sets them; the boot arguments still override. */
+	int           fGpuSync=1,fGpuCache=1,fImmediate=1;
 	uint32_t      fCacheLine=64;
 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
 	SweetSurface *fScanout;
