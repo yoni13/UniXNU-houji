@@ -35,7 +35,8 @@ extern "C" void houji_touch_report(void) {
   for(unsigned i=0;i<6;i++)IOLog("HOUJI TOUCH RO: gpio%u cfg=%x io=%x\n",ht_gpio[i],s.gpio_config[i],s.gpio_io[i]);
 }
 static void touchProbeOnce(void) {
-  int enabled=0;PE_parse_boot_argn("houji_touch_probe",&enabled,sizeof(enabled));
+  /* On by default: the touch driver needs this handoff capture (result 20 without it). houji_touch_probe=0 turns it off. */
+  int enabled=1;PE_parse_boot_argn("houji_touch_probe",&enabled,sizeof(enabled));
   if(enabled!=1)return;
   houji_ufs_checkpoint("before read-only touch handoff capture",0);
   struct ht_probe_ops ops={nullptr,touchProbeRead32};

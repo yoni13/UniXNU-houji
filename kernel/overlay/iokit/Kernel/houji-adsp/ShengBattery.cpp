@@ -237,8 +237,10 @@ class ShengBattery : public IOPMPowerSource {
 public:
     bool startBattery() {
         sheng_battmgr_init(&bm);
-        uint32_t ma = 0;
-        if (PE_parse_boot_argn("houji_usb_sdp_ma", &ma, sizeof ma)) bm.sdp_limit_ua = ma > 3000 ? 3000000u : ma * 1000u;
+        /* 900 mA SDP limit by default (500 mA lost charge under load); houji_usb_sdp_ma overrides. */
+        uint32_t ma = 900;
+        PE_parse_boot_argn("houji_usb_sdp_ma", &ma, sizeof ma);
+        bm.sdp_limit_ua = ma > 3000 ? 3000000u : ma * 1000u;
         sdpLimit = bm.sdp_limit_ua;
         unsigned fcc = 1000;
         PE_parse_boot_argn("houji_fcc_ma", &fcc, sizeof fcc);

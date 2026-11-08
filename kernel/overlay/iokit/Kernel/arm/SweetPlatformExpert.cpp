@@ -35,8 +35,11 @@ SweetPlatformExpert::start(IOService *provider)
 	if (!IODTPlatformExpert::start(provider)) {
 		return false;
 	}
-	uint64_t seed=0;
-	if (PE_parse_boot_argn("houji_epoch",&seed,sizeof(seed)) && seed>=1767225600ULL && seed<4102444800ULL) {
+	/* Default seed = the value every houji boot line carried (2026-10-24); without a seed the clock starts in 1970
+	 * and backboardd fails to set up the GPU. houji_epoch overrides. */
+	uint64_t seed=1792839100ULL;
+	PE_parse_boot_argn("houji_epoch",&seed,sizeof(seed));
+	if (seed>=1767225600ULL && seed<4102444800ULL) {
 		houjiClockRate=__builtin_arm_rsr64("CNTFRQ_EL0");
 		houjiBootTicks=mach_absolute_time();houjiBootUtc=seed;
 		IOLog("HOUJI CLOCK: host-supplied UTC seed=%llu rate=%llu; no hardware RTC driver\n",seed,houjiClockRate);

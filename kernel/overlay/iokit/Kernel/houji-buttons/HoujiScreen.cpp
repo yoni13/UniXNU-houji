@@ -123,8 +123,9 @@ void screenThread(void *, wait_result_t) {
     else if (readLevel(&level) && level >= HBL_MIN && level <= HBL_MAX) {gLevel = level; st[7] = (int32_t)level;}
     st[0] = 1; st[1] = 1; st[2] = (int32_t)gLevel;
     IOLog("HOUJI SCREEN: ready, level %u (%s), panel sleep %s\n", gLevel, st[7] ? "read from the panel" : "default", gSleepIn ? "on" : "off");
-    unsigned autolock = 60; PE_parse_boot_argn("houji_autolock", &autolock, sizeof autolock);
-    unsigned lockscreen = 10; PE_parse_boot_argn("houji_autolock_lockscreen", &lockscreen, sizeof lockscreen);
+    /* Off by default, as every houji boot line sets; houji_autolock=N enables N seconds. */
+    unsigned autolock = 0; PE_parse_boot_argn("houji_autolock", &autolock, sizeof autolock);
+    unsigned lockscreen = 0; PE_parse_boot_argn("houji_autolock_lockscreen", &lockscreen, sizeof lockscreen);
     if (lockscreen > autolock) lockscreen = autolock;
     uint64_t activeSince = mach_absolute_time(), lockPressed = 0;
     for (;;) {
