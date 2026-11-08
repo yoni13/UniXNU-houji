@@ -226,7 +226,13 @@ int command(uint16_t opcode, const uint8_t *params, uint8_t plen, uint8_t *ret, 
         }
         dump("other event", ev, n);
     }
-    IOLog("HOUJI BT: command %04x: no Command Complete\n", opcode);
+    {
+        uint8_t b[24]; const unsigned c = ringCount() < sizeof b ? ringCount() : (unsigned)sizeof b;
+        for (unsigned i = 0; i < c; ++i) b[i] = ringAt(i);
+        IOLog("HOUJI BT: command %04x: no Command Complete; RX FIFO %x S-IRQ %x GENI %x IOS %x RFR %x, %u bytes buffered\n", opcode,
+              se(kRxFifoStatus), se(kSIrqStatus), se(kStatus), se(kIos), se(kManualRfr), ringCount());
+        if (c) dump("buffered", b, c);
+    }
     return -1;
 }
 // EDL (opcode 0xfc00) request with one sub-command byte: the reply's EDL data after {status, sub-command} into out
@@ -376,6 +382,20 @@ bool bringUp() {
         const uint64_t asked = nowMs();
         n = edl(0x23, b, sizeof b, 10000);   // {length, id high, id low}; Linux allows HCI_INIT_TIMEOUT
         IOLog("HOUJI BT: board id reply after %llu ms (%d)\n", nowMs() - asked, n);
+        if (n < 0) {
+            static const uint8_t version[] = {0x01, 0x01, 0x10, 0x00};   // HCI_Read_Local_Version_Information
+            const unsigned before = ringCount();
+            uartWrite(version, sizeof version);
+            const uint64_t end = nowMs() + 300;
+            while (nowMs() < end) {pump(); IODelay(100);}
+            uint8_t raw[48]; const unsigned c = ringCount() < sizeof raw ? ringCount() : (unsigned)sizeof raw;
+            for (unsigned i = 0; i < c; ++i) raw[i] = ringAt(i);
+            IOLog("HOUJI BT: after Read_Local_Version: %u bytes (%u before)\n", ringCount(), before);
+            if (c) dump("raw after the nudge", raw, c);
+            uint8_t ev[64];
+            if (readEvent(ev, sizeof ev, 10) >= 9 && ev[0] == 0x0e && ev[5] == 0 && ev[6] == 0x23) {b[0] = ev[7]; b[1] = ev[8]; b[2] = ev[9]; n = 3;}
+            gTail = gHead;
+        }
     }
     const unsigned board = n >= 3 ? (unsigned)(b[1] << 8 | b[2]) : 0;
     bs[6] = (int32_t)board;
