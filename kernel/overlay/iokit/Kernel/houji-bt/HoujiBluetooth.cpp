@@ -511,6 +511,7 @@ void clientBytes(const uint8_t *p, size_t n) {
                 continue;
             }
             IOLockLock(gTxLock);
+            gTxBytes += (unsigned)len;
             if (!uartWrite(gTxAsm, (unsigned)len)) IOLog("HOUJI BT: UART write of %d bytes timed out\n", len);
             IOLockUnlock(gTxLock);
             gTxHave = 0;
@@ -555,15 +556,18 @@ errno_t ctlGetopt(kern_ctl_ref, u_int32_t, void *, int opt, void *data, size_t *
     return ENOPROTOOPT;
 }
 // Controller bytes to the client
+volatile uint64_t gRxLoops, gRxBytes, gTxBytes;
 void rxThread(void *, wait_result_t) {
     uint8_t chunk[512], pkt[1100]; unsigned have = 0;
     for (;;) {
         unsigned n = 0;
+        gRxLoops++;
         IOLockLock(gRxLock);
         pump();
         while (ringCount() && n < sizeof chunk) {chunk[n++] = ringAt(0); gTail++;}
         IOLockUnlock(gRxLock);
         if (!n) {IOSleep(1); continue;}
+        gRxBytes += n;
         for (unsigned i = 0; i < n; ++i) {   // packets, for the log only
             if (have < sizeof pkt) pkt[have++] = chunk[i];
             const int len = h4Length(pkt, have);
@@ -651,7 +655,14 @@ void btThread(void *, wait_result_t) {
 
 // USB console "bt probe [nocts]" | "bt init"
 extern "C" void houji_bt_command(const char *what) {
-    if (gCtlUp) {IOLog("HOUJI BT: running for iOS; console commands are off\n"); return;}
+    if (gCtlUp) {
+        if (!strncmp(what, "stat", 4))
+            IOLog("HOUJI BT: stat rx-loops %llu rx-bytes %llu tx-bytes %llu ring %u/%u dropped %u; RX FIFO %x S-IRQ %x M-IRQ %x GENI %x IOS %x RFR %x"
+                  " TX FIFO %x client %u\n", gRxLoops, gRxBytes, gTxBytes, gHead, gTail, gDropped, se(kRxFifoStatus), se(kSIrqStatus),
+                  se(kMIrqStatus), se(kStatus), se(kIos), se(kManualRfr), se(kTxFifoStatus), gUnit);
+        else IOLog("HOUJI BT: running for iOS; only \"bt stat\"\n");
+        return;
+    }
     const bool probe = !strncmp(what, "probe", 5), init = !strncmp(what, "init", 4);
     if (!probe && !init) {IOLog("HOUJI BT: commands: bt probe [nocts] | bt init\n"); return;}
     uint32_t idle = 0;
