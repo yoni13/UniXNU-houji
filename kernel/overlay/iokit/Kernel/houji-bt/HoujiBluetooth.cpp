@@ -85,7 +85,8 @@ enum : uint32_t {
 unsigned gTxDepth, gRxDepth, gSampling = 16;
 bool gCts = true;
 
-void readStart() {se(kSCmd0) = 1u << 27; dsb();}   // UART_START_READ, runs until cancelled
+// UART_START_READ, runs until cancelled; with the RX watermark and RX-last (stale) status enabled, as qcom_geni_serial_start_rx_fifo does
+void readStart() {se(kSCmd0) = 1u << 27; se(kSIrqEn) = se(kSIrqEn) | (1u << 26) | (1u << 27); dsb();}
 void readStop() {
     if (!(se(kStatus) & (1u << 12))) return;    // S_GENI_CMD_ACTIVE
     se(kSCmdCtrl) = 1u << 2;                    // cancel
@@ -177,9 +178,10 @@ void dump(const char *what, const uint8_t *p, unsigned n) {
 
 // The next HCI event (H4 type 4) within ms milliseconds into ev (its code, length and parameters); other bytes before it are skipped and
 // counted. Returns the event's byte count, 0 on timeout.
-unsigned skippedBytes;
+unsigned skippedBytes, flushes;
 unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
     const uint64_t end = nowMs() + ms;
+    unsigned lastCount = ~0u; uint64_t quietSince = nowMs();
     for (;;) {
         pump();
         while (ringCount() && ringAt(0) != 0x04) {gTail++; skippedBytes++;}
@@ -190,6 +192,12 @@ unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
                 for (unsigned i = 0; i < len; ++i) {const uint8_t b = ringAt(0); gTail++; if (i < room) ev[i] = b;}
                 return len < room ? len : room;
             }
+        }
+        // A packet started but incomplete and nothing new for 3 ms: its tail may be a partial word the engine has not released.
+        // Cancelling the read flushes it into the FIFO (qcom_geni_serial_stop_rx_fifo); drain it and read again.
+        if (ringCount()) {
+            if (ringCount() != lastCount) {lastCount = ringCount(); quietSince = nowMs();}
+            else if (nowMs() - quietSince >= 3) {readStop(); pump(); readStart(); flushes++; quietSince = nowMs();}
         }
         if (nowMs() > end) return 0;
         IODelay(50);
@@ -435,7 +443,8 @@ bool bringUp() {
     bs[7] = (int32_t)(nowMs() - began);
     bs[0] = 12; bs[4] = 1;
     gReady = true;
-    IOLog("HOUJI BT: controller ready at 3.2 Mbaud in %llu ms (skipped %u stray bytes, dropped %u)\n", nowMs() - began, skippedBytes, gDropped);
+    IOLog("HOUJI BT: controller ready at 3.2 Mbaud in %llu ms (skipped %u stray bytes, dropped %u, %u partial-word flushes)\n", nowMs() - began,
+          skippedBytes, gDropped, flushes);
     return true;
 }
 
