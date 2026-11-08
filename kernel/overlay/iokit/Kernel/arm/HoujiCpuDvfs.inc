@@ -22,7 +22,8 @@ extern "C" uint64_t houji_dvfs_touch_time(void) {
 namespace HoujiCpuDvfs {
 constexpr unsigned domains=4,rows=40;
 constexpr unsigned cpuDomain[8]={0,0,3,3,3,1,1,2},counts[4]={2,2,1,3};
-constexpr uint32_t caps[4]={2265600,2956800,3052800,3148800};
+/* houji_cpu_x4_boost=1 lifts the X4 (domain 2) cap to its factory boost row, 3302400 kHz (stock lists it separately). */
+static uint32_t caps[4]={2265600,2956800,3052800,3148800};
 constexpr uint32_t minima[4]={364800,499200,480000,499200};
 struct Domain {
  IOMemoryMap *map;uintptr_t va;uint32_t khz[rows];uint8_t index[rows];
@@ -167,6 +168,7 @@ static void start(){
   }
   {unsigned pct=0;if(PE_parse_boot_argn("houji_cpu_touch_pct",&pct,sizeof(pct)) && pct<=100)houjiDvfsFloors[1]=pct;}
   IOLog("HOUJI CPU DVFS FLOORS: frame=%u%% touch=%u%% recent=%u%% thermal-spike=%u\n",houjiDvfsFloors[0],houjiDvfsFloors[1],houjiDvfsFloors[2],spikePolicy);}
+ {unsigned x4=0;if(PE_parse_boot_argn("houji_cpu_x4_boost",&x4,sizeof(x4)) && x4)caps[2]=3302400;IOLog("HOUJI CPU X4 CAP: %u kHz\n",caps[2]);}
  for(unsigned id=0;id<domains;id++)if(!init(id)){IOLog("HOUJI CPU DVFS: domain=%u factory validation refused; no frequency writes\n",id);return;}
  for(unsigned id=0;id<domains;id++)if(!vote(id,d[id].cur)){IOLog("HOUJI CPU DVFS: initial readback refused domain=%u\n",id);return;}
  thread_t t;if(kernel_thread_start(worker,nullptr,&t)==KERN_SUCCESS)thread_deallocate(t);
