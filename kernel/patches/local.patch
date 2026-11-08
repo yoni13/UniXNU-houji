@@ -3542,10 +3542,10 @@ index 0a00656..437adb1 100644
  	read_lbr();
  #endif
 diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
-index 809dafa..78a9cb8 100644
+index 809dafa..35d6106 100644
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
-@@ -820,6 +820,297 @@ exception_triage(
+@@ -820,6 +820,327 @@ exception_triage(
  	return exception_triage_thread(exception, code, codeCnt, thread);
  }
  
@@ -3774,7 +3774,7 @@ index 809dafa..78a9cb8 100644
 +#include <arm/cpu_data_internal.h>
 +#include <arm/machine_routines.h>
 +void houji_prof_task(const char *name, int pid, task_t task, unsigned samples);
-+struct houji_prof_cpu { uint64_t pc, lr, fp; uint32_t user, valid; };
++struct houji_prof_cpu { uint64_t pc, lr, fp, tid; uint32_t user, valid; };
 +struct houji_prof_ctx { task_t task; struct houji_prof_cpu cpu[16]; };
 +static void
 +houji_prof_xcall(void *arg)
@@ -3787,7 +3787,7 @@ index 809dafa..78a9cb8 100644
 +	arm_saved_state_t *is = getCpuDatap()->cpu_int_state;
 +	arm_saved_state_t *ss = (is != NULL && is_saved_state64(is) && PSR64_IS_USER(get_saved_state_cpsr(is))) ? is : find_user_regs(th);
 +	if (ss == NULL || !is_saved_state64(ss)) return;
-+	ctx->cpu[n] = (struct houji_prof_cpu){ get_saved_state_pc(ss), get_saved_state_lr(ss), get_saved_state_fp(ss), ss == is, 1 };
++	ctx->cpu[n] = (struct houji_prof_cpu){ get_saved_state_pc(ss), get_saved_state_lr(ss), get_saved_state_fp(ss), thread_tid(th), ss == is, 1 };
 +}
 +
 +void
@@ -3821,7 +3821,7 @@ index 809dafa..78a9cb8 100644
 +			if (!ctx->cpu[c].valid) continue;
 +			char line[480];
 +			uint64_t fp = ctx->cpu[c].fp;
-+			int n = snprintf(line, sizeof(line), "PRF %u c%u %c 0x%llx 0x%llx", s, c, ctx->cpu[c].user ? 'U' : 'K', ctx->cpu[c].pc, ctx->cpu[c].lr);
++			int n = snprintf(line, sizeof(line), "PRF %u c%u %c i%llu 0x%llx 0x%llx", s, c, ctx->cpu[c].user ? 'U' : 'K', ctx->cpu[c].tid, ctx->cpu[c].pc, ctx->cpu[c].lr);
 +			for (int f = 0; f < 14 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; f++) {
 +				uint64_t frame[2];
 +				if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) break;
@@ -3830,6 +3830,36 @@ index 809dafa..78a9cb8 100644
 +				fp = frame[0];
 +			}
 +			printf("%s\n", line);
++		}
++		/* Every 8th sample: each waiting thread of the task, where it blocked (its saved user state is exact). */
++		if ((s & 7) == 0) {
++			enum { WAITERS = 48 };
++			struct { uint64_t pc, lr, fp, tid; } w[WAITERS];
++			unsigned nw = 0;
++			thread_t thread;
++			task_lock(task);
++			queue_iterate(&task->threads, thread, thread_t, task_threads) {
++				if (nw < WAITERS && (thread->state & TH_WAIT) && !(thread->state & TH_RUN)) {
++					arm_saved_state_t *ss = find_user_regs(thread);
++					if (ss != NULL && is_saved_state64(ss)) {
++						w[nw++] = (typeof(w[0])){ get_saved_state_pc(ss), get_saved_state_lr(ss), get_saved_state_fp(ss), thread_tid(thread) };
++					}
++				}
++			}
++			task_unlock(task);
++			for (unsigned i = 0; i < nw; i++) {
++				char line[480];
++				uint64_t fp = w[i].fp;
++				int n = snprintf(line, sizeof(line), "PRF %u w W i%llu 0x%llx 0x%llx", s, w[i].tid, w[i].pc, w[i].lr);
++				for (int f = 0; f < 14 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; f++) {
++					uint64_t frame[2];
++					if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) break;
++					n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
++					if (frame[0] <= fp) break;
++					fp = frame[0];
++				}
++				printf("%s\n", line);
++			}
 +		}
 +		delay(2000);
 +	}
@@ -3843,7 +3873,7 @@ index 809dafa..78a9cb8 100644
  kern_return_t
  bsd_exception(
  	exception_type_t        exception,
-@@ -910,3 +1201,12 @@ sys_perf_notify(thread_t thread, int pid)
+@@ -910,3 +1231,12 @@ sys_perf_notify(thread_t thread, int pid)
  
  	return ret;
  }
