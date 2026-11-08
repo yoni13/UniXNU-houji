@@ -469,6 +469,7 @@ volatile bool gCtlUp;
 unsigned gLogged;          // packets logged so far (the first 200 in each direction)
 uint8_t gTxAsm[1100]; unsigned gTxHave;   // H4 packet being assembled from the client
 unsigned gVendorLogged;
+volatile uint64_t gRxLoops, gRxBytes, gTxBytes;
 
 // Length of a complete H4 packet at p (n bytes available), 0 if more bytes are needed, -1 if the type is unknown
 int h4Length(const uint8_t *p, unsigned n) {
@@ -556,7 +557,6 @@ errno_t ctlGetopt(kern_ctl_ref, u_int32_t, void *, int opt, void *data, size_t *
     return ENOPROTOOPT;
 }
 // Controller bytes to the client
-volatile uint64_t gRxLoops, gRxBytes, gTxBytes;
 void rxThread(void *, wait_result_t) {
     uint8_t chunk[512], pkt[1100]; unsigned have = 0;
     for (;;) {
