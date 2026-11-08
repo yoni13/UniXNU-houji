@@ -1205,10 +1205,65 @@ index 91b7c60..bf8f0cc 100644
  			nx->nx_prov = NULL;
  			goto done;
 diff --git a/bsd/skywalk/nexus/nexus_syscalls.c b/bsd/skywalk/nexus/nexus_syscalls.c
-index 3768752..a825dec 100644
+index 3768752..8b02f3d 100644
 --- a/bsd/skywalk/nexus/nexus_syscalls.c
 +++ b/bsd/skywalk/nexus/nexus_syscalls.c
-@@ -337,6 +337,9 @@ __nexus_create(struct proc *p, struct __nexus_create_args *uap, int *retval)
+@@ -79,6 +79,18 @@ nxop_close(struct fileglob *fg, vfs_context_t ctx)
+ 	return error;
+ }
+ 
++/* SWEET: log failing nexus system calls with their error (bluetoothd's audio path fails in one). */
++static inline int
++houji_sk_ret(struct proc *p, const char *fn, int err)
++{
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (err != 0) {
++		printf("SKYWALK: %s[%d] %s failed: %d\n", proc_best_name(p), proc_pid(p), fn, err);
++	}
++#endif
++	return err;
++}
++
+ int
+ __nexus_open(struct proc *p, struct __nexus_open_args *uap, int *retval)
+ {
+@@ -164,7 +176,7 @@ done:
+ 		}
+ 	}
+ 
+-	return err;
++	return houji_sk_ret(p, __func__, err);
+ }
+ 
+ int
+@@ -191,7 +203,7 @@ __nexus_register(struct proc *p, struct __nexus_register_args *uap, int *retval)
+ 	err = copyin(uap->reg, (caddr_t)&reg, sizeof(reg));
+ 	if (err != 0) {
+ 		SK_DSC(p, "copyin err %d, reg 0x%llx", err, SK_KVA(uap->reg));
+-		return err;
++		return houji_sk_ret(p, __func__, err);
+ 	}
+ 
+ 	if (__improbable(reg.nxpreg_version != NXPROV_REG_CURRENT_VERSION)) {
+@@ -209,7 +221,7 @@ __nexus_register(struct proc *p, struct __nexus_register_args *uap, int *retval)
+ 	err = fp_get_ftype(p, uap->ctl, DTYPE_NEXUS, ENODEV, &fp);
+ 	if (__improbable(err != 0)) {
+ 		SK_DSC(p, "fp_get_ftype: %d", err);
+-		return err;
++		return houji_sk_ret(p, __func__, err);
+ 	}
+ 	nxctl = (struct nxctl *)fp_get_data(fp);
+ 
+@@ -241,7 +253,7 @@ done:
+ 		nxprov_release(nxprov);
+ 	}
+ 
+-	return err;
++	return houji_sk_ret(p, __func__, err);
+ }
+ 
+ int
+@@ -337,6 +349,9 @@ __nexus_create(struct proc *p, struct __nexus_create_args *uap, int *retval)
  	if (__improbable(nx == NULL)) {
  		ASSERT(err != 0);
  		SK_DSC(p, "nx_create: %d", err);
