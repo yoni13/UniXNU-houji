@@ -32,6 +32,22 @@ extern "C" void houji_frame_note_submit(void);
 extern "C" {extern volatile uint64_t native_adreno_view_epoch;}
 /* Calls that can change the CPU views (and so XNU's cache attribute) of BO pages; see houji_gpu_wc_lazy. */
 /* Stores the time of the latest such call (the CPU mapping itself is made by IOKit after clientMemoryForType returns). */
+/* houji_bbd_cpu=N (default off): bind backboardd's render thread, the thread making its GPU submits (the runtime submits on
+ * the thread that waits for scheduling), to CPU N. XNU here schedules the Cortex-A720 and Cortex-X4 cores alike; the
+ * render thread ran on the A720s (279 of 283 samples) while the X4 (CPU 7) sat nearly idle. One thread is bound, once. */
+extern "C" processor_t cpu_to_processor(int cpu);
+extern "C" processor_t thread_bind(processor_t processor);
+extern "C" {volatile uint64_t native_adreno_bbd_bind[3];}   /* [0] bound (1), [1] cpu, [2] submits seen before binding */
+static void nativeAdrenoMaybeBindRenderThread(void){
+ static int cpu=-2;if(cpu==-2){unsigned v=0;cpu=PE_parse_boot_argn("houji_bbd_cpu",&v,sizeof(v)) && v<8?(int)v:-1;}
+ if(cpu<0 || native_adreno_bbd_bind[0])return;
+ static void *candidate;static unsigned count;void *self=(void *)current_thread();
+ if(candidate!=self){candidate=self;count=0;}
+ if(++count<200)return;
+ processor_t target=cpu_to_processor(cpu);if(!target)return;
+ native_adreno_bbd_bind[0]=1;native_adreno_bbd_bind[1]=(uint64_t)cpu;native_adreno_bbd_bind[2]=count;
+ (void)thread_bind(target);(void)thread_block(THREAD_CONTINUE_NULL);
+}
 static void nativeAdrenoViewsChanged(void){__atomic_store_n(&native_adreno_view_epoch,mach_absolute_time(),__ATOMIC_RELEASE);}
 extern "C" IOReturn native_adreno_board_prepare_bo_overlap(uint32_t method);
 extern "C" void native_adreno_board_finish_bo_overlap(uint32_t method,IOReturn status);
@@ -707,6 +723,7 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
     native_adreno_metal_diag.inflight_since_calls=native_adreno_metal_diag.calls;
     IOReturn status;
     NativeAdrenoDispatchClock timing;
+    if(nativeAdrenoSubmitMethod(method) && !strncmp(connection->name_,"backboardd",sizeof(connection->name_)))nativeAdrenoMaybeBindRenderThread();
     const NativeAdrenoStatus *boardStatus=method==NativeAdrenoMethodGetStatus?native_adreno_board_status():nullptr;
     if(method==NativeAdrenoMethodWaitFence && connection->live_ && input && input_size==sizeof(NativeAdrenoAbiWaitFence) && g.clock.now_us) {
         status=nativeAdrenoWaitFence(connection,input,output,output_size,timing);
