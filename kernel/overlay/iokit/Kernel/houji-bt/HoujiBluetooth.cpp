@@ -130,6 +130,10 @@ uint8_t gRing[16384];
 uint32_t gHead, gTail;   // free-running
 unsigned gDropped;
 void pump() {
+    // Clear the receive status first, every time (qcom_geni_serial handle_rx): a stale-timeout status left pending after a transfer
+    // that ended on a word boundary kept the next reply's partial last word from being released.
+    const uint32_t irq = se(kSIrqStatus);
+    if (irq) se(kSIrqClear) = irq;
     const uint32_t st = se(kRxFifoStatus);
     const unsigned words = st & 0x1ffffff;
     for (unsigned w = 0; w < words; ++w) {
@@ -141,7 +145,6 @@ void pump() {
             gRing[gHead++ % sizeof gRing] = (uint8_t)(v >> (8 * k));
         }
     }
-    if (words) se(kSIrqClear) = se(kSIrqStatus);
 }
 unsigned ringCount() {return gHead - gTail;}
 uint8_t ringAt(unsigned i) {return gRing[(gTail + i) % sizeof gRing];}
@@ -373,14 +376,6 @@ bool bringUp() {
         const uint64_t asked = nowMs();
         n = edl(0x23, b, sizeof b, 10000);   // {length, id high, id low}; Linux allows HCI_INIT_TIMEOUT
         IOLog("HOUJI BT: board id reply after %llu ms (%d)\n", nowMs() - asked, n);
-        if (n < 0) {
-            // A wake-up: one byte that is not a packet type starts nothing on the controller (H4 resynchronises), then look again
-            static const uint8_t kick[] = {0xfd};
-            uartWrite(kick, 1);
-            uint8_t ev[64]; const unsigned e = readEvent(ev, sizeof ev, 2000);
-            if (e) dump("after a wake byte", ev, e);
-            if (e >= 8 && ev[0] == 0x0e && ev[5] == 0 && ev[6] == 0x23) {b[0] = ev[7]; b[1] = ev[8]; b[2] = e > 9 ? ev[9] : 0; n = (int)e - 7;}
-        }
     }
     const unsigned board = n >= 3 ? (unsigned)(b[1] << 8 | b[2]) : 0;
     bs[6] = (int32_t)board;
