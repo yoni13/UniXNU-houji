@@ -23,18 +23,36 @@ Safari loading a page by name.
   after each join); a heartbeat HTT stats request crashed this firmware (removed).
 - USB console: `wifi scan | join SSID PASS | leave | status`; `type TEXT` (`\n` = Return) types through a virtual keyboard.
 
-## Bluetooth — controller answers (WCN7850 on QUP2 SE6 UART)
-`iokit/Kernel/houji-bt/HoujiBluetooth.cpp`, USB console `bt probe [nocts]` only; nothing runs at boot. Wiring from the SteamOS houji
-port, where this controller pairs: uart14 = QUPv3 wrapper 2 SE6 (`0x898000`), GPIO 24 CTS, 25 RTS, 26 TX, 27 RX (function 1), BT_EN
-GPIO 17 on the WCN7850 PMU whose rails and RF clock the Wi-Fi driver turns on.
-- Verified: SE6 carries the UART protocol (QUP 3.13, 48-word FIFOs); at 115200 8N1 with RTS/CTS the ROM answers the EDL version
-  request (product 0x19, patch 0x43fb, ROM 0x0200, SoC 0x40170200, the same as the SteamOS port's Linux boot) and HCI_Reset (Command
-  Complete, status 0).
-- Only after Wi-Fi has powered the shared rails: a probe before that (40 s into the boot) saw CTS off and RX low.
-- Next: patch and NVM download (`hmtbtfw20.tlv`, `hmtnv20.bin`), 3.2 Mbaud, then the iOS side. bluetoothd exits with
-  `errx(0, "No bluetooth on this device.")` while no `bluetooth` service exists; it wants a `bluetooth` node (`local-mac-address`,
-  `transport-encoding` 1 = H4, `transport-speed`) and the kernel control socket `com.apple.uart.sk.bluetooth`. Until then sharingd's
-  main thread blocks on bluetoothd and Settings waits 10 s for Wi-Fi password sharing before each password prompt.
+## Bluetooth — controller up, iOS stack not yet (WCN7850 on QUP2 SE6 UART)
+`iokit/Kernel/houji-bt/HoujiBluetooth.cpp`. `houji_bt=1` (default off) brings the controller up at boot and publishes it to iOS; USB
+console `bt probe [nocts]`, `bt init` (without `houji_bt`), `bt stat`. Wiring from the SteamOS houji port, where this controller pairs:
+uart14 = QUPv3 wrapper 2 SE6 (`0x898000`), GPIO 24 CTS, 25 RTS, 26 TX, 27 RX (function 1), BT_EN GPIO 17 on the WCN7850 PMU whose
+rails and RF clock the Wi-Fi driver turns on (the controller answers only after that; the boot thread retries every 5 s).
+- Verified controller bring-up (about 2.3 s): ROM version at 115200 (product 0x19, patch 0x43fb, SoC 0x40170200), vendor 0xfc48 to
+  3.2 Mbaud (SE6 at 51.2 MHz), rampatch `image/hmtbtfw20.tlv` and NVM `image/hmtnv20.bin` (board id 0) from the stock `bluetooth_a`
+  partition in 243-byte EDL segments, HCI_Reset; firmware `BTFW.HAMILTON.2.0.1-00355-PATCHZ-1`, HCI/LMP 13, manufacturer 0x001d,
+  address set from the device (locally administered). NVM: tag 2 address, tag 27 deep sleep off. The partition's FAT16 boot sector
+  claims 64 MiB in a 4 MiB partition; the FAT reader accepts that (only tables and root must fit).
+- UART details: received bytes one per GENI FIFO word (with four per word, a reply's partial last word waited for the next packet);
+  the controller's output is framed by H4 lengths (after the NVM it streams its debug log as ACL on handle 0x2edc). Idle it uses
+  Qualcomm in-band sleep although tag 17 leaves software IBS off: the bridge answers 0xfd with 0xfc, tracks 0xfe/0xfc, and wakes the
+  controller (0xfd, wait for 0xfc) before sending.
+- iOS side, published: an IOService `bluetooth` (also /arm-io/bluetooth: `local-mac-address`, `transport-encoding` 1 = H4,
+  `transport-speed` 3200000), which bluetoothd needs instead of `errx(0, "No bluetooth on this device.")`; the stream kernel control
+  `com.apple.uart.bluetooth` (bluetoothd's job gets `BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth,3200000`; its default
+  `com.apple.uart.sk.bluetooth` wants a Skywalk channel), with TIOCGETA/TIOCSETA as socket options; an `AppleOLYHAL` service with
+  vendor-id `Murata` (MobileGestalt's WifiVendor, which BlueTool waits for). Vendor-group commands (OGF 0x3f, Broadcom/Apple) are
+  answered in the bridge with success; standard HCI goes to the controller.
+- Keychain: AppleKeyStore selectors 10/11 (aks_wrap_key/unwrap) now work (RFC 3394 AES-256 under a key derived from
+  `houji,platform-uuid`; no hardware-held secret). Before, every new keychain item failed and bluetoothd exited with status 1.
+- Where it stops: bluetoothd boots the chip through BlueTool (XPC `RunBuiltinScript`). BlueTool's built-in Broadcom script runs over the
+  bridge (HCI_Reset, 0xfc18 baud, Read_Local_Version, 0xfc2e minidriver) and then gives up: the controller reports Qualcomm (0x001d), and
+  this root has no `/usr/share/firmware/bluetooth` patchram. bluetoothd then exits with status 1 and launchd restarts it. Override
+  scripts in `/private/etc/bluetool/<model>.{boot,init,deepsleep}.script` (installed for D22AP/d22ap) are not consulted on this path.
+  Next: make BlueTool's boot report success (its RunBuiltinScript handler, or bluetoothd's BlueTool result), then follow bluetoothd's
+  own vendor commands.
+- Until bluetoothd runs, sharingd's main thread blocks on it and Settings waits 10 s for Wi-Fi password sharing before each password
+  prompt.
 
 ## Display power and brightness — working
 `houji-buttons/HoujiScreen.cpp` owns the panel's DSI0 command FIFO (`0x0ae94000`, lonzzi/UniXNU-houji's HoujiBacklightProtocol.h).
