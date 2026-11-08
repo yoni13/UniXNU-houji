@@ -746,10 +746,32 @@ index f41b75b..68612db 100644
  			/* Simulator binary spawned with wrong platform */
  			signature_failure_reason = os_reason_create(OS_REASON_EXEC,
 diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
-index 1161432..4efdbbe 100644
+index 1161432..a7351a3 100644
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
-@@ -1448,6 +1448,14 @@ exit(proc_t p, struct exit_args *uap, int *retval)
+@@ -1432,6 +1432,21 @@ __attribute__((noreturn))
+ void
+ exit(proc_t p, struct exit_args *uap, int *retval)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* houji_exit_trace=NAME: where NAME calls exit() with a nonzero status (registers and user backtrace, as for a crash, "sig 0"). */
++	{
++		static char trace[MAXCOMLEN + 1];
++		static int parsed;
++		if (!parsed) {
++			parsed = 1;
++			PE_parse_boot_argn("houji_exit_trace", trace, sizeof(trace));
++		}
++		if (trace[0] && uap->rval != 0 && strncmp(p->p_comm, trace, MAXCOMLEN) == 0) {
++			extern void sweet_crash_log(const char *name, int pid, int sig, uint64_t code, uint64_t subcode);
++			sweet_crash_log(p->p_comm, proc_getpid(p), 0, (uint64_t)(uint32_t)uap->rval, 0);
++		}
++	}
++#endif
+ 	p->p_xhighbits = ((uint32_t)(uap->rval) & 0xFF000000) >> 24;
+ 	exit1(p, W_EXITCODE((uint32_t)uap->rval, 0), retval);
+ 
+@@ -1448,6 +1463,14 @@ exit(proc_t p, struct exit_args *uap, int *retval)
   * to zombie, and unlink proc from allproc and parent's lists.  Save exit
   * status and rusage for wait().  Check for child processes and orphan them.
   */
@@ -764,7 +786,7 @@ index 1161432..4efdbbe 100644
  int
  exit1(proc_t p, int rv, int *retval)
  {
-@@ -1583,6 +1591,9 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+@@ -1583,6 +1606,9 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
  	proc_transend(p, 1);
  	proc_unlock(p);
  
@@ -774,7 +796,7 @@ index 1161432..4efdbbe 100644
  	proc_prepareexit(p, rv, perf_notify);
  
  	/* Last thread to terminate will call proc_exit() */
-@@ -1884,6 +1895,20 @@ proc_prepareexit(proc_t p, int rv, boolean_t perf_notify)
+@@ -1884,6 +1910,20 @@ proc_prepareexit(proc_t p, int rv, boolean_t perf_notify)
  		subcode = ut->uu_subcode;
  		etype = ut->uu_exception;
  

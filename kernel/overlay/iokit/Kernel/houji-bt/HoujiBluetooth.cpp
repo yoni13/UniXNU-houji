@@ -185,21 +185,29 @@ void dump(const char *what, const uint8_t *p, unsigned n) {
     IOLog("HOUJI BT: %s %u bytes: %s\n", what, n, line);
 }
 
-// The next HCI event (H4 type 4) within ms milliseconds into ev (its code, length and parameters); other bytes before it are skipped and
-// counted. Returns the event's byte count, 0 on timeout.
-unsigned skippedBytes;
+// The next HCI event (H4 type 4) within ms milliseconds into ev (its code, length and parameters). Other packets (the controller's debug
+// log comes as ACL data on handle 0x2edc until logging is turned off) are skipped whole, by their own lengths; a byte that starts no
+// packet type is skipped alone. Returns the event's byte count, 0 on timeout.
+unsigned skippedBytes, skippedPackets;
 unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
     const uint64_t end = nowMs() + ms;
     for (;;) {
         pump();
-        while (ringCount() && ringAt(0) != 0x04) {gTail++; skippedBytes++;}
-        if (ringCount() >= 3) {
-            const unsigned len = 2u + ringAt(2);
-            if (ringCount() >= 1 + len) {
-                gTail++;
-                for (unsigned i = 0; i < len; ++i) {const uint8_t b = ringAt(0); gTail++; if (i < room) ev[i] = b;}
-                return len < room ? len : room;
-            }
+        for (;;) {
+            const unsigned have = ringCount();
+            if (!have) break;
+            const uint8_t type = ringAt(0);
+            unsigned need;
+            if (type == 2 || type == 5) {if (have < 5) break; need = 5 + ((ringAt(3) | ringAt(4) << 8) & (type == 5 ? 0x3fff : 0xffff));}
+            else if (type == 3) {if (have < 4) break; need = 4 + ringAt(3);}
+            else if (type == 4) {if (have < 3) break; need = 3 + ringAt(2);}
+            else {gTail++; skippedBytes++; continue;}
+            if (have < need) break;
+            if (type != 4) {gTail += need; skippedPackets++; continue;}
+            const unsigned len = need - 1;
+            gTail++;
+            for (unsigned i = 0; i < len; ++i) {const uint8_t b = ringAt(0); gTail++; if (i < room) ev[i] = b;}
+            return len < room ? len : room;
         }
         if (nowMs() > end) return 0;
         IODelay(50);
@@ -445,8 +453,8 @@ bool bringUp() {
     bs[7] = (int32_t)(nowMs() - began);
     bs[0] = 12; bs[4] = 1;
     gReady = true;
-    IOLog("HOUJI BT: controller ready at 3.2 Mbaud in %llu ms (skipped %u stray bytes, dropped %u)\n", nowMs() - began, skippedBytes,
-          gDropped);
+    IOLog("HOUJI BT: controller ready at 3.2 Mbaud in %llu ms (skipped %u packets and %u stray bytes, dropped %u)\n", nowMs() - began,
+          skippedPackets, skippedBytes, gDropped);
     return true;
 }
 
