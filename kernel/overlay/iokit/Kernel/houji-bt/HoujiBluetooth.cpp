@@ -660,6 +660,11 @@ extern "C" void houji_bt_command(const char *what) {
             IOLog("HOUJI BT: stat rx-loops %llu rx-bytes %llu tx-bytes %llu ring %u/%u dropped %u; RX FIFO %x S-IRQ %x M-IRQ %x GENI %x IOS %x RFR %x"
                   " TX FIFO %x client %u\n", gRxLoops, gRxBytes, gTxBytes, gHead, gTail, gDropped, se(kRxFifoStatus), se(kSIrqStatus),
                   se(kMIrqStatus), se(kStatus), se(kIos), se(kManualRfr), se(kTxFifoStatus), gUnit);
+        if (!strncmp(what, "stat", 4)) {
+            uint8_t last[48]; const unsigned n = gHead < sizeof last ? gHead : (unsigned)sizeof last;
+            for (unsigned i = 0; i < n; ++i) last[i] = gRing[(gHead - n + i) % sizeof gRing];
+            dump("last received", last, n);
+        }
         else IOLog("HOUJI BT: running for iOS; only \"bt stat\"\n");
         return;
     }
