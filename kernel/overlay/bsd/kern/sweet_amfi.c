@@ -37,6 +37,7 @@
 #include <sys/vnode.h>
 #include <security/mac_policy.h>
 #include "HoujiSystemAppPaths.h"
+extern boolean_t IOTaskHasEntitlement(task_t task, const char *entitlement);
 
 /* iokit/Kernel/arm/SweetEntitlements.cpp */
 void *sweet_entitlements_create(const CS_GenericBlob *blob, size_t blob_len);
@@ -369,6 +370,24 @@ sweet_sandbox_priv_grant(kauth_cred_t cred __unused, int priv)
 {
 	if (priv == PRIV_WORK_INTERVAL) {
 		return 0;
+	}
+	/* Skywalk privileges follow their entitlements, as Apple's policy grants them (bluetoothd's A2DP audio pipe, rapportd,
+	 * identityservicesd register user pipe nexus providers). */
+	{
+		const char *ent = NULL;
+		switch (priv) {
+		case PRIV_SKYWALK_REGISTER_USER_PIPE: ent = "com.apple.private.skywalk.register-user-pipe"; break;
+		case PRIV_SKYWALK_REGISTER_KERNEL_PIPE: ent = "com.apple.private.skywalk.register-kernel-pipe"; break;
+		case PRIV_SKYWALK_REGISTER_NET_IF: ent = "com.apple.private.skywalk.register-net-if"; break;
+		case PRIV_SKYWALK_REGISTER_FLOW_SWITCH: ent = "com.apple.private.skywalk.register-flow-switch"; break;
+		case PRIV_SKYWALK_LOW_LATENCY_CHANNEL: ent = "com.apple.private.skywalk.low-latency-channel"; break;
+		case PRIV_SKYWALK_OBSERVE_ALL: ent = "com.apple.private.skywalk.observe-all"; break;
+		case PRIV_SKYWALK_OBSERVE_STATS: ent = "com.apple.private.skywalk.observe-stats"; break;
+		default: break;
+		}
+		if (ent != NULL && IOTaskHasEntitlement(current_task(), ent)) {
+			return 0;
+		}
 	}
 	char name[20];
 	proc_selfname(name, sizeof(name));
