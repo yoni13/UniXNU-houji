@@ -106,9 +106,11 @@ bool uartSetup() {
     se(kForceDefault) = 1;
     se(kDmaModeEn) = se(kDmaModeEn) & ~1u;      // FIFO mode
     se(kSeIrqEn) = (se(kSeIrqEn) | 0xcu) & ~3u;  // GENI M/S on, DMA off
-    // 8-bit characters, four per FIFO word, least significant first (geni_se_config_packing(8, 4, false))
+    // 8-bit characters, least significant first: four per FIFO word to transmit (geni_se_config_packing(8, 4, false)), one per word
+    // received (geni_se_config_packing(8, 1, false), as qcom_geni_serial's console does), so that no received byte waits in a partial
+    // word for the stale timeout (a reply's last bytes did, until the next packet arrived)
     se(kTxPack0) = 0x4380e; se(kTxPack1) = 0xc3e0e;
-    se(kRxPack0) = 0x4380e; se(kRxPack1) = 0xc3e0e;
+    se(kRxPack0) = 0xf; se(kRxPack1) = 0;
     se(kByteGran) = 0;
     se(kRxWatermark) = 4;
     se(kRxRfrWatermark) = gRxDepth - 2;
@@ -137,14 +139,10 @@ void pump() {
     if (irq) se(kSIrqClear) = irq;
     const uint32_t st = se(kRxFifoStatus);
     const unsigned words = st & 0x1ffffff;
-    for (unsigned w = 0; w < words; ++w) {
+    for (unsigned w = 0; w < words; ++w) {   // one byte per word
         const uint32_t v = se(kRxFifo);
-        unsigned bytes = 4;
-        if (w + 1 == words && (st >> 31)) {const unsigned last = (st >> 28) & 7; bytes = last ? last : 4;}
-        for (unsigned k = 0; k < bytes; ++k) {
-            if (gHead - gTail >= sizeof gRing) {gDropped++; continue;}
-            gRing[gHead++ % sizeof gRing] = (uint8_t)(v >> (8 * k));
-        }
+        if (gHead - gTail >= sizeof gRing) {gDropped++; continue;}
+        gRing[gHead++ % sizeof gRing] = (uint8_t)v;
     }
 }
 unsigned ringCount() {return gHead - gTail;}
@@ -178,10 +176,9 @@ void dump(const char *what, const uint8_t *p, unsigned n) {
 
 // The next HCI event (H4 type 4) within ms milliseconds into ev (its code, length and parameters); other bytes before it are skipped and
 // counted. Returns the event's byte count, 0 on timeout.
-unsigned skippedBytes, flushes;
+unsigned skippedBytes;
 unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
     const uint64_t end = nowMs() + ms;
-    unsigned lastCount = ~0u; uint64_t quietSince = nowMs();
     for (;;) {
         pump();
         while (ringCount() && ringAt(0) != 0x04) {gTail++; skippedBytes++;}
@@ -192,12 +189,6 @@ unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
                 for (unsigned i = 0; i < len; ++i) {const uint8_t b = ringAt(0); gTail++; if (i < room) ev[i] = b;}
                 return len < room ? len : room;
             }
-        }
-        // A packet started but incomplete and nothing new for 3 ms: its tail may be a partial word the engine has not released.
-        // Cancelling the read flushes it into the FIFO (qcom_geni_serial_stop_rx_fifo); drain it and read again.
-        if (ringCount()) {
-            if (ringCount() != lastCount) {lastCount = ringCount(); quietSince = nowMs();}
-            else if (nowMs() - quietSince >= 3) {readStop(); pump(); readStart(); flushes++; quietSince = nowMs();}
         }
         if (nowMs() > end) return 0;
         IODelay(50);
@@ -443,8 +434,8 @@ bool bringUp() {
     bs[7] = (int32_t)(nowMs() - began);
     bs[0] = 12; bs[4] = 1;
     gReady = true;
-    IOLog("HOUJI BT: controller ready at 3.2 Mbaud in %llu ms (skipped %u stray bytes, dropped %u, %u partial-word flushes)\n", nowMs() - began,
-          skippedBytes, gDropped, flushes);
+    IOLog("HOUJI BT: controller ready at 3.2 Mbaud in %llu ms (skipped %u stray bytes, dropped %u)\n", nowMs() - began, skippedBytes,
+          gDropped);
     return true;
 }
 
