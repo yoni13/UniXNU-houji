@@ -1176,6 +1176,10 @@ extern "C" void native_adreno_perf_report(void){
  IOLog("HOUJI WPTR: writes=%llu retried=%llu retries=%llu loop-us=%llu; live\n",native_adreno_wptr_stats[0],native_adreno_wptr_stats[1],native_adreno_wptr_stats[2],native_adreno_wptr_stats[3]);
  IOLog("HOUJI WAIT OUTER: waits=%llu total-us=%llu pauses=%llu max-us=%llu; live\n",native_adreno_wait_outer[0],native_adreno_wait_outer[1],native_adreno_wait_outer[2],native_adreno_wait_outer[3]);
  for(unsigned row=0;row<48;row++)if(native_adreno_metal_rows[row][0])IOLog("HOUJI METAL ROW %u: %.95s\n",row,native_adreno_metal_rows[row]);
+ /* Per method: time waiting for the issuer lock, the readiness gate, the method itself and retries; the slowest calls; long lock holds. */
+ auto log=[](const char *format,auto... args){char line[320];snprintf(line,sizeof line,format,args...);IOLog("%s",line);};
+ nativeAdrenoLatency.snapshot(log);
+ nativeAdrenoIssuerTrace.snapshot(log);
 }
 static void nativeAdrenoStopDiagnostics(void){
  const char *phases[]={"all","wc-reassert","publish","audit"};
