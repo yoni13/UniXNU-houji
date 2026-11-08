@@ -369,7 +369,19 @@ bool bringUp() {
     IOSleep(10);
     bs[0] = 10;
     uint8_t b[8] = {};
-    n = edl(0x23, b, sizeof b, 3000);   // {length, id high, id low}
+    {
+        const uint64_t asked = nowMs();
+        n = edl(0x23, b, sizeof b, 10000);   // {length, id high, id low}; Linux allows HCI_INIT_TIMEOUT
+        IOLog("HOUJI BT: board id reply after %llu ms (%d)\n", nowMs() - asked, n);
+        if (n < 0) {
+            // A wake-up: one byte that is not a packet type starts nothing on the controller (H4 resynchronises), then look again
+            static const uint8_t kick[] = {0xfd};
+            uartWrite(kick, 1);
+            uint8_t ev[64]; const unsigned e = readEvent(ev, sizeof ev, 2000);
+            if (e) dump("after a wake byte", ev, e);
+            if (e >= 8 && ev[0] == 0x0e && ev[5] == 0 && ev[6] == 0x23) {b[0] = ev[7]; b[1] = ev[8]; b[2] = e > 9 ? ev[9] : 0; n = (int)e - 7;}
+        }
+    }
     const unsigned board = n >= 3 ? (unsigned)(b[1] << 8 | b[2]) : 0;
     bs[6] = (int32_t)board;
     char path[40];
