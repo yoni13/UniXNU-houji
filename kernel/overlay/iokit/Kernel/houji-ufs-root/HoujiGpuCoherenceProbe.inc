@@ -206,15 +206,6 @@ static void houjiCoherenceTrial(void) {
  thread_deallocate(guard);
  houji_ufs_checkpoint("upstream two-way coherence self-test; CPU16K owned scratch; no userland or coherent fast path",0);
  unsigned status=houjiCoherenceRun();auto &p=gHoujiCoherence;
- /* Status 1 is the precondition refusal: the run changed nothing (no allocation, mapping or phase change). The persistent
-  * desktop then continues without the coherent fast path instead of entering the cleanup, whose table audit needs an idle
-  * GPU and stopped the GPU (reset) when it could not get one. Log which precondition failed. */
- if(status==1 && gHoujiLive.mode==1){
-  auto&a=gHoujiApi;
-  IOLog("HOUJI COHERENCE: precondition refused active=%u coherent=%u phase=%u keep-live=%u outstanding=%lu vm-idle=%u lease=%u tables=%u seq=%u/%u; desktop continues, coherent=0\n",
-   p.active,(unsigned)native_adreno_io_coherent,a.phase,houjiFullKeepLive(nullptr),(unsigned long)a.submit.outstanding(),houjiVmIdle(),houjiFullLease(),houjiFullTables(),gHoujiSubmit.seq,gHoujiSubmit.observed);
-  __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;
- }
  /* The dirty-line precondition is cache-state dependent and can be inconclusive
   * (status 11) with the backing retained; a retry re-runs it on the same owner.
   * The persistent desktop mode benefits most: its frame rate depends on the
@@ -231,6 +222,15 @@ static void houjiCoherenceTrial(void) {
    /* The failed attempt left the client in the trial phase (12); its precondition wants the idle client phase. */
    p.handle=0;gHoujiApi.phase=10;status=houjiCoherenceRun();
   }else {IOLog("HOUJI COHERENCE: retry cleanup failed code=%u; not retrying\n",clean);break;}
+ }
+ /* Status 1 is the precondition refusal, on the first attempt or on a retry (whose cleanup already ran): that run changed nothing (no allocation, mapping or phase change). The persistent
+  * desktop then continues without the coherent fast path instead of entering the cleanup, whose table audit needs an idle
+  * GPU and stopped the GPU (reset) when it could not get one. Log which precondition failed. */
+ if(status==1 && gHoujiLive.mode==1){
+  auto&a=gHoujiApi;
+  IOLog("HOUJI COHERENCE: precondition refused active=%u coherent=%u phase=%u keep-live=%u outstanding=%lu vm-idle=%u lease=%u tables=%u seq=%u/%u; desktop continues, coherent=0\n",
+   p.active,(unsigned)native_adreno_io_coherent,a.phase,houjiFullKeepLive(nullptr),(unsigned long)a.submit.outstanding(),houjiVmIdle(),houjiFullLease(),houjiFullTables(),gHoujiSubmit.seq,gHoujiSubmit.observed);
+  __atomic_store_n(&p.done,1u,__ATOMIC_RELEASE);return;
  }
  IOLog("HOUJI COHERENCE: status=%u phase=%u io=%x attempts=%u dirty=%u/64 GPU-read=%u/%u CPU-write=%u DRAM-write=%u copies=%u unmapped=%u proof=%u; scratch=%u CPU-page=%u coherent-enabled=0\n",status,p.phase,p.code,p.attempts,p.dirty,p.read_new,p.read_old,p.write_new,p.dram_new,p.copies,p.unmapped,!status && p.pass,HoujiCoherenceBytes,HoujiCoherencePage);
  IOLog("HOUJI COHERENCE VIEWS: page=%u sub=%u cached-PAR=%llx uncached-PAR=%llx; original must stay WB, alias must be uncached, both must resolve owned page\n",p.view_page,p.view_sub,p.cached_par,p.uncached_par);
