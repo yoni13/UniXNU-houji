@@ -684,9 +684,9 @@ extern "C" void houji_framebuffer_pace_report(void)
     if(n==2*96 || i+1==head){line[n]=0;IOLog("HOUJI FRAMES: part=%u %s\n",part++,line);n=0;}}}
   houji_fb_frame_tail=head;}
  {const uint32_t head=__atomic_load_n(&houji_fs_head,__ATOMIC_ACQUIRE);uint32_t tail=houji_fs_tail;if(head-tail>4096)tail=head-4096;
-  if(head-tail>20){char line[2*4*40+1];unsigned n=0,part=0;static const char hex[]="0123456789abcdef";
+  if(head-tail>20){char line[2*4*24+1];unsigned n=0,part=0;static const char hex[]="0123456789abcdef";
    for(uint32_t i=tail;i!=head;i++){for(int k=0;k<4;k++){const uint8_t v=houji_fs_ring[i&4095][k];line[n++]=hex[v>>4];line[n++]=hex[v&15];}
-    if(n==2*4*40 || i+1==head){line[n]=0;IOLog("HOUJI FSTAGE: part=%u %s\n",part++,line);n=0;}}}
+    if(n==2*4*24 || i+1==head){line[n]=0;IOLog("HOUJI FSTAGE: part=%u %s\n",part++,line);n=0;}}}
   houji_fs_tail=head;}
 }
 extern "C" void houji_framebuffer_counts(uint64_t *swaps, uint64_t *presents)

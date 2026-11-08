@@ -1789,7 +1789,7 @@
     "kernel/overlay/iokit/Kernel/arm/SurfaceUseCount.h": "eb258627b0ce07d6e0b677577c333af32e85c0e1e8c0fbeb2fda090d1615fe1e",
     "kernel/overlay/iokit/Kernel/arm/SweetCPU.cpp": "ceee071fcefd8130a377465745a6a5f0f45675597c8126b2b442fe1ab6da370d",
     "kernel/overlay/iokit/Kernel/arm/SweetEntitlements.cpp": "59ff9f774d7228dc0ad0b13bb1350dbeaf2627e8180f362c388433733a77fe51",
-    "kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp": "cb7d5336cd451ce2f46aa670e2c94aacfa327bba91d62ee13282a61467e00bc0",
+    "kernel/overlay/iokit/Kernel/arm/SweetFramebuffer.cpp": "b068d73d155a2df622d729da34a06091a83d14948966815fa753a374317467c0",
     "kernel/overlay/iokit/Kernel/arm/SweetKeyStore.cpp": "0224ef7ac3fd78511b4cb4369f9099352f80a9b434ae3fd15b5a3dbd1f145d55",
     "kernel/overlay/iokit/Kernel/arm/SweetPlatformExpert.cpp": "afb89cfb4ff2546932ce0c6a085d1bcf152d0bb4c50bb72d01ff549360c53798",
     "kernel/overlay/iokit/Kernel/arm/SweetSurface.cpp": "517f0e008459c11ef0cfdab39de2cb7bfefd6f7d1433f3c2a580aa4c34738c36",
