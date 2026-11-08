@@ -517,6 +517,15 @@ void clientBytes(const uint8_t *p, size_t n) {
             // set-up) and bluetoothd's own. This controller was booted by the kernel and would refuse them, so they are answered here
             // with success and no return parameters, never sent.
             const uint16_t opcode = (uint16_t)(gTxAsm[1] | gTxAsm[2] << 8);
+            // Read/Write Default Erroneous Data Reporting (0x0c5a/0x0c5b): bluetoothd's HCI initialisation requires them (status
+            // 628, "HCI initialization failed"); this controller does not list them. Answered here: reporting off, the default.
+            if (gTxAsm[0] == 1 && (opcode == 0x0c5a || opcode == 0x0c5b)) {
+                const uint8_t done[] = {0x04, 0x0e, (uint8_t)(opcode == 0x0c5a ? 5 : 4), 0x01, gTxAsm[1], gTxAsm[2], 0x00, 0x00};
+                IOLog("HOUJI BT: command %04x answered here\n", opcode);
+                deliver(done, opcode == 0x0c5a ? 8u : 7u);
+                gTxHave = 0;
+                continue;
+            }
             if (gTxAsm[0] == 1 && (opcode >> 10) == 0x3f) {
                 const uint8_t done[] = {0x04, 0x0e, 0x04, 0x01, gTxAsm[1], gTxAsm[2], 0x00};
                 if (gVendorLogged++ < 200) IOLog("HOUJI BT: vendor command %04x (%u bytes) answered here\n", opcode, gTxAsm[3]);
@@ -613,7 +622,11 @@ void rxThread(void *, wait_result_t) {
             if (have < sizeof pkt) pkt[have++] = b;
             const int len = h4Length(pkt, have);
             if (len < 0) {IOLog("HOUJI BT: stray byte %02x from the controller\n", pkt[0]); have = 0; continue;}
-            if (len && have >= (unsigned)len) {logPacket("ctl->host", pkt, (unsigned)len); deliver(pkt, (unsigned)len); have = 0;}
+            if (len && have >= (unsigned)len) {
+                // Read_Local_Supported_Commands: add the commands the bridge answers itself (octet 18 bits 2, 3: 0x0c5a, 0x0c5b)
+                if (pkt[0] == 4 && pkt[1] == 0x0e && len >= 7 + 64 && pkt[4] == 0x02 && pkt[5] == 0x10 && pkt[6] == 0) pkt[7 + 18] |= 0x0c;
+                logPacket("ctl->host", pkt, (unsigned)len); deliver(pkt, (unsigned)len); have = 0;
+            }
         }
     }
 }
