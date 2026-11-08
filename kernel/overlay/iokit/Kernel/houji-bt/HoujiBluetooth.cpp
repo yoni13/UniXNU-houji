@@ -754,6 +754,13 @@ extern "C" void houji_bt_start(void) {
     unsigned on = 0;
     PE_parse_boot_argn("houji_bt", &on, sizeof on);
     if (!on) return;
+    // The address in /chosen now, before launchd: MobileGestalt answers (BluetoothAddress, and the bluetooth capability Settings needs
+    // for its Bluetooth row) are computed early and kept, as for mac-address-wifi0.
+    makeAddress();
+    if (IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane)) {
+        if (!chosen->getProperty("mac-address-bluetooth0")) chosen->setProperty("mac-address-bluetooth0", gAddr, sizeof gAddr);
+        chosen->release();
+    }
     uint32_t idle = 0;
     if (!__atomic_compare_exchange_n(&gBusy, &idle, 1u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
     thread_t t = nullptr;
