@@ -607,6 +607,9 @@ static void houjiFrameRingPut(uint8_t v){const uint32_t h=__atomic_load_n(&houji
  * units, capped at 255: vsync notification -> first submit (render-server CPU before GPU work), first -> last submit,
  * last submit -> SwapEnd, number of submits. 255,255,255,255 marks a touch-down. Printed as HOUJI FSTAGE. */
 static uint8_t houji_fs_ring[4096][4];
+/* FPRES ring (written by present(), see houjiPresentStage). */
+static uint8_t houji_fp_ring[4096][2];
+static uint32_t houji_fp_head,houji_fp_tail;
 static uint32_t houji_fs_head,houji_fs_tail,houji_fs_submits;
 static uint64_t houji_fs_first,houji_fs_last,houji_fs_vsync;
 extern "C" void houji_frame_note_submit(void){
@@ -824,8 +827,6 @@ AppleCLCD::waitSwap(uint32_t id,uint64_t timeoutRaw)
 
 /* FPRES: per presented frame, in 0.25 ms units (254 = 63.5 ms or more): SwapEnd -> GPU completion seen by the presenter
  * (start of the copy), and the CPU copy into scanout. 255,255 marks the first frame after a touch-down. */
-static uint8_t houji_fp_ring[4096][2];
-static uint32_t houji_fp_head,houji_fp_tail;
 static void houjiPresentStage(const HoujiDisplayFrame &frame,uint64_t started,uint64_t ended){
  uint32_t h=houji_fp_head;
  if(frame.touchMark){houji_fp_ring[h&4095][0]=houji_fp_ring[h&4095][1]=255;h++;}
