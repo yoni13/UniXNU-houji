@@ -135,6 +135,79 @@ static void unlock_condition(journal *jnl, boolean_t *condition);
 static void finish_end_thread(transaction *tr);
 static void write_header_thread(journal *jnl);
 static int finish_end_transaction(transaction *tr, errno_t (*callback)(void*), void *callback_arg);
+#if defined(ARM64_BOARD_CONFIG_SWEET)
+/*
+ * SWEET diagnostic: a block copied into a transaction buffer (end_transaction)
+ * has been found changed (the volume header all zero) when the buffer is
+ * written (finish_end_transaction). Record each block's checksum and copy
+ * time at the copy, compare before the write, and log any change.
+ */
+#include <mach/mach_time.h>
+#include <kern/clock.h>
+extern uint64_t kvtophys(vm_offset_t);
+#define HOUJI_JCHK_MAX 2048
+static struct { void *tr; uint32_t off, size, cksum; uint64_t at; } houji_jchk[HOUJI_JCHK_MAX];
+static uint32_t houji_jchk_n, houji_jchk_logged;
+static void *houji_jchk_tr;
+static uint32_t
+houji_jsum(const uint8_t *p, uint32_t n)
+{
+	uint32_t s = 2166136261u;
+	for (uint32_t i = 0; i < n; i++) {
+		s = (s ^ p[i]) * 16777619u;
+	}
+	return s;
+}
+static void
+houji_jchk_add(void *tr, uint32_t off, const uint8_t *p, uint32_t size)
+{
+	if (houji_jchk_tr != tr) {
+		houji_jchk_tr = tr;
+		houji_jchk_n = 0;
+	}
+	if (houji_jchk_n < HOUJI_JCHK_MAX) {
+		houji_jchk[houji_jchk_n].tr = tr;
+		houji_jchk[houji_jchk_n].off = off;
+		houji_jchk[houji_jchk_n].size = size;
+		houji_jchk[houji_jchk_n].cksum = houji_jsum(p, size);
+		houji_jchk[houji_jchk_n].at = mach_absolute_time();
+		houji_jchk_n++;
+	}
+}
+static void
+houji_jchk_verify(void *tr, const uint8_t *buffers)
+{
+	if (houji_jchk_tr != tr) {
+		return;
+	}
+	for (uint32_t i = 0; i < houji_jchk_n; i++) {
+		const uint8_t *p = buffers + houji_jchk[i].off;
+		if (houji_jsum(p, houji_jchk[i].size) == houji_jchk[i].cksum) {
+			continue;
+		}
+		uint64_t ns = 0;
+		absolutetime_to_nanoseconds(mach_absolute_time() - houji_jchk[i].at, &ns);
+		uint32_t zero = 0, first = ~0u;
+		for (uint32_t k = 0; k < houji_jchk[i].size; k += 64) {
+			int z = 1;
+			for (uint32_t b = 0; b < 64 && k + b < houji_jchk[i].size; b++) {
+				z = z && p[k + b] == 0;
+			}
+			if (z) {
+				zero++;
+				if (first == ~0u) {
+					first = k;
+				}
+			}
+		}
+		if (houji_jchk_logged++ < 64) {
+			printf("HOUJI JNL CHANGED: block %u (txn offset %u, %u bytes) at %p phys 0x%llx changed %llu us after its copy;"
+			    " %u zero 64-byte lines, first at +%u\n", i, houji_jchk[i].off, houji_jchk[i].size, p,
+			    kvtophys((vm_offset_t)p), ns / 1000, zero, first);
+		}
+	}
+}
+#endif
 static int end_transaction(transaction *tr, int force_it, errno_t (*callback)(void*), void *callback_arg, boolean_t drop_lock, boolean_t must_wait);
 static void abort_transaction(journal *jnl, transaction *tr);
 static void dump_journal(journal *jnl);
@@ -3996,6 +4069,9 @@ end_transaction(transaction *tr, int force_it, errno_t (*callback)(void*), void 
 				 * copy the data into the transaction buffer...
 				 */
 				memcpy(blkptr, (char *)buf_dataptr(bp), bsize);
+#if defined(ARM64_BOARD_CONFIG_SWEET)
+				houji_jchk_add(tr, (uint32_t)tbuffer_offset, (const uint8_t *)blkptr, (uint32_t)bsize);
+#endif
 
 				buf_clearflags(bp, B_LOCKED);
 				buf_markclean(bp);
@@ -4230,6 +4306,9 @@ finish_end_transaction(transaction *tr, errno_t (*callback)(void*), void *callba
 		 * before writing the actual journal data
 		 */
 		wait_condition(jnl, &jnl->writing_header, "finish_end_transaction");
+#if defined(ARM64_BOARD_CONFIG_SWEET)
+		houji_jchk_verify(tr, (const uint8_t *)blhdrim->buffers);
+#endif
 
 		if (jnl->write_header_failed == FALSE) {
 			int header_amt = amt;
