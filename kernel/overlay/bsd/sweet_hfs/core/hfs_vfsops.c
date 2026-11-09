@@ -3514,6 +3514,62 @@ hfs_volupdate(struct hfsmount *hfsmp, enum volop op, int inroot)
  *  not flushed since the on-disk "H+" and "HX" signatures
  *  are always stored in-memory as "H+".
  */
+#if defined(ARM64_BOARD_CONFIG_SWEET)
+/*
+ * SWEET diagnostic: the in-memory primary volume header (a locked journal
+ * buffer between hfs_flushvolumeheader and the transaction's commit) has
+ * been found all zero at commit. Watch the most recently flushed header:
+ * every millisecond, report the first time its 512 bytes turn all zero,
+ * with the uptime and physical address, so the culprit can be timed.
+ */
+extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+extern void thread_deallocate(thread_t);
+extern uint64_t kvtophys(vm_offset_t);
+static const uint8_t *volatile houji_vh_ptr;
+static volatile uint32_t houji_vh_flushes, houji_vh_reports;
+static void
+houji_vh_watch(void *arg __unused, wait_result_t w __unused)
+{
+	const uint8_t *seen = NULL;
+	for (;;) {
+		const uint8_t *p = houji_vh_ptr;
+		if (p != NULL) {
+			int zero = 1;
+			for (int i = 0; i < 512 && zero; i++) {
+				zero = p[i] == 0;
+			}
+			if (zero && p != seen && houji_vh_reports < 16) {
+				houji_vh_reports++;
+				seen = p;
+				printf("HOUJI VH WATCH: header at %p (phys 0x%llx) is ALL ZERO; %u flushes so far\n",
+				    p, kvtophys((vm_offset_t)p), houji_vh_flushes);
+			} else if (!zero) {
+				seen = NULL;
+			}
+		}
+		IOSleep(1);
+	}
+}
+static void
+houji_vh_note(const uint8_t *p)
+{
+	static int started;
+	houji_vh_flushes++;
+	if (houji_vh_flushes <= 8) {
+		printf("HOUJI VH WATCH: flush %u header at %p (phys 0x%llx) %02x%02x%02x%02x\n", houji_vh_flushes, p,
+		    kvtophys((vm_offset_t)p), p[0], p[1], p[2], p[3]);
+	}
+	houji_vh_ptr = p;
+	if (!started) {
+		thread_t t;
+		started = 1;
+		if (kernel_thread_start(houji_vh_watch, NULL, &t) == KERN_SUCCESS) {
+			thread_deallocate(t);
+		}
+	}
+}
+#endif
+
 int
 hfs_flushvolumeheader(struct hfsmount *hfsmp, 
 					  hfs_flush_volume_header_options_t options)
@@ -3946,6 +4002,9 @@ done:
 
 	/* Finish modifying the block for the primary VH */
 	if (hfsmp->jnl) {
+#if defined(ARM64_BOARD_CONFIG_SWEET)
+		houji_vh_note((const uint8_t *)volumeHeader);
+#endif
 		journal_modify_block_end(hfsmp->jnl, bp, NULL, NULL);
 	} else {
 		if (!ISSET(options, HFS_FVH_WAIT)) {

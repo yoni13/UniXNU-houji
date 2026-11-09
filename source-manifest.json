@@ -1756,7 +1756,7 @@
     "kernel/overlay/bsd/sweet_hfs/core/hfs_resize.c": "062eea886737072c323ef32ca633ccc337f9a41a4e150209fe19a7010e790950",
     "kernel/overlay/bsd/sweet_hfs/core/hfs_search.c": "a14999ea5f46a5d4dd761493a25ba0f5164dfc1f903af80d2939351af11d516c",
     "kernel/overlay/bsd/sweet_hfs/core/hfs_unistr.h": "fe22ca3ff255369fe5d45e4b749bfb4e1e7cac320e2269ced432890953752d81",
-    "kernel/overlay/bsd/sweet_hfs/core/hfs_vfsops.c": "e34c2ea563991fbcde51a639764505bd5ac0d74b74b65b5e29cbc39b7456a480",
+    "kernel/overlay/bsd/sweet_hfs/core/hfs_vfsops.c": "86e1d2cbcb6eb402aae63155d34b0b830bbb4c39d615597e1862927a160a558b",
     "kernel/overlay/bsd/sweet_hfs/core/hfs_vfsutils.c": "7e84e0fa7ee08e94bfe68e6320bbf1cf4ed2f26ab6c84e27cf8ec7f07a600b5f",
     "kernel/overlay/bsd/sweet_hfs/core/hfs_vnops.c": "5ed71427a7a9cd7a6bfc3b0040a3b1e3fc847325138b15a348d1d75cea932edd",
     "kernel/overlay/bsd/sweet_hfs/core/hfs_xattr.c": "72a46b1d1c474e00f481baf922fd6efaa9706c22e31b44be5cd004f9c46add08",
