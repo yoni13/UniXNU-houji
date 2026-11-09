@@ -18,6 +18,7 @@ extern "C" void sweet_hid_key(int key, int down);
 // [0] stage (1 mapped, 2 polling; negative: the step that failed), [1] power APID, [2] GPIO APID, [3] pressed mask (bit 0 power, 1 up,
 // 2 down), [4] reports, [5] read errors, [6] polls, [7] arbiter version
 extern "C" {volatile int32_t native_buttons_stats[8];}
+extern "C" int houji_screen_is_on(void);
 
 namespace {
 constexpr uint64_t kCore = 0xc400000, kObsrvr = 0xc440000, kCnfg = 0xc42d000;
@@ -80,13 +81,17 @@ void buttonsThread(void *, wait_result_t) {
         native_buttons_stats[6] = native_buttons_stats[6] + 1;
         // a key already held when polling starts is not reported until it is released once
         if (first) {last = mask; first = false; native_buttons_stats[3] = (int32_t)mask;}
-        if (__atomic_load_n(&gWakePress, __ATOMIC_ACQUIRE)) {
-            // the press that woke the system: reported by the edge below if still held, else here (press and release)
-            if (!(mask & 1) && !(last & 1)) {
-                sweet_hid_key(0, 1); IOSleep(80); sweet_hid_key(0, 0);
-                IOLog("HOUJI BUTTONS: power (the wake press, released before polling resumed)\n");
+        if (const uint32_t wake = __atomic_load_n(&gWakePress, __ATOMIC_ACQUIRE)) {
+            // The press that woke the system (a full wake): on an iPhone it also lights the display. 300 ms after the wake, if
+            // iOS has not lit it, report the press (and release); never on a lit display, where it would lock.
+            if (wake < 16) __atomic_store_n(&gWakePress, wake + 1, __ATOMIC_RELEASE);
+            else {
+                if (!houji_screen_is_on() && !(mask & 1) && !(last & 1)) {
+                    sweet_hid_key(0, 1); IOSleep(80); sweet_hid_key(0, 0);
+                    IOLog("HOUJI BUTTONS: power (the wake press; display still off)\n");
+                } else IOLog("HOUJI BUTTONS: wake press not sent (display %s)\n", houji_screen_is_on() ? "on" : "off, key held");
+                __atomic_store_n(&gWakePress, 0u, __ATOMIC_RELEASE);
             }
-            __atomic_store_n(&gWakePress, 0u, __ATOMIC_RELEASE);
         }
         if (mask != last) {
             for (int key = 0; key < 3; ++key)

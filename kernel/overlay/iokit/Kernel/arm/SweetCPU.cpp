@@ -32,6 +32,7 @@ extern "C" kern_return_t processor_exit(processor_t processor);
 static uint32_t cpuResumes[8], cpuHalts[8];
 extern "C" int houji_buttons_power_level(void);
 extern "C" void houji_pm_next_wake_is_user(void);
+extern "C" void houji_buttons_wake_press(void);
 extern "C" void timer_resync_deadlines(void);
 extern "C" boolean_t ml_set_interrupts_enabled_with_debug(boolean_t enable, boolean_t debug);
 static uint32_t sleepCount, sleepLastReason;
@@ -454,9 +455,9 @@ void SweetCPU::bootSleep(void) {
   timer_resync_deadlines();
   uint64_t ns; absolutetime_to_nanoseconds(slept, &ns);
   sleepCount++; sleepLastReason = reason; sleepLastUs = ns / 1000; sleepLastPolls = polls;
-  // A key wake is a user wake: the root domain promotes it to full wake (iOS lights the display itself). No HID press is sent:
-  // on a lit display it would be a lock press. Timed wakes stay dark wakes.
-  if (reason == 1) houji_pm_next_wake_is_user();
+  // A key wake is a user wake: the root domain promotes it to full wake, and the buttons driver reports the press if the display
+  // is still off 300 ms later (as the wake press lights an iPhone). Timed wakes stay dark wakes.
+  if (reason == 1) {houji_pm_next_wake_is_user(); houji_buttons_wake_press();}
   IOLog("HOUJI SLEEP: woke after %llu ms (%s%s), %llu polls; sleep %u; interrupts were %s\n", ns / 1000000,
         reason == 1 ? "power key" : "time limit", reason == 1 && testKey ? ", test" : "", polls, sleepCount,
         enabled ? "enabled" : "masked");

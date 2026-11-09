@@ -165,6 +165,8 @@ void postLevel(uint32_t level, bool ios) {
     IOLockUnlock(gLock);
 }
 }  // namespace
+// Whether the panel is lit (iOS's last display power request, or the kernel's own lock): for the power key's wake press.
+extern "C" int houji_screen_is_on(void) {return gOn ? 1 : 0;}
 
 // ---- the brightness service iOS looks for ----
 class HoujiBacklight : public IOService {
