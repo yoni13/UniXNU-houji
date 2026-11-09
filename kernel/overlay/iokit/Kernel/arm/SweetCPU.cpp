@@ -34,6 +34,7 @@ static uint32_t cpuResumes[8], cpuHalts[8];
 extern "C" int houji_buttons_power_level(void);
 extern "C" void houji_pm_next_wake_is_user(void);
 extern "C" void houji_buttons_wake_press(void);
+extern "C" void houji_usb_sleep_probe(int phase);
 extern "C" void houji_gic_sleep_mask(int enter);
 extern "C" void timer_resync_deadlines(void);
 extern "C" boolean_t ml_set_interrupts_enabled_with_debug(boolean_t enable, boolean_t debug);
@@ -480,6 +481,7 @@ void SweetCPU::bootSleep(void) {
   nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &tick);
   if (maxS) nanoseconds_to_absolutetime((uint64_t)maxS * NSEC_PER_SEC, &limit);
   houji_gic_sleep_mask(1);
+  houji_usb_sleep_probe(0);
   const uint64_t t0 = __builtin_arm_rsr64("CNTVCT_EL0");
   bool released = false;
   uint32_t reason = 0, wakeSlot = 5;
@@ -502,6 +504,7 @@ void SweetCPU::bootSleep(void) {
     __builtin_arm_dsb(DSB_SY);
     __builtin_arm_wfi();
     polls++;
+    houji_usb_sleep_probe(1);
     // what ended WFI: the highest pending interrupt. Only the timer passes the sleep mask (houji_gic_sleep_mask); acknowledge and
     // end it, or it stays pending and ends every WFI. Its deadline is reprogrammed on wake (timer_resync_deadlines).
     const uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
@@ -532,6 +535,7 @@ void SweetCPU::bootSleep(void) {
   IOLog("HOUJI SLEEP: pending after WFI (INTID:count) %u:%u %u:%u %u:%u %u:%u %u:%u %u:%u\n", pendingId[0], pendingCount[0],
         pendingId[1], pendingCount[1], pendingId[2], pendingCount[2], pendingId[3], pendingCount[3], pendingId[4], pendingCount[4],
         pendingId[5], pendingCount[5]);
+  houji_usb_sleep_probe(2);
 }
 // USB console "sleep": ask the root power domain to sleep now, as a sleep request from iOS would
 extern "C" void houji_sleep_now(void) {

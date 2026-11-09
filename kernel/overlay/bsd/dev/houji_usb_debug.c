@@ -187,9 +187,12 @@ static void sync_dma(unsigned off,unsigned size)
     flush_dcache64((addr64_t)(u.pa+off),size,TRUE);
     __asm__ volatile("dsb sy" ::: "memory");
 }
+static int fail_panic; /* houji_usb_fail_panic=1: a stop after the host configured the console panics, so the panic log keeps why */
 static void fail(const char *why)
 {
     if (!u.failed) unote("HOUJI USB: stopped: %s; permanent DMA retained\n",why);
+    if (fail_panic && u.configured && !u.failed)
+        panic("HOUJI USB: stopped: %s; dsts=%08x dctl=%08x gevntcount=%08x events=%u",why,rd(DSTS),rd(DCTL),rd(GEVNTCOUNT),u.events);
     u.failed=true;
     if (upload_mode && upload.phase!=HRU_COMPLETE) {
         hru_abort(&upload,HRU_E_TRANSPORT);upload_publish();
@@ -652,6 +655,7 @@ void houji_usb_debug_start(void)
     { extern void houji_power_start(void); static bool power; if (!power) { power=true; houji_power_start(); } }
     int enabled=0;PE_parse_boot_argn("houji_usb",&enabled,sizeof(enabled));
     if ((enabled!=1 && enabled!=2) || attempted) return;
+    PE_parse_boot_argn("houji_usb_fail_panic",&fail_panic,sizeof(fail_panic));
     attempted=true;u.mps=512;u.coding[0]=0;u.coding[1]=0xc2;u.coding[2]=1;u.coding[6]=8;
     unote("HOUJI USB: CDC ACM candidate002 build %s %s, RAM log and read-only commands\n",__DATE__,__TIME__);
     DTEntry root;
@@ -894,6 +898,20 @@ void houji_usb_debug_start(void)
             thread_block(THREAD_CONTINUE_NULL);
         }
     }
+}
+/* System sleep (SweetCPU::bootSleep, interrupts masked, no threads): phase 0 before, 1 on every poll, 2 after wake. Register reads
+ * only; the poll thread handles the events after wake. */
+static uint32_t sleep_events_max,sleep_dsts_first,sleep_dsts_last,sleep_dsts_changes,sleep_failed_before;
+void houji_usb_sleep_probe(int phase)
+{
+    if (!u.regs) return;
+    const uint32_t count=rd(GEVNTCOUNT)&0xffff,dsts=rd(DSTS);
+    if (phase==0) { sleep_events_max=count;sleep_dsts_first=sleep_dsts_last=dsts;sleep_dsts_changes=0;sleep_failed_before=u.failed;return; }
+    if (count>sleep_events_max) sleep_events_max=count;
+    if (dsts!=sleep_dsts_last) { sleep_dsts_changes++;sleep_dsts_last=dsts; }
+    if (phase==2)
+        printf("HOUJI USB SLEEP: event bytes pending max %u (ring %u) now %u; dsts %08x -> %08x, %u changes; failed before %u now %u; configured %u\n",
+            sleep_events_max,EVENT_SIZE,count,sleep_dsts_first,dsts,sleep_dsts_changes,sleep_failed_before,u.failed,u.configured);
 }
 void houji_usb_report(void)
 {
