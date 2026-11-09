@@ -62,13 +62,48 @@ PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s unt
   Settings slider drove 0..2866 with no DSI failures. The panel's boot level is read back with DCS `0x52` (307 here).
 - **Auto-lock.** iOS's idle timer never fires on this port (Auto-Lock 1 minute: no dim or display-off request arrives). Fallback:
   after `houji_autolock` seconds without a touch (default 60, 0 off) the kernel presses the power key, and iOS locks itself.
-  Open: why the idle timer does not run.
+  Cause found 2026-11-09: the root image's SpringBoard preferences `SBDisableAutoDim`, `SBDontDimOrLockOnAC` and
+  `SBDisableIdleSleep` (`tools/root/add-nodim.py`). With them removed iOS dims and locks by itself (display off 42 s after
+  boot, no touch); see System sleep.
   Before the first touch after a wake (the lock screen) the wait is `houji_autolock_lockscreen` (default 10 s), as on iOS: the
   lock screen's "swipe up" hint bounces the home indicator at 120 Hz, a full-screen CPU copy per frame here (about +0.5-1 W).
 - Verified on the phone: power-key sleep, taps and swipes on the dark screen (stayed off), power-key wake, swipe to unlock (home
   screen), automatic lock after 60 s, slider.
 - Not done: the panel's refresh rate (it keeps the stock idle-refresh mode from the boot firmware; no 1-120 Hz/LTPO control), and
   powering the touch controller down while the display is off.
+
+## System sleep and resume — working (`houji_sleep=1`)
+iOS's own sleep: the display turns off (Auto-Lock or the power key), powerd and the root domain idle-sleep the system, and it
+resumes on the power key (full wake) or on a scheduled wake (dark wake). Not the SteamOS port's design (its sleep does not work):
+XNU's own IOCPUSleepKernel path with PSCI and the GIC.
+- **CPUs** (`arm/SweetCPU.cpp`, `houji_cpu_off_self` in osfmk): IOCPUSleepKernel halts the seven secondaries: `processor_exit`,
+  then on each `cpu_sleep` → `quiesceCPU` → PSCI `CPU_OFF` (sleep token for `cpu_exit_wait`). On wake `processor_start` → PSCI
+  `CPU_ON` → `houji_secondary_entry` → `initCPU(false)`, as at boot. The boot CPU waits in WFI with interrupts masked (without
+  the masked-time check, which panics after `interrupt_masked_timeout`); only the virtual timer passes the CPU interface mask
+  (priority 0x80, mask 0x90, `houji_gic_sleep_mask`), is acknowledged each tick and re-armed every 25-50 ms to read the power
+  key over SPMI. 15 s asleep: 600 timer wakes (before the mask: 1.38 million, SPI 261 always pending).
+- **Wake**: power key pressed after being seen released → user wake: the root domain promotes it to full wake
+  (`houji_pm_next_wake_is_user`; this macOS-configured kernel does not promote wakes as iOS does) and, 300 ms later, if the
+  display is still off, the buttons driver reports the press, which lights it (iOS does not light it on its own after a wake).
+  Scheduled wakes: SweetCPU registers for the root domain's wake settings (`wake`, `WakeByCalendarDate`, `WakeRelativeToSleep`,
+  maintenance and sleep-service calendars), which an iPhone's PMU RTC would take, and wakes at the earliest (dark wake).
+- **Policy** (root domain, `HOUJI_IOS_IDLE_SLEEP` with `houji_sleep=1`): powerd sets the sleep slider to 0x7fffffff with the idle
+  time in "System Idle Seconds"; only the iOS idle sleep branches honour that (the kernel is configured as macOS). powerd sets
+  the slider to 0 while a PreventUserIdleSystemSleep, BGTask or SystemIsActive assertion is held (from its own type → flag table).
+  `houji_sleep=1` also makes the sleep notice reply timeout 5 s (`pmtimeout`, default 30 s): locationd, bluetoothd, CommCenter
+  and cloudpaird did not reply (hardware this port lacks or emulates); 30 s per round made display-off to sleep 60-110 s.
+- **Root image**: `tools/root/add-nodim.py --remove` (SBDisableIdleSleep kept a SystemIsActive assertion for SpringBoard;
+  SBDontDimOrLockOnAC kept the display on while charging).
+- **Boot arguments**: `houji_sleep=1` (opt-in); `houji_sleep_max_s=N` wakes after N s at most (0, the default: no limit; 30 s if
+  the power key cannot be read); `houji_sleep_test_key_s=N` wakes as if the key was pressed after N s (tests without a hand on
+  the phone); `pmtimeout=N`; `darkwake` as upstream. USB console: `sleep` (kIOPMSleepNow), `pm` (idle sleep inputs), `cpu off N` /
+  `cpu on N` (one secondary). With `io=0x20000` the root domain's trace goes to the console.
+- Verified on the phone (2026-11-09, temporary boots): all 8 cores off and on 7 times in a row from the console; idle sleep with no
+  input 61 s after iOS's own display-off (5 s timeout; before: 112 s), dark wakes back to sleep within 100 ms; scheduled wake at
+  117.96 s for powerd's 118 s request; test-key wake to full wake with the lock screen lit, no re-sleep; `reboot` from a wake window
+  left a clean volume. Not verified: a real press of the power key (the same SPMI read the buttons thread polls), power draw
+  (the phone charges over USB throughout; not measured), and time: CNTVCT runs through sleep, so `mach_absolute_time` includes it
+  (on an iPhone it stops). Devices are not powered down (display off; GPU, Wi-Fi, UFS keep power).
 
 ## Root volume (HFSX on UFS userdata through md0) — header guard
 - Incident (2026-11-09): after a USB-console reboot from iOS (`reboot_kernel`, which unmounts the root) the volume did not mount.

@@ -65,7 +65,9 @@ unbounded desktop; mode 3 is a bounded test that stops after a few minutes).
 
 Applied to upstream's root image with libguestfs (`tools/root/`): `install-metal.py` (Metal bundle), `add-nodeep.py` (8-bit
 framebuffer), `add-wifi-flags.py` (WiFiManager `LinkUpEventAfter4way` off). `add-nodim.py` disables SpringBoard's auto-dim and
-lock; it predates working display power and is being removed (with it set, iOS never locks the screen by itself).
+lock; it predates working display power and system sleep. `add-nodim.py IMAGE REPORT --remove` takes the three keys out, as
+`houji_sleep=1` requires (with them set, iOS never locks the screen by itself and never idle-sleeps); done on the test phone
+2026-11-09.
 
 ## Device-specific data
 
