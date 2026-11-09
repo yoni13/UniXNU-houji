@@ -33,6 +33,7 @@ static uint32_t cpuResumes[8], cpuHalts[8];
 extern "C" int houji_buttons_power_level(void);
 extern "C" void houji_buttons_wake_press(void);
 extern "C" void timer_resync_deadlines(void);
+extern "C" boolean_t ml_set_interrupts_enabled_with_debug(boolean_t enable, boolean_t debug);
 static uint32_t sleepCount, sleepLastReason;
 static uint64_t sleepLastUs, sleepLastPolls;
 extern "C" uint32_t houji_publish_secondary_state(uint64_t *tcr, uint64_t *root);
@@ -409,7 +410,8 @@ void SweetCPU::bootSleep(void) {
   unsigned maxS = 0;
   PE_parse_boot_argn("houji_sleep_max_s", &maxS, sizeof maxS);
   if (!maxS && houji_buttons_power_level() < 0) maxS = 30;
-  const boolean_t enabled = ml_set_interrupts_enabled(FALSE);
+  // Without the masked-interrupts timestamp: the development kernel panics on re-enable after interrupt_masked_timeout.
+  const boolean_t enabled = ml_set_interrupts_enabled_with_debug(FALSE, FALSE);
   const uint64_t ctl = __builtin_arm_rsr64("CNTV_CTL_EL0"), cval = __builtin_arm_rsr64("CNTV_CVAL_EL0");
   uint64_t tick, limit = 0;
   nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &tick);
@@ -435,13 +437,13 @@ void SweetCPU::bootSleep(void) {
   __builtin_arm_wsr64("CNTV_CVAL_EL0", cval);
   __builtin_arm_wsr64("CNTV_CTL_EL0", ctl);
   __builtin_arm_isb(ISB_SY);
-  ml_set_interrupts_enabled(enabled);
+  ml_set_interrupts_enabled_with_debug(enabled, FALSE);
   timer_resync_deadlines();
   uint64_t ns; absolutetime_to_nanoseconds(slept, &ns);
   sleepCount++; sleepLastReason = reason; sleepLastUs = ns / 1000; sleepLastPolls = polls;
   if (reason == 1) houji_buttons_wake_press();
-  IOLog("HOUJI SLEEP: woke after %llu ms (%s), %llu polls; sleep %u\n", ns / 1000000, reason == 1 ? "power key" : "time limit", polls,
-        sleepCount);
+  IOLog("HOUJI SLEEP: woke after %llu ms (%s), %llu polls; sleep %u; interrupts were %s\n", ns / 1000000,
+        reason == 1 ? "power key" : "time limit", polls, sleepCount, enabled ? "enabled" : "masked");
 }
 // USB console "sleep": ask the root power domain to sleep now, as a sleep request from iOS would
 extern "C" void houji_sleep_now(void) {
