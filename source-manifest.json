@@ -1855,7 +1855,7 @@
     "kernel/overlay/iokit/Kernel/houji-buttons/BootResetCore.h": "9211ed8aa8174a8999829c29b51351fb839807c1473c6239ae09e069e294a5f6",
     "kernel/overlay/iokit/Kernel/houji-buttons/HoujiBacklightProtocol.h": "621f4761779e1d2fc4088304a038aaad034ac5d6a382fe471b956f73ddb0dddc",
     "kernel/overlay/iokit/Kernel/houji-buttons/HoujiButtons.cpp": "2474b294c5f86e182df14cb6b95281acce3f825fff0a0d65041d51969627da94",
-    "kernel/overlay/iokit/Kernel/houji-buttons/HoujiScreen.cpp": "a6d655d0c7d8a9cc5e55c987b8b416910f964712edd6898e24f0b176f29544c8",
+    "kernel/overlay/iokit/Kernel/houji-buttons/HoujiScreen.cpp": "ba1f32b68d213c4e9d00e9f7cf6eab4165d29cbddb9dbbcf046b0b497d771488",
     "kernel/overlay/iokit/Kernel/houji-camera/HoujiCamera.cpp": "bc11cb93f9f8d56b02eb62323b6075fa5604a749085b556bf3e2057787a606e5",
     "kernel/overlay/iokit/Kernel/houji-ufs-root/Adreno740/AdrenoPM4.h": "86f4e84eece0f2e67f786d03cea8b82c696377fc5af9f890dd164bbfe24abd29",
     "kernel/overlay/iokit/Kernel/houji-ufs-root/Adreno740/HoujiNativeAccelerator.cpp": "00cfa06c3e551d4d74a4e287440a68522b3ba54e0eb321bdf1575f9b894eb3d7",

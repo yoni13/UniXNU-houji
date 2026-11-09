@@ -19,6 +19,7 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
 #include <IOKit/IOService.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSDictionary.h>
 #include <sys/proc.h>
@@ -236,6 +237,17 @@ extern "C" void houji_backlight_start(IOService *provider) {
 }
 
 extern "C" void houji_screen_start(void) {
+    // houji_srgb=1: report an sRGB display (/product artwork-display-gamut, P3 in the D22 tree) before launchd, so MobileGestalt's
+    // HasExtendedColorDisplay is false and WebKit draws its layers in 8-bit BGRA surfaces instead of the two-plane RGB10A8 ones.
+    unsigned srgb = 0; PE_parse_boot_argn("houji_srgb", &srgb, sizeof srgb);
+    if (srgb) {
+        if (IORegistryEntry *product = IORegistryEntry::fromPath("/product", gIODTPlane)) {
+            static const char gamut[] = "sRGB";
+            product->setProperty("artwork-display-gamut", (void *)gamut, sizeof gamut);
+            product->release();
+            IOLog("HOUJI SCREEN: /product artwork-display-gamut set to sRGB (houji_srgb)\n");
+        }
+    }
     unsigned enabled = 1; PE_parse_boot_argn("houji_screen", &enabled, sizeof enabled);
     if (!enabled || native_screen_stats[0] || !(gLock = IOLockAlloc())) return;
     thread_t t = nullptr;
