@@ -48,6 +48,13 @@ PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s unt
   `/usr/sbin/BlueTool` patched (`perf-test/patch-bluetool.py`: its XPC script reply always carries result 0, the ad-hoc signature's
   page hash rewritten), since its built-in scripts are Broadcom patchram sequences for a chip this phone does not have.
 - Keychain: AppleKeyStore selectors 10/11 (wrap/unwrap item keys) implemented; before, bluetoothd could not store its identity keys.
+- Turning Bluetooth off (2026-11-09): bluetoothd crashed (pc 0) every time. At "Terminating stack" 0x1000e6aac calls the HCI
+  transport's hook at +0x60 for every transport but USB, without a null check; H4, H4DS and H5 have no such hook (H4BC, APPLEBT,
+  PCIE and VIRT do). `/usr/sbin/bluetoothd` patched (`perf-test/patch-bluetoothd.py`: the hook is called only when set, page hash
+  rewritten). Verified: off without a crash, then on again from Settings.
+- Open: turning Bluetooth on takes about 27 s, as at boot: after vendor command 0xfd3c (ACI_SetMultipleAdvInstanceParams, answered
+  by the bridge) bluetoothd sends nothing for 27-29 s. Control Center shows Bluetooth dimmed (unavailable) while Settings shows it
+  on, also on a fresh boot; tapping it does nothing. Console `bt log` traces the next 400 HCI packets.
 - Diagnostics used: `houji_exit_trace=NAME`, `houji_path_trace=NAME`, and the unified log parsed on the host
   (mandiant/macos-UnifiedLogs on /private/var/db/diagnostics and uuidtext copied over NBD).
 
@@ -121,6 +128,11 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   written home and an empty journal header was written (start = end after it, next sequence), over NBD, checked by a mount and a
   full catalog walk (334,014 entries) before committing; the original blocks are kept in `private/root-repair/`.
   `perf-test/hfs-journal-scan.py` lists journal transactions without trusting the journal header.
+- Second incident (2026-11-09 evening): the USB console vanished while iOS was asleep (a console command was sent during sleep);
+  after the forced reset the journal header was zero (volume header intact). XNU logged `jnl: open: bad jhdr size (0)`, marked the
+  volume `FSK!` and every later boot failed with "cannot mount dirty non-journaled volumes". Repaired by
+  `perf-test/nbd-journal-replay.py`: the 27 surviving transactions (one contiguous chain, checksums valid) written home in sequence
+  order, an empty journal header after the newest, checked by a mount and a full catalog walk (334,976 entries) before committing.
 - Cause not found. Ruled out on the phone: the in-memory volume header was never zero (polled every 1 ms), journal copies did
   not change before their write, and Skywalk was not involved.
 - Guard (`HoujiRootWindow.h`): a write that would leave block 0 without a valid HFSX header, or put zeros over a sector holding a
