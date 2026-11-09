@@ -70,6 +70,22 @@ PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s unt
 - Not done: the panel's refresh rate (it keeps the stock idle-refresh mode from the boot firmware; no 1-120 Hz/LTPO control), and
   powering the touch controller down while the display is off.
 
+## Root volume (HFSX on UFS userdata through md0) — header guard
+- Incident (2026-11-09): after a USB-console reboot from iOS (`reboot_kernel`, which unmounts the root) the volume did not mount.
+  Its block 0 (the volume header at byte 1024) and the journal header were all zero; the rest was intact. Repaired from the
+  journal without the clean image: the newest transaction's blocks (volume header, two allocation blocks, one catalog node) were
+  written home and an empty journal header was written (start = end after it, next sequence), over NBD, checked by a mount and a
+  full catalog walk (334,014 entries) before committing; the original blocks are kept in `private/root-repair/`.
+  `perf-test/hfs-journal-scan.py` lists journal transactions without trusting the journal header.
+- Cause not found. Ruled out on the phone: the in-memory volume header was never zero (polled every 1 ms), journal copies did
+  not change before their write, and Skywalk was not involved.
+- Guard (`HoujiRootWindow.h`): a write that would leave block 0 without a valid HFSX header, or put zeros over a sector holding a
+  journal header, is refused with EIO and logged (`HOUJI ROOT: REFUSED`, with a backtrace); the old header stays readable.
+  Zero data is not refused elsewhere: md0 allows 32 blocks per write, so the journal splits at 16 KiB, and a 512-byte zero piece
+  of an allocation block is legitimate (an earlier guard refused it and stopped the journal every boot at about 30 s).
+- Verified: 220 s of iOS without refusals or journal errors; a USB reboot then left a clean volume (unmounted bit set, empty
+  journal), and a catalog walk matched.
+
 ## Idle power
 Measured as USB input minus battery charge power (charger readings), screen off, nothing drawing:
 
