@@ -26,6 +26,7 @@ extern const uint8_t verified_root_key[];
 #include <kern/clock.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
+#include <libkern/OSDebug.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <libkern/c++/OSData.h>
