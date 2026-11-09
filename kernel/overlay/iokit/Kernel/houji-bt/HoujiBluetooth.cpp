@@ -580,7 +580,16 @@ errno_t ctlDisconnect(kern_ctl_ref, u_int32_t unit, void *) {
     return 0;
 }
 errno_t ctlSend(kern_ctl_ref, u_int32_t unit, void *, mbuf_t m, int) {
-    if (unit != gUnit) {mbuf_freem(m); return ENOTCONN;}
+    if (unit != gUnit) {
+        static unsigned dropped;
+        if (dropped++ < 100) {
+            uint8_t head[4] = {}; const size_t n = mbuf_len(m) < sizeof head ? mbuf_len(m) : sizeof head;
+            memcpy(head, mbuf_data(m), n);
+            IOLog("HOUJI BT: unit %u (not the owner, unit %u) sent %zu bytes, dropped: %02x %02x %02x %02x\n", unit, gUnit,
+                  (size_t)mbuf_len(m), head[0], head[1], head[2], head[3]);
+        }
+        mbuf_freem(m); return ENOTCONN;
+    }
     for (mbuf_t q = m; q; q = mbuf_next(q)) clientBytes(static_cast<const uint8_t *>(mbuf_data(q)), mbuf_len(q));
     mbuf_freem(m);
     return 0;
