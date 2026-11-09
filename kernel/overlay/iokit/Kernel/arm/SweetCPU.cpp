@@ -389,10 +389,10 @@ void SweetCPU::haltCPU(void) {
   if (!parsed) {parsed = true; int v = 1; PE_parse_boot_argn("houji_cpu_off", &v, sizeof v); houji_cpu_off_psci = v != 0;}
   IOLog("HOUJI SMP: CPU%u processor_exit (%s)\n", id, houji_cpu_off_psci ? "PSCI CPU_OFF" : "WFI park");
   IOSleep(200);
+  // XNU lets a CPU exit only while quiescing for system sleep (ml_cpu_can_exit); IOCPUSleepKernel sets that flag.
   const kern_return_t r = processor_exit(machProcessor);
   IOLog("HOUJI SMP: CPU%u processor_exit returned %d; reached CPU_OFF %u times\n", id, r, houji_cpu_off_reached[id]);
-  if (r != KERN_SUCCESS) panic("HOUJI SMP: processor_exit(CPU%u) failed %d", id, r);
-  __atomic_add_fetch(&cpuHalts[id], 1U, __ATOMIC_RELAXED);
+  if (r == KERN_SUCCESS) __atomic_add_fetch(&cpuHalts[id], 1U, __ATOMIC_RELAXED);
 }
 // USB console "cpu off N" / "cpu on N": one secondary down or up, outside system sleep (bring-up test of the sleep path).
 static void hotplugThread(void *arg, wait_result_t) {
@@ -403,7 +403,9 @@ static void hotplugThread(void *arg, wait_result_t) {
   if (!cpu || !id) IOLog("HOUJI SMP: cpu %s %u: no such secondary\n", on ? "on" : "off", id);
   else if (!on && cpu->getCPUState() == kIOCPUStateRunning) {
     const uint64_t t0 = mach_absolute_time();
+    ml_set_is_quiescing(true);   // as IOCPUSleepKernel does around the halts
     cpu->haltCPU();
+    ml_set_is_quiescing(false);
     uint64_t ns; absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
     IOLog("HOUJI SMP: CPU%u off in %llu us; state=%u halts=%u\n", id, ns / 1000, cpu->getCPUState(), cpuHalts[id]);
   } else if (on && cpu->getCPUState() == kIOCPUStateStopped) {
