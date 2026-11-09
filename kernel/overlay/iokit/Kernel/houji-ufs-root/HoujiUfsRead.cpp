@@ -585,7 +585,7 @@ static int nativeRootTransfer(void *,uint64_t offset,void *data,size_t bytes,int
   IOLockUnlock(gRootWindowLock);
   if(result==3){
     static uint32_t refusals;
-    if(refusals++<64)IOLog("HOUJI ROOT: REFUSED write at byte %llu (request %llu+%zu): zero-filled partial block or invalid volume header"
+    if(refusals++<64)IOLog("HOUJI ROOT: REFUSED write at byte %llu (request %llu+%zu): zero-filled 512-byte header or invalid volume header"
                            " (refusal %u)\n",refusedAt,offset,bytes,refusals);
   }
   return result==0?0:result==1?EINVAL:EIO;

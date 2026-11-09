@@ -21,20 +21,21 @@ static bool houjiHfsRootHeader(const uint8_t *page,unsigned n) {
   return true;
 }
 // Returns 0, invalid-span=1, transport-error=2, or refused=3 (nothing written; *refusedAt gets the byte offset). The caller
-// serializes I/O. Refused writes: a partial block whose new bytes are all zero (HFS+ writes 512-byte blocks only for the volume
-// header, its alternate and the journal header, never zero-filled), and a volume block 0 that would not hold a valid HFSX header.
-// Both were seen once: after a reboot the volume and journal headers were zero and the volume did not mount.
+// serializes I/O. Refused writes: a 512-byte request that is all zero (HFS+ makes 512-byte requests only for the volume header,
+// its alternate and the journal header, never zero-filled; journal data requests are larger and may hold zero sectors), and a
+// volume block 0 that would not hold a valid HFSX header. Both were seen once: after a reboot the volume and journal headers were
+// zero and the volume did not mount.
 template<class Ops>
 static int houjiRootTransfer(Ops &ops,uint64_t offset,void *data,uint64_t bytes,bool write,uint8_t *scratch,
                              uint64_t *refusedAt=nullptr) {
   if((!data && bytes) || !scratch || offset>kHoujiRootBytes || bytes>kHoujiRootBytes-offset || ((offset|bytes)&511))return 1;
   uint8_t *cursor=static_cast<uint8_t *>(data);
+  if(write && bytes==512){
+    bool zero=true;for(unsigned i=0;i<512 && zero;i++)zero=!cursor[i];
+    if(zero){if(refusedAt)*refusedAt=offset;return 3;}
+  }
   while(bytes){
     HoujiRootSpan span;if(!houjiRootSpan(offset,bytes,span))return 1;
-    if(write && span.partial){
-      bool zero=true;for(unsigned i=0;i<span.bytes && zero;i++)zero=!cursor[i];
-      if(zero){if(refusedAt)*refusedAt=offset;return 3;}
-    }
     if((!write || span.partial) && !ops.read(span.lba,span.blocks,scratch))return 2;
     if(write){
       __builtin_memcpy(scratch+span.skip,cursor,span.bytes);
