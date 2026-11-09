@@ -118,6 +118,13 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   without sleep). A restarted CPU's `SIGPdisabled` is cleared by its first IPI, the self-IPI `initCPU(true)` sends at boot;
   `initCPU(false)` did not send it, so after a wake every IPI to a secondary failed (lost ASTs, timed-out waits). Resume now
   sends it too. Verified by hand: several sleep/power-key wake rounds with use in between, no reset.
+- **Fixed 2026-11-09: the USB console died for good after a sleep** when the host sent a control request (SET_CONTROL_LINE_STATE,
+  sent when a program opens the port or changes DTR) while the phone slept: the host timed it out and began a new one, and after
+  wake the control TRB completed with status setup pending, which the driver took as an invalid completion and stopped (found with
+  `houji_usb_fail_panic=1`, which turns a console stop into a saved panic). It now ends that control transfer and arms the next
+  setup, as Linux `dwc3_ep0_complete_data`. Verified (`perf-test/usb-sleep-test.sh`, DTR toggled every second through three
+  sleeps): five such transfers ended, console answered after every wake. bootSleep also prints `HOUJI USB SLEEP` (controller
+  events and DSTS during sleep).
 - Open: after some wakes the display turns off but the system does not idle-sleep again (cause not found); CommCenter
   crash-loops every 15-25 s in every boot (no modem).
 
