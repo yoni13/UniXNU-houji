@@ -473,6 +473,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"screen ",7)) { extern void houji_screen_command(const char *); houji_screen_command(u.command+7); }
     else if (!strncmp(u.command,"type ",5)) { type_command(u.command+5); bzero(u.command,sizeof(u.command)); }
     else if (!strcmp(u.command,"sleep")) { extern void houji_sleep_now(void); houji_sleep_now(); }
+    else if (!strcmp(u.command,"panic")) panic("HOUJI DEBUG: panic requested over USB");
     else if (!strcmp(u.command,"pm")) { extern void houji_pm_report(void); houji_pm_report(); }
     else if (!strncmp(u.command,"cpu off ",8) || !strncmp(u.command,"cpu on ",7)) {
         extern void houji_cpu_hotplug(unsigned, int);

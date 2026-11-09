@@ -3525,10 +3525,20 @@ index 94e9130..1d1f8b6 100644
  cpu_start(int cpu)
  {
 diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
-index 76582da..24427ab 100644
+index 76582da..53a7346 100644
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
-@@ -748,6 +748,21 @@ halt_all_cpus(boolean_t reboot)
+@@ -742,12 +742,39 @@ ml_get_machine_mem(void)
+ 	return machine_info.memory_size;
+ }
+ 
++#if defined(SWEET) && SWEET
++void (*houji_panic_log_hook)(void);
++#endif
++
+ __attribute__((noreturn))
+ void
+ halt_all_cpus(boolean_t reboot)
  {
  	if (reboot) {
  		printf("MACH Reboot\n");
@@ -3536,6 +3546,14 @@ index 76582da..24427ab 100644
 +		/* Test mode only. The host prepares an exact no-wipe recovery BCB
 +		 * before enabling this argument. Panic context never accesses storage
 +		 * or promises that uncommitted diagnostic data was saved. */
++		/* houji_panic_log=1: IOKit's UFS driver saves the console tail to the log file before the reset. */
++		extern void (*houji_panic_log_hook)(void);
++		extern unsigned panic_active(void);
++		if (houji_panic_log_hook != NULL && panic_active()) {
++			void (*hook)(void) = houji_panic_log_hook;
++			houji_panic_log_hook = NULL;    /* once: a nested panic in the hook resets without it */
++			hook();
++		}
 +		int houji_panic_recovery = 0;
 +		if (PE_parse_boot_argn("houji_panic_recovery", &houji_panic_recovery,
 +		    sizeof(houji_panic_recovery)) && houji_panic_recovery == 1) {
@@ -3550,7 +3568,7 @@ index 76582da..24427ab 100644
  		PEHaltRestart(kPERestartCPU);
  	} else {
  		printf("CPU halted\n");
-@@ -2049,7 +2064,7 @@ static inline uint64_t
+@@ -2049,7 +2076,7 @@ static inline uint64_t
  nonspeculative_timebase(void)
  {
  #if defined(HAS_ACNTVCT)
@@ -3559,7 +3577,7 @@ index 76582da..24427ab 100644
  #elif __ARM_ARCH_8_6__
  	return __builtin_arm_rsr64("CNTVCTSS_EL0");
  #else
-@@ -2164,6 +2179,18 @@ ml_get_decrementer(void)
+@@ -2164,6 +2191,18 @@ ml_get_decrementer(void)
  	return dec;
  }
  

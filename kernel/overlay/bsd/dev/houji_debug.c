@@ -9,6 +9,7 @@ void houji_debug_append(const char *data, int size);
 unsigned houji_debug_copy(uint64_t *pos, char *out, unsigned max);
 uint64_t houji_debug_total(void);
 uint64_t houji_debug_dropped(void);
+unsigned houji_debug_tail_panic(char *out, unsigned max);
 void houji_debug_append(const char *data, int size)
 {
     if (size<=0) return;
@@ -33,3 +34,9 @@ uint64_t houji_debug_total(void)
     return n;
 }
 uint64_t houji_debug_dropped(void) { return os_atomic_load(&dropped,relaxed); }
+/* Panic only (other CPUs stopped): the last max bytes, ignoring the lock, which a stopped CPU may hold. */
+unsigned houji_debug_tail_panic(char *out, unsigned max)
+{
+    uint64_t pos=log_ring.total>max?log_ring.total-max:0;
+    return vl_copy(&log_ring,&pos,out,max);
+}

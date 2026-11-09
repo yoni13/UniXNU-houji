@@ -27,6 +27,7 @@ extern const uint8_t verified_root_key[];
 #include <IOKit/IOLib.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <libkern/OSDebug.h>
+#include <mach/mach_time.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <libkern/c++/OSData.h>
@@ -415,6 +416,58 @@ static const char *saveNativeLog(void) {
   IOLog("HOUJI XNU LOG: COMMIT/FLUSH/READBACK PASS bytes=%u crc=%08x\n",used,houjiLe32(image+36));
   return nullptr;
 }
+// houji_panic_log=1: on panic, before the reset, write the console tail into XnuLog.bin (the same 16 reserved clusters and
+// header as saveNativeLog; read with tools/capture-recovery-logs.py). Armed after the FAT allocation is verified at boot. At
+// panic the other CPUs are stopped, possibly inside a UFS command or holding gHost.lock: no lock is taken, an in-flight
+// transfer gets 2 s to finish, and nothing is read back. Only the log file's LBAs pass the command gate.
+extern "C" unsigned houji_debug_tail_panic(char *out,unsigned max);
+extern "C" void (*houji_panic_log_hook)(void);
+static bool gPanicLogReady;
+static IOReturn panicLogCommand(const uint8_t *cdb,unsigned direction,const uint8_t *data) {
+  uint32_t scsi=0;
+  if(data){if(!hostClearUcd())return kIOReturnNotReady;memcpy(gHost.virt+kDataOffset,data,4096);}
+  return hostScsiDir(0,cdb,10,direction,data?4096:0,1000000,&scsi);
+}
+static void panicSaveLog(void) {
+  if(!gPanicLogReady || !gHost.ready || gHost.poisoned) {printf("HOUJI PANIC LOG: UFS not available; not saved\n");return;}
+  uint64_t deadline=0;clock_interval_to_deadline(2000000,kMicrosecondScale,&deadline);
+  while(read32(gHost.hc,0x58)!=0 && mach_absolute_time()<deadline) {}
+  if(read32(gHost.hc,0x58)!=0) {printf("HOUJI PANIC LOG: UFS command still in flight; not saved\n");return;}
+  printf("HOUJI PANIC LOG: saving the console tail to XnuLog.bin\n");
+  static uint8_t image[65536];
+  bzero(image,sizeof(image));
+  static const char marker[]="--- HOUJI PANIC: console tail (houji_panic_log=1) ---\n";
+  unsigned used=sizeof(marker)-1;
+  memcpy(image+4096,marker,used);
+  used+=houji_debug_tail_panic(reinterpret_cast<char *>(image+4096+used),sizeof(image)-4096-used);
+  houjiLogHeader(image,image+4096,used);
+  gLogEnabled=true;gLogArmed=true;
+  static const uint8_t sync[10]={0x35,0,0,0,0,0,0,0,0,0};
+  const char *why=nullptr;
+  for(unsigned i=1;i<=16 && !why;i++) {
+    const unsigned k=i&15;   // payload first, header (block 0) last
+    const uint32_t lba=kHoujiLogLbas[k];
+    const uint8_t cdb[10]={0x2a,0,uint8_t(lba>>24),uint8_t(lba>>16),uint8_t(lba>>8),uint8_t(lba),0,0,1,0};
+    if(k==0 && panicLogCommand(sync,0,nullptr)!=kIOReturnSuccess)why="payload flush";
+    else if(panicLogCommand(cdb,1,image+k*4096)!=kIOReturnSuccess)why="write";
+  }
+  if(!why && panicLogCommand(sync,0,nullptr)!=kIOReturnSuccess)why="header flush";
+  gLogArmed=false;
+  printf("HOUJI PANIC LOG: %s%s (%u bytes)\n",why?"FAILED at ":"saved",why?why:"",used);
+}
+static void armPanicLog(void) {
+  int v=0;PE_parse_boot_argn("houji_panic_log",&v,sizeof(v));
+  if(v!=1)return;
+  static uint8_t metadata[7*4096];
+  const char *why=nullptr;
+  for(unsigned i=0;i<7 && !why;i++)
+    if(hostRead4k(0,4096+i,1,metadata+i*4096)!=kIOReturnSuccess)why="log metadata read failed";
+  if(!why)why=houjiLogFatError(metadata,sizeof(metadata));
+  if(why){IOLog("HOUJI PANIC LOG: not armed: %s\n",why);return;}
+  gPanicLogReady=true;
+  houji_panic_log_hook=panicSaveLog;
+  IOLog("HOUJI PANIC LOG: armed; a panic saves the console tail to XnuLog.bin\n");
+}
 static const char *setRecoveryBoot(void);
 static void logTrialReset(void) {
   const char *why=setRecoveryBoot();
@@ -628,6 +681,7 @@ extern "C" void houji_ufs_root_attach(void) {
   gRootArmed=true;attached=true;
   IOLog("HOUJI ROOT: md0 is native UFS LUN0 [%u,%u), bytes=%llu; no RAM root backing\n",
         kHoujiRootFirst,kHoujiRootFirst+kHoujiRootBlocks,kHoujiRootBytes);
+  armPanicLog();
   // CPU start is already fatal on failure and all eight online messages precede setconf. The old cross-component probe reads a
   // separate copy of its static counters and can report false failure; keep its report, but do not block the root mount on it.
   const bool smpProof=houji_smp_preflight();
