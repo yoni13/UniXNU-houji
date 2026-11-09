@@ -421,6 +421,7 @@ static const char *saveNativeLog(void) {
 // panic the other CPUs are stopped, possibly inside a UFS command or holding gHost.lock: no lock is taken, an in-flight
 // transfer gets 2 s to finish, and nothing is read back. Only the log file's LBAs pass the command gate.
 extern "C" unsigned houji_debug_tail_panic(char *out,unsigned max);
+extern "C" char *debug_buf_base, *debug_buf_ptr;   // the panic report (pe_init: a kernel panic region on SWEET)
 extern "C" void (*houji_panic_log_hook)(void);
 static bool gPanicLogReady;
 static IOReturn panicLogCommand(const uint8_t *cdb,unsigned direction,const uint8_t *data) {
@@ -436,9 +437,15 @@ static void panicSaveLog(void) {
   printf("HOUJI PANIC LOG: saving the console tail to XnuLog.bin\n");
   static uint8_t image[65536];
   bzero(image,sizeof(image));
-  static const char marker[]="--- HOUJI PANIC: console tail (houji_panic_log=1) ---\n";
-  unsigned used=sizeof(marker)-1;
-  memcpy(image+4096,marker,used);
+  // The panic report (at most 24 KiB of it), then as much console tail as fits.
+  static const char report[]="--- HOUJI PANIC: panic report ---\n", marker[]="\n--- HOUJI PANIC: console tail ---\n";
+  unsigned used=sizeof(report)-1;
+  memcpy(image+4096,report,used);
+  if(debug_buf_base && debug_buf_ptr>debug_buf_base) {
+    size_t n=size_t(debug_buf_ptr-debug_buf_base);if(n>24576)n=24576;
+    memcpy(image+4096+used,debug_buf_base,n);used+=unsigned(n);
+  }
+  memcpy(image+4096+used,marker,sizeof(marker)-1);used+=sizeof(marker)-1;
   used+=houji_debug_tail_panic(reinterpret_cast<char *>(image+4096+used),sizeof(image)-4096-used);
   houjiLogHeader(image,image+4096,used);
   gLogEnabled=true;gLogArmed=true;
