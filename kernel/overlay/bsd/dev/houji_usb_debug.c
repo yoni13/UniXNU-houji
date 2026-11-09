@@ -237,6 +237,13 @@ static int complete(unsigned ep)
     sync_dma(trb_off[ep],16);
     volatile uint32_t *t=(volatile uint32_t *)(u.dma+trb_off[ep]);
     unsigned left=t[2]&0xffffff;
+    /* Setup pending (TRB status 2): the host began a new control request before this one ended, e.g. after timing out one sent
+     * while the phone slept. As Linux dwc3_ep0_complete_data: drop this control transfer; the caller arms for the new setup. */
+    if (ep<=1 && !(t[3]&HWO) && (t[2]>>28)==2) {
+        u.busy[ep]=false;
+        unote("HOUJI USB: control transfer ended by a new setup (phase %u)\n",(unsigned)u.phase);
+        return -2;
+    }
     if ((t[3]&HWO) || (t[2]>>28) || left>u.requested[ep]) {
         fail("invalid DMA completion"); return -1;
     }
@@ -562,7 +569,9 @@ static void event(uint32_t e)
     }
     unsigned ep=(e>>1)&31,type=(e>>6)&15,status=(e>>12)&15;
     if (type==1) {
-        int n=complete(ep);if (n<0) return;
+        int n=complete(ep);
+        if (n==-2) { if (!u.busy[0] && !u.busy[1]) setup_arm(); return; }
+        if (n<0) return;
         if (status&1) { fail("USB transfer bus error");return; }
         if (ep==2) { receive_done((unsigned)n);return; }
         if (ep==3 && upload_mode && upload.phase==HRU_COMPLETE && upload_done_sent && !upload_ack_length) {
