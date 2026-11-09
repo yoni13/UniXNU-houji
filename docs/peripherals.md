@@ -105,6 +105,14 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   held, so the buttons thread reported it and the fallback press was not sent), display lit, no re-sleep. Not verified: power draw
   (the phone charges over USB throughout; not measured), and time: CNTVCT runs through sleep, so `mach_absolute_time` includes it
   (on an iPhone it stops). Devices are not powered down (display off; GPU, Wi-Fi, UFS keep power).
+- **Fixed 2026-11-09: panic minutes after a wake.** A boot reset 85 s after a power key wake; the panic log
+  (`houji_panic_log=1`, see `log-capture.md`) of a later sleep test showed `wait_while_equals32 … timeout` in
+  `task_restartable_ranges_synchronize` (CommCenter), with only CPU0 answering the panic's debugger IPI (all eight answer
+  without sleep). A restarted CPU's `SIGPdisabled` is cleared by its first IPI, the self-IPI `initCPU(true)` sends at boot;
+  `initCPU(false)` did not send it, so after a wake every IPI to a secondary failed (lost ASTs, timed-out waits). Resume now
+  sends it too. Verified by hand: several sleep/power-key wake rounds with use in between, no reset.
+- Open: after some wakes the display turns off but the system does not idle-sleep again (cause not found); CommCenter
+  crash-loops every 15-25 s in every boot (no modem).
 
 ## Root volume (HFSX on UFS userdata through md0) — header guard
 - Incident (2026-11-09): after a USB-console reboot from iOS (`reboot_kernel`, which unmounts the root) the volume did not mount.
