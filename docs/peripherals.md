@@ -65,7 +65,7 @@ PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s unt
   Settings showed it on. SpringBoard's BluetoothManager attaches to bluetoothd five times at its start (unified log: "failed to
   attach with error 9") and never again; bluetoothd exits until the `bluetooth` service exists, which was published only after the
   controller bring-up (about 45 s). The same race reached bluetoothd's crash-loop detection when the bring-up took longer: after
-  five failed starts every later start exits 1 and Bluetooth stays off for the boot. **`houji_bt_early=1`** (opt-in): the service,
+  five failed starts every later start exits 1 and Bluetooth stays off for the boot. **`houji_bt_early`** (default 1 since 2026-11-10; `houji_bt_early=0` for the old order): the service,
   AppleOLYHAL and the H4 control are published at the root mount (about 7 s), and a client connecting before the controller is up
   waits for it (up to 90 s). Verified: bluetoothd started once at 7.2 s, BlueTool waited 18.4 s, Bluetooth up at 49 s; Control
   Center's button available, a tap shows iOS's "Disconnecting Nearby Bluetooth Accessories Until Tomorrow".
@@ -91,6 +91,13 @@ PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s unt
   lock screen's "swipe up" hint bounces the home indicator at 120 Hz, a full-screen CPU copy per frame here (about +0.5-1 W).
 - Verified on the phone: power-key sleep, taps and swipes on the dark screen (stayed off), power-key wake, swipe to unlock (home
   screen), automatic lock after 60 s, slider.
+- **Safari pages were black (fixed 2026-11-10 with `houji_srgb=1`, opt-in).** Pages loaded and the web processes sat idle, yet the page
+  area stayed black. The D22 tree reports a P3 display (`/product artwork-display-gamut = "P3"`), so MobileGestalt's
+  HasExtendedColorDisplay is true and WebKit draws its layers in two-plane RGB10A8 surfaces, which the Metal translator only
+  shadows (the render server's shadowed-texture count went from 7 to 46-50 on loading a page; Turnip also refuses some surface
+  layouts, `VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT`). `houji_srgb=1` sets the property to `sRGB` before launchd
+  (`HoujiScreen.cpp`), and WebKit draws 8-bit BGRA surfaces like other apps. Verified: Safari shows its own error page (no Wi-Fi in
+  that boot) and a `data:` page's text. Colors are then managed as sRGB. Not fixed by it: the home screen widgets stay blank.
 - Not done: the panel's refresh rate (it keeps the stock idle-refresh mode from the boot firmware; no 1-120 Hz/LTPO control), and
   powering the touch controller down while the display is off.
 
