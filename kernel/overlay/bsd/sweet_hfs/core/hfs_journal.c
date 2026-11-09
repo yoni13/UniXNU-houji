@@ -145,10 +145,11 @@ static int finish_end_transaction(transaction *tr, errno_t (*callback)(void*), v
 #include <mach/mach_time.h>
 #include <kern/clock.h>
 extern uint64_t kvtophys(vm_offset_t);
-#define HOUJI_JCHK_MAX 2048
-static struct { void *tr; uint32_t off, size, cksum, hooked; uint64_t at; } houji_jchk[HOUJI_JCHK_MAX];
-static uint32_t houji_jchk_n, houji_jchk_logged;
-static void *houji_jchk_tr;
+#define HOUJI_JCHK_MAX 4096
+/* A ring of the most recent block copies, keyed by the copy's address (transactions overlap: the next one is copied before
+ * the previous one is written). */
+static struct { const uint8_t *p; uint32_t size, cksum, hooked; uint64_t at; } houji_jchk[HOUJI_JCHK_MAX];
+static uint32_t houji_jchk_next, houji_jchk_logged;
 static uint32_t
 houji_jsum(const uint8_t *p, uint32_t n)
 {
@@ -159,56 +160,48 @@ houji_jsum(const uint8_t *p, uint32_t n)
 	return s;
 }
 static void
-houji_jchk_add(void *tr, uint32_t off, const uint8_t *p, uint32_t size, int hooked)
+houji_jchk_add(const uint8_t *p, uint32_t size, int hooked)
 {
-	if (houji_jchk_tr != tr) {
-		houji_jchk_tr = tr;
-		houji_jchk_n = 0;
-	}
-	if (houji_jchk_n < HOUJI_JCHK_MAX) {
-		houji_jchk[houji_jchk_n].tr = tr;
-		houji_jchk[houji_jchk_n].off = off;
-		houji_jchk[houji_jchk_n].size = size;
-		houji_jchk[houji_jchk_n].cksum = houji_jsum(p, size);
-		houji_jchk[houji_jchk_n].at = mach_absolute_time();
-		houji_jchk[houji_jchk_n].hooked = hooked != 0;
-		houji_jchk_n++;
-	}
+	uint32_t i = houji_jchk_next++ % HOUJI_JCHK_MAX;
+	houji_jchk[i].p = p;
+	houji_jchk[i].size = size;
+	houji_jchk[i].cksum = houji_jsum(p, size);
+	houji_jchk[i].hooked = hooked != 0;
+	houji_jchk[i].at = mach_absolute_time();
 }
+/* Check one block of a transaction about to be written against its copy record (the newest one at that address). */
 static void
-houji_jchk_verify(void *tr, const uint8_t *buffers, const char *when)
+houji_jchk_check(const uint8_t *p, uint32_t size, uint32_t index, const char *when)
 {
-	if (houji_jchk_tr != tr) {
-		return;
-	}
-	for (uint32_t i = 0; i < houji_jchk_n; i++) {
-		const uint8_t *p = buffers + houji_jchk[i].off;
-		if (houji_jchk[i].hooked) {
-			continue;   /* B-tree nodes: the swap hook rewrites the copy */
-		}
-		if (houji_jsum(p, houji_jchk[i].size) == houji_jchk[i].cksum) {
+	for (uint32_t k = 0; k < HOUJI_JCHK_MAX; k++) {
+		uint32_t i = (houji_jchk_next - 1 - k) % HOUJI_JCHK_MAX;
+		if (houji_jchk[i].p != p) {
 			continue;
+		}
+		if (houji_jchk[i].size != size || houji_jchk[i].hooked || houji_jsum(p, size) == houji_jchk[i].cksum) {
+			return;
 		}
 		uint64_t ns = 0;
 		absolutetime_to_nanoseconds(mach_absolute_time() - houji_jchk[i].at, &ns);
 		uint32_t zero = 0, first = ~0u;
-		for (uint32_t k = 0; k < houji_jchk[i].size; k += 64) {
+		for (uint32_t off = 0; off < size; off += 64) {
 			int z = 1;
-			for (uint32_t b = 0; b < 64 && k + b < houji_jchk[i].size; b++) {
-				z = z && p[k + b] == 0;
+			for (uint32_t b = 0; b < 64 && off + b < size; b++) {
+				z = z && p[off + b] == 0;
 			}
 			if (z) {
 				zero++;
 				if (first == ~0u) {
-					first = k;
+					first = off;
 				}
 			}
 		}
 		if (houji_jchk_logged++ < 64) {
-			printf("HOUJI JNL CHANGED %s: block %u (txn offset %u, %u bytes) at %p phys 0x%llx changed %llu us after its copy;"
-			    " %u zero 64-byte lines, first at +%u\n", when, i, houji_jchk[i].off, houji_jchk[i].size, p,
-			    kvtophys((vm_offset_t)p), ns / 1000, zero, first);
+			printf("HOUJI JNL CHANGED %s: block %u (%u bytes) at %p phys 0x%llx changed %llu us after its copy; %u of %u"
+			    " 64-byte lines zero, first at +%u\n", when, index, size, p, kvtophys((vm_offset_t)p), ns / 1000, zero,
+			    (size + 63) / 64, first);
 		}
+		return;
 	}
 }
 #endif
@@ -4074,7 +4067,7 @@ end_transaction(transaction *tr, int force_it, errno_t (*callback)(void*), void 
 				 */
 				memcpy(blkptr, (char *)buf_dataptr(bp), bsize);
 #if defined(ARM64_BOARD_CONFIG_SWEET)
-				houji_jchk_add(tr, (uint32_t)tbuffer_offset, (const uint8_t *)blkptr, (uint32_t)bsize, func != NULL);
+				houji_jchk_add((const uint8_t *)blkptr, (uint32_t)bsize, func != NULL);
 				if (bsize == 512) {
 					int z = 1;
 					for (int k = 0; k < 512 && z; k++) {
@@ -4323,7 +4316,16 @@ finish_end_transaction(transaction *tr, errno_t (*callback)(void*), void *callba
 		 */
 		wait_condition(jnl, &jnl->writing_header, "finish_end_transaction");
 #if defined(ARM64_BOARD_CONFIG_SWEET)
-		houji_jchk_verify(tr, (const uint8_t *)blhdrim->buffers, "before write");
+		{
+			size_t o = 0;
+			for (int k = 1; k < blhdr->num_blocks; k++) {
+				uint32_t sz = (uint32_t)blhdr->binfo[k].u.bi.bsize;
+				if (blhdr->binfo[k].bnum != (off_t)-1) {
+					houji_jchk_check((const uint8_t *)&blhdrim->buffers[o], sz, (uint32_t)k, "before write");
+				}
+				o += sz;
+			}
+		}
 #endif
 
 		if (jnl->write_header_failed == FALSE) {
@@ -4335,7 +4337,16 @@ finish_end_transaction(transaction *tr, errno_t (*callback)(void*), void *callba
 			}
 			ret = write_journal_data(jnl, &end, blhdr, header_amt);
 #if defined(ARM64_BOARD_CONFIG_SWEET)
-			houji_jchk_verify(tr, (const uint8_t *)blhdrim->buffers, "after the block list write");
+			{
+			size_t o = 0;
+			for (int k = 1; k < blhdr->num_blocks; k++) {
+				uint32_t sz = (uint32_t)blhdr->binfo[k].u.bi.bsize;
+				if (blhdr->binfo[k].bnum != (off_t)-1) {
+					houji_jchk_check((const uint8_t *)&blhdrim->buffers[o], sz, (uint32_t)k, "after the block list write");
+				}
+				o += sz;
+			}
+		}
 #endif
 			if (buffers_amt) {
 				ret += write_journal_data(jnl, &end, blhdrim->buffers, buffers_amt);
