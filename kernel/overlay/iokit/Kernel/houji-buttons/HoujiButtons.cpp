@@ -35,6 +35,8 @@ bool mapWindow(Window &w, uint64_t base, uint64_t size) {
 Window gCore, gCnfg, gObs;
 br_arbiter gArb;
 uint32_t gApids;
+volatile int gPonApid = -1;
+volatile uint32_t gWakePress;   // system sleep ended on a power key press: report one if polling does not see it
 
 // The APID serving ppid, as the mainline driver picks it: the first mapping, replaced by one this EE owns.
 int findApid(uint32_t ppid) {
@@ -60,6 +62,7 @@ void buttonsThread(void *, wait_result_t) {
     const int pon = findApid(kPonPpid), gpio = findApid(kGpioPpid);
     native_buttons_stats[1] = pon; native_buttons_stats[2] = gpio;
     if (pon < 0) {native_buttons_stats[0] = -4; return;}
+    gPonApid = pon;
     native_buttons_stats[0] = 2;
     uint32_t last = 0;
     bool first = true;
@@ -77,6 +80,14 @@ void buttonsThread(void *, wait_result_t) {
         native_buttons_stats[6] = native_buttons_stats[6] + 1;
         // a key already held when polling starts is not reported until it is released once
         if (first) {last = mask; first = false; native_buttons_stats[3] = (int32_t)mask;}
+        if (__atomic_load_n(&gWakePress, __ATOMIC_ACQUIRE)) {
+            // the press that woke the system: reported by the edge below if still held, else here (press and release)
+            if (!(mask & 1) && !(last & 1)) {
+                sweet_hid_key(0, 1); IOSleep(80); sweet_hid_key(0, 0);
+                IOLog("HOUJI BUTTONS: power (the wake press, released before polling resumed)\n");
+            }
+            __atomic_store_n(&gWakePress, 0u, __ATOMIC_RELEASE);
+        }
         if (mask != last) {
             for (int key = 0; key < 3; ++key)
                 if (((mask ^ last) >> key) & 1) sweet_hid_key(key, (mask >> key) & 1);
@@ -89,6 +100,16 @@ void buttonsThread(void *, wait_result_t) {
     }
 }
 }  // namespace
+
+// The power key now, read directly (the boot CPU's sleep loop, interrupts masked): 1 pressed, 0 released, -1 unavailable.
+extern "C" int houji_buttons_power_level(void) {
+    const int pon = gPonApid;
+    if (pon < 0 || !gObs.va) return -1;
+    uint8_t v = 0;
+    if (br_read8(gObs.va, &gArb, pon, kRtSts, &v)) return -1;
+    return (v & kPowerBit) ? 1 : 0;
+}
+extern "C" void houji_buttons_wake_press(void) {__atomic_store_n(&gWakePress, 1u, __ATOMIC_RELEASE);}
 
 extern "C" void houji_buttons_start(void) {
     unsigned enabled = 1;

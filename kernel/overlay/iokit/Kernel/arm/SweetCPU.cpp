@@ -7,6 +7,7 @@
 #include <IOKit/IOCPU.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IODeviceTreeSupport.h>
+#include <IOKit/pwr_mgt/RootDomain.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSNumber.h>
 #include <arm64/proc_reg.h>
@@ -29,6 +30,11 @@ extern "C" uint32_t houji_cpu_off_reached[8];
 extern "C" int houji_cpu_off_psci;
 extern "C" kern_return_t processor_exit(processor_t processor);
 static uint32_t cpuResumes[8], cpuHalts[8];
+extern "C" int houji_buttons_power_level(void);
+extern "C" void houji_buttons_wake_press(void);
+extern "C" void timer_resync_deadlines(void);
+static uint32_t sleepCount, sleepLastReason;
+static uint64_t sleepLastUs, sleepLastPolls;
 extern "C" uint32_t houji_publish_secondary_state(uint64_t *tcr, uint64_t *root);
 extern "C" char LowResetVectorBase[], const_boot_args[];
 extern "C" uint64_t houji_smp_timer_irqs[8];
@@ -99,6 +105,7 @@ public:
   void signalCPU(IOCPU *) APPLE_KEXT_OVERRIDE;
   const OSSymbol *getCPUName(void) APPLE_KEXT_OVERRIDE;
   static SweetCPU *instance(unsigned id) { return id < 8 ? instances[id] : NULL; }
+  static void bootSleep(void);
 };
 OSDefineMetaClassAndStructors(SweetCPU, IOCPU);
 SweetCPU *SweetCPU::instances[8];
@@ -384,7 +391,7 @@ void SweetCPU::quiesceCPU(void) {
 // Called on another CPU (IOCPUSleepKernel, or houji_cpu_hotplug): take this one out of the scheduler; it ends in quiesceCPU.
 void SweetCPU::haltCPU(void) {
   const unsigned id = getCPUNumber();
-  if (!id) panic("HOUJI SMP: boot CPU sleep not implemented");
+  if (!id) {bootSleep(); return;}
   static bool parsed;
   if (!parsed) {parsed = true; int v = 1; PE_parse_boot_argn("houji_cpu_off", &v, sizeof v); houji_cpu_off_psci = v != 0;}
   IOLog("HOUJI SMP: CPU%u processor_exit (%s)\n", id, houji_cpu_off_psci ? "PSCI CPU_OFF" : "WFI park");
@@ -393,6 +400,54 @@ void SweetCPU::haltCPU(void) {
   const kern_return_t r = processor_exit(machProcessor);
   IOLog("HOUJI SMP: CPU%u processor_exit returned %d; reached CPU_OFF %u times\n", id, r, houji_cpu_off_reached[id]);
   if (r == KERN_SUCCESS) __atomic_add_fetch(&cpuHalts[id], 1U, __ATOMIC_RELAXED);
+}
+// System sleep on the boot CPU, the last one (IOCPUSleepKernel: secondaries off, console suspended). Interrupts masked, WFI with
+// the virtual timer re-armed every 50 ms to look at the power key (read directly over SPMI). Wakes on a press after the key was
+// seen released, or after houji_sleep_max_s seconds (0, the default: no limit; 30 s if the key cannot be read). Returns on wake;
+// IOCPUSleepKernel then restarts the secondaries.
+void SweetCPU::bootSleep(void) {
+  unsigned maxS = 0;
+  PE_parse_boot_argn("houji_sleep_max_s", &maxS, sizeof maxS);
+  if (!maxS && houji_buttons_power_level() < 0) maxS = 30;
+  const boolean_t enabled = ml_set_interrupts_enabled(FALSE);
+  const uint64_t ctl = __builtin_arm_rsr64("CNTV_CTL_EL0"), cval = __builtin_arm_rsr64("CNTV_CVAL_EL0");
+  uint64_t tick, limit = 0;
+  nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &tick);
+  if (maxS) nanoseconds_to_absolutetime((uint64_t)maxS * NSEC_PER_SEC, &limit);
+  const uint64_t t0 = __builtin_arm_rsr64("CNTVCT_EL0");
+  bool released = false;
+  uint32_t reason = 0;
+  uint64_t polls = 0;
+  for (;;) {
+    const int key = houji_buttons_power_level();
+    if (key == 0) released = true;
+    else if (key == 1 && released) {reason = 1; break;}
+    const uint64_t now = __builtin_arm_rsr64("CNTVCT_EL0");
+    if (limit && now - t0 >= limit) {reason = 2; break;}
+    __builtin_arm_wsr64("CNTV_CVAL_EL0", now + tick);
+    __builtin_arm_wsr64("CNTV_CTL_EL0", 1);   // enabled, not masked: its interrupt (pending, masked here) ends WFI
+    __builtin_arm_isb(ISB_SY);
+    __builtin_arm_dsb(DSB_SY);
+    __builtin_arm_wfi();
+    polls++;
+  }
+  const uint64_t slept = __builtin_arm_rsr64("CNTVCT_EL0") - t0;
+  __builtin_arm_wsr64("CNTV_CVAL_EL0", cval);
+  __builtin_arm_wsr64("CNTV_CTL_EL0", ctl);
+  __builtin_arm_isb(ISB_SY);
+  ml_set_interrupts_enabled(enabled);
+  timer_resync_deadlines();
+  uint64_t ns; absolutetime_to_nanoseconds(slept, &ns);
+  sleepCount++; sleepLastReason = reason; sleepLastUs = ns / 1000; sleepLastPolls = polls;
+  if (reason == 1) houji_buttons_wake_press();
+  IOLog("HOUJI SLEEP: woke after %llu ms (%s), %llu polls; sleep %u\n", ns / 1000000, reason == 1 ? "power key" : "time limit", polls,
+        sleepCount);
+}
+// USB console "sleep": ask the root power domain to sleep now, as a sleep request from iOS would
+extern "C" void houji_sleep_now(void) {
+  IOPMrootDomain *root = IOService::getPMRootDomain();
+  IOLog("HOUJI SLEEP: requesting system sleep (kIOPMSleepNow)\n");
+  if (root) root->receivePowerNotification(kIOPMSleepNow);
 }
 // USB console "cpu off N" / "cpu on N": one secondary down or up, outside system sleep (bring-up test of the sleep path).
 static void hotplugThread(void *arg, wait_result_t) {
