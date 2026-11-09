@@ -1892,6 +1892,42 @@ index 4d96763..0b9e90b 100644
  		}
  #endif /* DEBUG || DEVELOPMENT */
  
+diff --git a/iokit/Kernel/IOPMrootDomain.cpp b/iokit/Kernel/IOPMrootDomain.cpp
+index 4a06407..7d3b618 100644
+--- a/iokit/Kernel/IOPMrootDomain.cpp
++++ b/iokit/Kernel/IOPMrootDomain.cpp
+@@ -492,6 +492,16 @@ getSystemSleepPreventerString( uint32_t preventer )
+ 	return IOFindNameForValue(preventer, systemSleepPreventers);
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* Set by the platform (SweetCPU's sleep loop) when the power key ended system sleep; consumed by the wake path. */
++static uint32_t houji_user_wake;
++extern "C" void
++houji_pm_next_wake_is_user(void)
++{
++	os_atomic_store(&houji_user_wake, 1, relaxed);
++}
++#endif
++
+ // gDarkWakeFlags
+ enum {
+ 	kDarkWakeFlagPromotionNone       = 0x0000,
+@@ -3107,6 +3117,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
+ 		timeSinceReset = ml_get_time_since_reset();
+ 		kdebugTrace(kPMLogSystemWake, 0, (uintptr_t)(timeSinceReset >> 32), (uintptr_t) timeSinceReset);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* The platform's sleep loop ended on the power key: a user wake, promoted to full wake as iOS does. */
++		if (os_atomic_xchg(&houji_user_wake, 0, relaxed)) {
++			wranglerTickled = true;
++			fullWakeReason = kFullWakeReasonLocalUser;
++			requestUserActive(this, "power key");
++		} else
++#endif
+ 		if ((gDarkWakeFlags & kDarkWakeFlagPromotionMask) == kDarkWakeFlagPromotionEarly) {
+ 			wranglerTickled = true;
+ 			fullWakeReason = kFullWakeReasonLocalUser;
 diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
 index 7a32a23..4bc9c80 100644
 --- a/iokit/Kernel/IOPlatformExpert.cpp
