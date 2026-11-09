@@ -566,7 +566,17 @@ struct Termios {uint64_t iflag, oflag, cflag, lflag; uint8_t cc[20]; uint32_t pa
 static_assert(sizeof(Termios) == 72, "struct termios");
 Termios gTermios = {0, 0, 0x300 | 0x800 | 0x8000 | 0x10000 | 0x20000, 0, {}, 0, 3200000, 3200000};
 constexpr int kTiocGeta = 0x40487413, kTiocSeta = 0x80487414;
+// houji_bt_early=1: the service and this control are published at boot, before the controller is up, so bluetoothd runs when SpringBoard
+// attaches (it tries a few times at its start and never again; Control Center then shows Bluetooth unavailable). A client connecting
+// before the controller and the receive thread are up waits for them (XNU drops the socket lock around this callback), up to 90 s.
+bool gEarly, gPublished;
 errno_t ctlConnect(kern_ctl_ref, struct sockaddr_ctl *sac, void **) {
+    if (gEarly && !gCtlUp) {
+        unsigned waited = 0;
+        while (!gCtlUp && waited < 90000) {IOSleep(100); waited += 100;}
+        IOLog("HOUJI BT: unit %u waited %u ms for the controller (%s)\n", sac->sc_unit, waited, gCtlUp ? "up" : "not up");
+        if (!gCtlUp) return ENXIO;
+    }
     if (!gReady) return ENXIO;
     // The newest client owns the channel: BlueTool stays connected after its boot script, and bluetoothd connects next (refusing it
     // made its transport open fail, fatal error 1201). The previous client's later sends are dropped.
@@ -696,7 +706,9 @@ bool publishIos() {
 void startIos() {
     if (gCtlUp) return;
     gTxLock = IOLockAlloc(); gRxLock = IOLockAlloc(); gUartLock = IOLockAlloc();
-    if (!gTxLock || !gRxLock || !gUartLock || !publishIos()) return;
+    if (!gTxLock || !gRxLock || !gUartLock) return;
+    if (!gPublished && !publishIos()) return;
+    gPublished = true;
     gCtlUp = true;
     thread_t t = nullptr;
     if (kernel_thread_start(rxThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
@@ -704,6 +716,7 @@ void startIos() {
 // houji_bt=1 at boot: bring the controller up once the Wi-Fi driver has powered the shared rails (it answers only then), then publish
 void bootThread(void *, wait_result_t) {
     makeAddress();
+    if (gEarly) {gPublished = publishIos(); IOLog("HOUJI BT: published before the controller is up (houji_bt_early): %d\n", gPublished);}
     IOSleep(20000);
     for (unsigned attempt = 0; attempt < 32 && !gReady; ++attempt) {
         if (bringUp()) break;
@@ -764,6 +777,9 @@ extern "C" void houji_bt_start(void) {
     unsigned on = 0;
     PE_parse_boot_argn("houji_bt", &on, sizeof on);
     if (!on) return;
+    unsigned early = 0;
+    PE_parse_boot_argn("houji_bt_early", &early, sizeof early);
+    gEarly = early != 0;
     // The address in /chosen now, before launchd: MobileGestalt answers (BluetoothAddress, and the bluetooth capability Settings needs
     // for its Bluetooth row) are computed early and kept, as for mac-address-wifi0.
     makeAddress();
