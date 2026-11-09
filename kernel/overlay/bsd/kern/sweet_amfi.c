@@ -37,6 +37,7 @@
 #include <sys/vnode.h>
 #include <security/mac_policy.h>
 #include "HoujiSystemAppPaths.h"
+#include <pexpert/pexpert.h>
 extern boolean_t IOTaskHasEntitlement(task_t task, const char *entitlement);
 extern task_t current_task(void);
 
@@ -386,7 +387,14 @@ sweet_sandbox_priv_grant(kauth_cred_t cred __unused, int priv)
 		case PRIV_SKYWALK_OBSERVE_STATS: ent = "com.apple.private.skywalk.observe-stats"; break;
 		default: break;
 		}
-		if (ent != NULL && IOTaskHasEntitlement(current_task(), ent)) {
+		/* houji_skywalk_grant=0: deny them as before (for isolating Skywalk effects) */
+		static int grant = -1;
+		if (grant < 0) {
+			int v = 1;
+			PE_parse_boot_argn("houji_skywalk_grant", &v, sizeof(v));
+			grant = v != 0;
+		}
+		if (grant && ent != NULL && IOTaskHasEntitlement(current_task(), ent)) {
 			return 0;
 		}
 	}
