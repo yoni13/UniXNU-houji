@@ -407,8 +407,13 @@ void SweetCPU::haltCPU(void) {
 // seen released, or after houji_sleep_max_s seconds (0, the default: no limit; 30 s if the key cannot be read). Returns on wake;
 // IOCPUSleepKernel then restarts the secondaries.
 void SweetCPU::bootSleep(void) {
-  unsigned maxS = 0;
+  unsigned maxS = 0, testKeyS = 0;
   PE_parse_boot_argn("houji_sleep_max_s", &maxS, sizeof maxS);
+  // houji_sleep_test_key_s=N (testing without a hand on the phone): after N seconds wake as if the power key was pressed
+  PE_parse_boot_argn("houji_sleep_test_key_s", &testKeyS, sizeof testKeyS);
+  uint64_t testKey = 0;
+  if (testKeyS) nanoseconds_to_absolutetime((uint64_t)testKeyS * NSEC_PER_SEC, &testKey);
+  uint32_t pendingId[6] = {}, pendingCount[6] = {};
   if (!maxS && houji_buttons_power_level() < 0) maxS = 30;
   // Without the masked-interrupts timestamp: the development kernel panics on re-enable after interrupt_masked_timeout.
   const boolean_t enabled = ml_set_interrupts_enabled_with_debug(FALSE, FALSE);
@@ -426,12 +431,20 @@ void SweetCPU::bootSleep(void) {
     else if (key == 1 && released) {reason = 1; break;}
     const uint64_t now = __builtin_arm_rsr64("CNTVCT_EL0");
     if (limit && now - t0 >= limit) {reason = 2; break;}
+    if (testKey && now - t0 >= testKey) {reason = 1; break;}
     __builtin_arm_wsr64("CNTV_CVAL_EL0", now + tick);
     __builtin_arm_wsr64("CNTV_CTL_EL0", 1);   // enabled, not masked: its interrupt (pending, masked here) ends WFI
     __builtin_arm_isb(ISB_SY);
     __builtin_arm_dsb(DSB_SY);
     __builtin_arm_wfi();
     polls++;
+    // what ended WFI: the highest pending interrupt, observed without acknowledging it
+    const uint32_t id = (uint32_t)(__builtin_arm_rsr64("ICC_HPPIR1_EL1") & 0xffffff);
+    for (unsigned k = 0; k < 6; k++) {
+      if (pendingCount[k] && pendingId[k] != id) continue;
+      pendingId[k] = id; pendingCount[k]++;
+      break;
+    }
   }
   const uint64_t slept = __builtin_arm_rsr64("CNTVCT_EL0") - t0;
   __builtin_arm_wsr64("CNTV_CVAL_EL0", cval);
@@ -442,8 +455,12 @@ void SweetCPU::bootSleep(void) {
   uint64_t ns; absolutetime_to_nanoseconds(slept, &ns);
   sleepCount++; sleepLastReason = reason; sleepLastUs = ns / 1000; sleepLastPolls = polls;
   if (reason == 1) houji_buttons_wake_press();
-  IOLog("HOUJI SLEEP: woke after %llu ms (%s), %llu polls; sleep %u; interrupts were %s\n", ns / 1000000,
-        reason == 1 ? "power key" : "time limit", polls, sleepCount, enabled ? "enabled" : "masked");
+  IOLog("HOUJI SLEEP: woke after %llu ms (%s%s), %llu polls; sleep %u; interrupts were %s\n", ns / 1000000,
+        reason == 1 ? "power key" : "time limit", reason == 1 && testKey ? ", test" : "", polls, sleepCount,
+        enabled ? "enabled" : "masked");
+  IOLog("HOUJI SLEEP: pending after WFI (INTID:count) %u:%u %u:%u %u:%u %u:%u %u:%u %u:%u\n", pendingId[0], pendingCount[0],
+        pendingId[1], pendingCount[1], pendingId[2], pendingCount[2], pendingId[3], pendingCount[3], pendingId[4], pendingCount[4],
+        pendingId[5], pendingCount[5]);
 }
 // USB console "sleep": ask the root power domain to sleep now, as a sleep request from iOS would
 extern "C" void houji_sleep_now(void) {
