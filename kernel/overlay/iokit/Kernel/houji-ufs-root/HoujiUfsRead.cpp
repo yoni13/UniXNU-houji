@@ -587,19 +587,10 @@ static int nativeRootTransfer(void *,uint64_t offset,void *data,size_t bytes,int
   if(result==3){
     static uint32_t refusals;
     if(refusals++<16){
-      IOLog("HOUJI ROOT: REFUSED write at byte %llu (request %llu+%zu): zero-filled 512-byte header or invalid volume header"
+      IOLog("HOUJI ROOT: REFUSED write at byte %llu (request %llu+%zu): zero over a journal header, or an invalid volume header"
             " (refusal %u)\n",refusedAt,offset,bytes,refusals);
       OSReportWithBacktrace("HOUJI ROOT: refused write caller");
     }
-  }
-  // Diagnostics for the zero volume header: every read of it (first 64), and any that returns zeros
-  if(!write && result==0 && offset<=1024 && offset+bytes>=1536){
-    static uint32_t headerReads;
-    const uint8_t *h=static_cast<const uint8_t *>(data)+(1024-offset);
-    bool zero=true;for(unsigned i=0;i<512 && zero;i++)zero=!h[i];
-    if(headerReads++<64 || zero)IOLog("HOUJI ROOT: header read %u (request %llu+%zu): %02x%02x%02x%02x%s\n",headerReads,offset,bytes,
-                                      h[0],h[1],h[2],h[3],zero?" ALL ZERO":"");
-    if(zero)OSReportWithBacktrace("HOUJI ROOT: zero header read caller");
   }
   return result==0?0:result==1?EINVAL:EIO;
 }

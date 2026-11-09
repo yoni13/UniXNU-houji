@@ -21,22 +21,26 @@ static bool houjiHfsRootHeader(const uint8_t *page,unsigned n) {
   return true;
 }
 // Returns 0, invalid-span=1, transport-error=2, or refused=3 (nothing written; *refusedAt gets the byte offset). The caller
-// serializes I/O. Refused writes: a 512-byte request that is all zero (HFS+ makes 512-byte requests only for the volume header,
-// its alternate and the journal header, never zero-filled; journal data requests are larger and may hold zero sectors), and a
-// volume block 0 that would not hold a valid HFSX header. Both were seen once: after a reboot the volume and journal headers were
-// zero and the volume did not mount.
+// serializes I/O. Refused writes, by location: a volume block 0 that would not hold a valid HFSX header, and all-zero data over
+// a sector that holds a journal header ('JNLx', little-endian). Both were seen once: after a reboot the volume and journal
+// headers were zero and the volume did not mount. (Zero data is not refused elsewhere: journal writes are split at 16 KiB, so a
+// 512-byte zero piece of an allocation block is legitimate.)
 template<class Ops>
 static int houjiRootTransfer(Ops &ops,uint64_t offset,void *data,uint64_t bytes,bool write,uint8_t *scratch,
                              uint64_t *refusedAt=nullptr) {
   if((!data && bytes) || !scratch || offset>kHoujiRootBytes || bytes>kHoujiRootBytes-offset || ((offset|bytes)&511))return 1;
   uint8_t *cursor=static_cast<uint8_t *>(data);
-  if(write && bytes==512){
-    bool zero=true;for(unsigned i=0;i<512 && zero;i++)zero=!cursor[i];
-    if(zero){if(refusedAt)*refusedAt=offset;return 3;}
-  }
   while(bytes){
     HoujiRootSpan span;if(!houjiRootSpan(offset,bytes,span))return 1;
     if((!write || span.partial) && !ops.read(span.lba,span.blocks,scratch))return 2;
+    if(write && span.partial){
+      for(unsigned s=0;s<span.bytes;s+=512){
+        const uint8_t *old=scratch+span.skip+s;
+        if(old[0]!=0x78 || old[1]!=0x4c || old[2]!=0x4e || old[3]!=0x4a)continue;
+        bool zero=true;for(unsigned i=0;i<512 && zero;i++)zero=!cursor[s+i];
+        if(zero){if(refusedAt)*refusedAt=offset+s;return 3;}
+      }
+    }
     if(write){
       __builtin_memcpy(scratch+span.skip,cursor,span.bytes);
       if(span.lba==kHoujiRootFirst && !houjiHfsRootHeader(scratch,4096)){if(refusedAt)*refusedAt=offset;return 3;}
