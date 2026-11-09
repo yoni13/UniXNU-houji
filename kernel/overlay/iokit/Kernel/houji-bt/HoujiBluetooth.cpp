@@ -567,7 +567,7 @@ struct Termios {uint64_t iflag, oflag, cflag, lflag; uint8_t cc[20]; uint32_t pa
 static_assert(sizeof(Termios) == 72, "struct termios");
 Termios gTermios = {0, 0, 0x300 | 0x800 | 0x8000 | 0x10000 | 0x20000, 0, {}, 0, 3200000, 3200000};
 constexpr int kTiocGeta = 0x40487413, kTiocSeta = 0x80487414;
-// houji_bt_early=1: the service and this control are published at boot, before the controller is up, so bluetoothd runs when SpringBoard
+// houji_bt_early (default 1): the service and this control are published at boot, before the controller is up, so bluetoothd runs when SpringBoard
 // attaches (it tries a few times at its start and never again; Control Center then shows Bluetooth unavailable). A client connecting
 // before the controller and the receive thread are up waits for them (XNU drops the socket lock around this callback), up to 90 s.
 bool gEarly, gPublished;
@@ -785,7 +785,7 @@ extern "C" void houji_bt_start(void) {
     unsigned on = 0;
     PE_parse_boot_argn("houji_bt", &on, sizeof on);
     if (!on) return;
-    unsigned early = 0;
+    unsigned early = 1;   // houji_bt_early=0: publish only after the controller is up (the old order)
     PE_parse_boot_argn("houji_bt_early", &early, sizeof early);
     gEarly = early != 0;
     // The address in /chosen now, before launchd: MobileGestalt answers (BluetoothAddress, and the bluetooth capability Settings needs

@@ -97,7 +97,13 @@ houji_prof_find(proc_t p, __unused void *arg)
 {
 	char name[32];
 	proc_name(proc_pid(p), name, sizeof(name));
-	if (houji_prof.task == TASK_NULL && strcmp(name, houji_prof.name) == 0) {
+	/* "#PID" selects by process id (WebKit's processes share a truncated name) */
+	int want = -1;
+	if (houji_prof.name[0] == '#') {
+		want = 0;
+		for (const char *c = houji_prof.name + 1; *c >= '0' && *c <= '9'; c++) want = want * 10 + (*c - '0');
+	}
+	if (houji_prof.task == TASK_NULL && (want >= 0 ? proc_pid(p) == want : strcmp(name, houji_prof.name) == 0)) {
 		task_t task = proc_task(p);
 		if (task != TASK_NULL) {
 			task_reference(task);
@@ -133,7 +139,7 @@ houji_prof_command(const char *args)
 		for (const char *c = space + 1; *c >= '0' && *c <= '9'; c++) samples = samples * 10 + (unsigned)(*c - '0');
 	}
 	if (n == 0 || n >= sizeof(houji_prof.name) || samples == 0 || samples > 2000) {
-		printf("PRF syntax: prof NAME [1..2000]\n");
+		printf("PRF syntax: prof NAME|#PID [1..2000]\n");
 		__atomic_store_n(&houji_prof_busy, 0u, __ATOMIC_RELEASE);
 		return;
 	}
