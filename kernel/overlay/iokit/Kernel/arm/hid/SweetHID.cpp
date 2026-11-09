@@ -370,8 +370,8 @@ OSDefineMetaClassAndStructors(SweetHIDTouch, IOHIDEventService);
 
 /*
  * A keyboard for unattended text entry from the USB console ("type TEXT"):
- * not in the personality list, made on first use, so a normal boot has no
- * hardware keyboard and the on-screen one behaves as usual until then.
+ * not in the personality list, made for each typing run and removed after
+ * it, so iOS shows the on-screen keyboard as usual between runs.
  */
 class SweetHIDKeyboard : public IOHIDEventService {
 	OSDeclareDefaultStructors(SweetHIDKeyboard);
@@ -633,6 +633,14 @@ sweet_hid_type(const char *text)
 		gSweetKeyboard->key(usage, false); IOSleep(25);
 		if (shift) { gSweetKeyboard->key(0xe1, false); IOSleep(25); }
 		typed++;
+	}
+	/* Unplug it again: while a hardware keyboard is attached iOS hides the on-screen keyboard for the rest of the boot. */
+	IOSleep(300);
+	SweetHIDKeyboard *k = gSweetKeyboard;
+	gSweetKeyboard = NULL;
+	if (k) {
+		k->terminate(kIOServiceSynchronous);
+		IOLog("SWEET HID: keyboard removed after typing\n");
 	}
 	return typed;
 }

@@ -1824,7 +1824,7 @@
     "kernel/overlay/iokit/Kernel/arm/hid/IOHIDShared.h": "9eb1e0cf5a78ef5e228b38500e8c6aa053c88c35d9801f7c3532071a56c0d176",
     "kernel/overlay/iokit/Kernel/arm/hid/IOHIDTypes.h": "fed788fec7534a9894ea03f071f1abc686083ffff013cf2f2ece137db2ffd064",
     "kernel/overlay/iokit/Kernel/arm/hid/IOLLEvent.h": "7ce527c124993e3b3299bb7d58939fcfd77342a400f37799623385a5552c60b2",
-    "kernel/overlay/iokit/Kernel/arm/hid/SweetHID.cpp": "71df063effdaff42e2297b101aed99c56108477092fcb01bc8a92d491e8e56e6",
+    "kernel/overlay/iokit/Kernel/arm/hid/SweetHID.cpp": "577cd23f0aee628541a0ac2f164fd418a419945774c8e32157e9b0588b5ebb54",
     "kernel/overlay/iokit/Kernel/arm/hid/ev_keymap.h": "42ccb8c878af69187731b57fa9e13981439d9a41ddb1a0fd82bcd4db6a0a56ac",
     "kernel/overlay/iokit/Kernel/houji-adsp/AdspFirmware.c": "0a550ce6d1afdfe31af9c23784afa34ef8ee7bec200f38a5b9e916c49283eafd",
     "kernel/overlay/iokit/Kernel/houji-adsp/FatVolume.c": "2fc5645cd99fc12f6f29545dc0ee17df0214e391662db947ab8b98205c0d49ac",
