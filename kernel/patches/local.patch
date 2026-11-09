@@ -4915,6 +4915,28 @@ index 3ad743f..8709627 100644
  }
  #else
  void
+diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
+index 04dda53..f7b744c 100644
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -120,6 +120,17 @@ check_for_panic_log(void)
+ 	 * embedded-panic-log-size is the maximum amount of data to store in the buffer
+ 	 */
+ 	if (kSuccess != SecureDTLookupEntry(0, "pram", &entry)) {
++#if defined(SWEET) && SWEET
++		/*
++		 * No firmware panic region on SWEET: without one, SavePanicInfo returns before printing the panic
++		 * report (registers, backtraces). A kernel buffer is not retained across the reset, but the report
++		 * also goes to the console, from which houji_panic_log saves it.
++		 */
++		static char houji_panic_region[64 * 1024] __attribute__((aligned(64)));
++		gPanicBase = (vm_offset_t)houji_panic_region;
++		gPanicSize = sizeof(houji_panic_region);
++		panic_text_len = gPanicSize - sizeof(struct embedded_panic_header);
++#endif
+ 		return;
+ 	}
+ 
 diff --git a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
 index 65144c7..8f547c8 100644
 --- a/pexpert/arm/pe_kprintf.c
