@@ -101,7 +101,8 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
 - Verified on the phone (2026-11-09, temporary boots): all 8 cores off and on 7 times in a row from the console; idle sleep with no
   input 61 s after iOS's own display-off (5 s timeout; before: 112 s), dark wakes back to sleep within 100 ms; scheduled wake at
   117.96 s for powerd's 118 s request; test-key wake to full wake with the lock screen lit, no re-sleep; `reboot` from a wake window
-  left a clean volume. Not verified: a real press of the power key (the same SPMI read the buttons thread polls), power draw
+  left a clean volume; a real press of the power key after 20.6 s asleep: woke "(power key)", the press reached iOS (key still
+  held, so the buttons thread reported it and the fallback press was not sent), display lit, no re-sleep. Not verified: power draw
   (the phone charges over USB throughout; not measured), and time: CNTVCT runs through sleep, so `mach_absolute_time` includes it
   (on an iPhone it stops). Devices are not powered down (display off; GPU, Wi-Fi, UFS keep power).
 
