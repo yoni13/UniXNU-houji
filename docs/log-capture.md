@@ -96,3 +96,20 @@ python3 tools/analyze-gpu-issuer.py /path/to/verified-xnu.txt \
 源码 SHA-256，但不能自行证明输入的测试身份。时间重叠仅帮助选择需要检查的区间，
 不是完整因果证明。`gtrace` 是启动参数，组装时仍需检查 Darwin 22 的命令行总容量，
 不能直接追加到已经占满的命令行。此候选已经编译，尚未在设备启用。
+
+## Panic 日志（`houji_panic_log=1`）
+
+USB 控制台随 panic 一起断开，PMIC 只记录 `PS_HOLD` 硬复位，因此 panic 原文原本会丢失。启用 `houji_panic_log=1` 后：
+
+- 启动时（根卷挂接后）读取 logfs 元数据，确认 `XnuLog.bin` 的 FAT 分配不变，再装好钩子；日志显示
+  `HOUJI PANIC LOG: armed`。
+- SWEET 没有固件 panic 区域（设备树无 `pram`），`SavePanicInfo` 原本直接返回，panic 只打印一行。现在
+  `pe_init.c` 改用 64 KiB 内核缓冲区，因此会生成完整报告（CPU 状态、回溯）。该缓冲区不跨复位保留。
+- panic 走到 `halt_all_cpus` 时、PSCI 复位之前，UFS 驱动把最多 24 KiB 报告和控制台环形缓冲区的尾部写入
+  `XnuLog.bin` 的 16 个保留簇：先写正文，最后写头部，每段后执行 SYNCHRONIZE CACHE，不回读。其他 CPU 已停止，
+  可能停在 UFS 命令中途或持有 `gHost.lock`，所以不加锁；进行中的命令最多等 2 s，仍未完成则不保存。
+- 下一次 UEFI 启动会把 `XnuLog.bin` 重置为初始镜像，因此必须在 panic 后、再次启动 iOS 前，在 Recovery 中读取。
+  当前 OrangeFox 没有 `ro.houji.native_rescue`，先用 `dd` 复制 `/dev/block/by-name/logfs`，再用
+  `capture-recovery-logs.py --input` 离线解码（`perf-test/panic-test.sh` 为完整流程）。
+- 已验证（2026-11-09）：USB 控制台命令 `panic` 触发后，从 Recovery 读出完整报告和控制台尾部，根卷头部保持有效。
+  报告打印回溯之后会出现嵌套 panic（`sleh_synchronous_sp1`，推测为 panic stackshot），此时报告和保存都已完成。
