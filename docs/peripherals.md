@@ -21,7 +21,9 @@ Safari loading a page by name.
   made primary (no default route, no DNS).
 - Known gaps: the network password is not kept across reboots (keychain); the firmware dozes unless power save is turned off (done
   after each join); a heartbeat HTT stats request crashed this firmware (removed).
-- USB console: `wifi scan | join SSID PASS | leave | status`; `type TEXT` (`\n` = Return) types through a virtual keyboard.
+- USB console: `wifi scan | join SSID PASS | leave | status`; `type TEXT` (`\n` = Return, at most 58 characters: a console line is 64 bytes) types through a virtual
+  hardware keyboard made for each run and removed after it (since 2026-11-10; before, it stayed attached and iOS hid the on-screen
+  keyboard for the rest of the boot).
 
 ## Bluetooth — working: pairing and connection verified (WCN7850 on QUP2 SE6 UART)
 `iokit/Kernel/houji-bt/HoujiBluetooth.cpp`, `houji_bt=1` (default off; with it the service is published at the root mount, `houji_bt_early`, default 1). USB console `bt probe`, `bt init` (without `houji_bt`),
