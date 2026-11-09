@@ -1893,13 +1893,24 @@ index 4d96763..0b9e90b 100644
  #endif /* DEBUG || DEVELOPMENT */
  
 diff --git a/iokit/Kernel/IOPMrootDomain.cpp b/iokit/Kernel/IOPMrootDomain.cpp
-index 4a06407..7d3b618 100644
+index 4a06407..7aecbd2 100644
 --- a/iokit/Kernel/IOPMrootDomain.cpp
 +++ b/iokit/Kernel/IOPMrootDomain.cpp
-@@ -492,6 +492,16 @@ getSystemSleepPreventerString( uint32_t preventer )
+@@ -492,6 +492,27 @@ getSystemSleepPreventerString( uint32_t preventer )
  	return IOFindNameForValue(preventer, systemSleepPreventers);
  }
  
++/*
++ * SWEET runs iOS userland on a kernel configured as macOS (XNU_TARGET_OS_OSX, no display wrangler). powerd sets the system sleep
++ * slider to 0x7fffffff and the idle time in "System Idle Seconds", which only the iOS idle sleep policy honours: there the idle
++ * timer runs for idleMilliSeconds once nothing prevents idle sleep. HOUJI_IOS_IDLE_SLEEP selects those iOS branches.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#define HOUJI_IOS_IDLE_SLEEP 1
++#else
++#define HOUJI_IOS_IDLE_SLEEP 0
++#endif
++
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +/* Set by the platform (SweetCPU's sleep loop) when the power key ended system sleep; consumed by the wake path. */
 +static uint32_t houji_user_wake;
@@ -1913,7 +1924,7 @@ index 4a06407..7d3b618 100644
  // gDarkWakeFlags
  enum {
  	kDarkWakeFlagPromotionNone       = 0x0000,
-@@ -3107,6 +3117,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
+@@ -3107,6 +3128,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
  		timeSinceReset = ml_get_time_since_reset();
  		kdebugTrace(kPMLogSystemWake, 0, (uintptr_t)(timeSinceReset >> 32), (uintptr_t) timeSinceReset);
  
@@ -1928,6 +1939,42 @@ index 4a06407..7d3b618 100644
  		if ((gDarkWakeFlags & kDarkWakeFlagPromotionMask) == kDarkWakeFlagPromotionEarly) {
  			wranglerTickled = true;
  			fullWakeReason = kFullWakeReasonLocalUser;
+@@ -3604,7 +3633,7 @@ IOPMrootDomain::systemDidNotSleep( void )
+ 
+ 	if (idleSleepEnabled) {
+ 		if (!wrangler) {
+-#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
++#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT && !HOUJI_IOS_IDLE_SLEEP
+ 			startIdleSleepTimer(kIdleSleepRetryInterval);
+ #else
+ 			startIdleSleepTimer(idleMilliSeconds);
+@@ -8597,7 +8626,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+ 			flags.bit.idleSleepDisabled = true;
+ 			idleSleepEnabled = false;
+ 		}
+-#if !defined(XNU_TARGET_OS_OSX)
++#if !defined(XNU_TARGET_OS_OSX) || HOUJI_IOS_IDLE_SLEEP
+ 		if (0x7fffffff == minutesToIdleSleep) {
+ 			minutesToIdleSleep = idleMilliSeconds / 1000;
+ 		}
+@@ -8787,7 +8816,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+ 	if (flags.bit.idleSleepEnabled) {
+ 		DLOG("idle sleep timer enabled\n");
+ 		if (!wrangler) {
+-#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
++#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT && !HOUJI_IOS_IDLE_SLEEP
+ 			startIdleSleepTimer(getTimeToIdleSleep());
+ #else
+ 			changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonIdleSleepEnabled);
+@@ -8818,7 +8847,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+ 			if (!wrangler) {
+ 				changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonEvaluatePolicy);
+ 				if (idleSleepEnabled) {
+-#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
++#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT && !HOUJI_IOS_IDLE_SLEEP
+ 					if (!extraSleepDelay && !idleSleepTimerPending && !gNoIdleFlag) {
+ 						sleepASAP = true;
+ 					}
 diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
 index 7a32a23..4bc9c80 100644
 --- a/iokit/Kernel/IOPlatformExpert.cpp
