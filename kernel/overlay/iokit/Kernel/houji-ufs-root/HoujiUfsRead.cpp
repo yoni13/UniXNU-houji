@@ -580,8 +580,14 @@ static int nativeRootTransfer(void *,uint64_t offset,void *data,size_t bytes,int
     bool write(uint32_t lba,unsigned blocks,const uint8_t *p){return writeNativeBlocks(lba,blocks,p)==kIOReturnSuccess;}
   } ops;
   IOLockLock(gRootWindowLock);
-  int result=houjiRootTransfer(ops,offset,data,bytes,write!=0,gRootBounce);
+  uint64_t refusedAt=0;
+  int result=houjiRootTransfer(ops,offset,data,bytes,write!=0,gRootBounce,&refusedAt);
   IOLockUnlock(gRootWindowLock);
+  if(result==3){
+    static uint32_t refusals;
+    if(refusals++<64)IOLog("HOUJI ROOT: REFUSED write at byte %llu (request %llu+%zu): zero-filled partial block or invalid volume header"
+                           " (refusal %u)\n",refusedAt,offset,bytes,refusals);
+  }
   return result==0?0:result==1?EINVAL:EIO;
 }
 static int nativeRootSynchronize(void *) {
