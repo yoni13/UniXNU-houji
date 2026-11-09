@@ -472,6 +472,11 @@ static void command_line(void)
     else if (!strncmp(u.command,"camera ",7)) { extern void houji_camera_command(const char *); houji_camera_command(u.command+7); }
     else if (!strncmp(u.command,"screen ",7)) { extern void houji_screen_command(const char *); houji_screen_command(u.command+7); }
     else if (!strncmp(u.command,"type ",5)) { type_command(u.command+5); bzero(u.command,sizeof(u.command)); }
+    else if (!strncmp(u.command,"cpu off ",8) || !strncmp(u.command,"cpu on ",7)) {
+        extern void houji_cpu_hotplug(unsigned, int);
+        const int on=u.command[5]=='n';
+        houji_cpu_hotplug((unsigned)(u.command[on?7:8]-'0'),on);
+    }
     else if (!strncmp(u.command,"bt ",3)) { extern void houji_bt_command(const char *); houji_bt_command(u.command+3); }
     else if (!strncmp(u.command,"wifi ",5)) { extern void houji_wifi_command(const char *); houji_wifi_command(u.command+5); bzero(u.command,sizeof(u.command)); }
     else if (!strcmp(u.command,"reboot")) {

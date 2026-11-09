@@ -3263,10 +3263,10 @@ index f2c2a00..e777b77 100644
   *	void FlushPoC_Dcache(void)
   *
 diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
-index 94e9130..1c31aa5 100644
+index 94e9130..01179bb 100644
 --- a/osfmk/arm64/cpu.c
 +++ b/osfmk/arm64/cpu.c
-@@ -888,6 +888,39 @@ init_ctrr_cluster_states(void)
+@@ -888,6 +888,64 @@ init_ctrr_cluster_states(void)
  }
  #endif
  
@@ -3287,6 +3287,31 @@ index 94e9130..1c31aa5 100644
 +    if (tcr) { *tcr = published_tcr; }
 +    if (root) { *root = published_root; }
 +    return (uint32_t)(sizeof(sysreg_restore) + sizeof(cpu_ttep));
++}
++
++/*
++ * The calling (secondary) CPU leaves for good: what ml_arm_sleep does on a
++ * non-boot CPU, then PSCI CPU_OFF. Called from IOCPU::quiesceCPU at the end
++ * of cpu_sleep (caches already cleaned to PoC); cpu_exit_wait on the CPU
++ * taking it down waits for the sleep token. CPU_ON restarts it through
++ * houji_secondary_entry and arm_init_cpu, as at boot.
++ */
++__attribute__((noreturn))
++void
++houji_cpu_off_self(void)
++{
++	cpu_data_t *cdp = getCpuDatap();
++
++	if (cdp == &BootCpuData) {
++		panic("HOUJI SMP: CPU_OFF requested on the boot CPU");
++	}
++	CleanPoU_Dcache();
++	cdp->cpu_sleep_token = ARM_CPU_ON_SLEEP_PATH;
++	__builtin_arm_dsb(DSB_ISH);
++	register uint64_t x0 __asm__("x0") = 0x84000002ULL;
++	__asm__ volatile ("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
++	    "x14", "x15", "x16", "x17", "memory", "cc");
++	panic("HOUJI SMP: PSCI CPU_OFF returned %lld", (int64_t)x0);
 +}
 +
 +/* Private cpu_data layout stays inside osfmk; IOCPU only needs its physical address. */

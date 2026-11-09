@@ -24,6 +24,9 @@ extern "C" void houji_secondary_entry(void);
 // sched_prim.h only exports this internal primitive to osfmk.
 extern "C" processor_t thread_bind(processor_t processor);
 extern "C" uint64_t houji_cpu_context_pa(unsigned int logical_cpu);
+extern "C" void houji_cpu_off_self(void) __attribute__((noreturn));
+extern "C" kern_return_t processor_exit(processor_t processor);
+static uint32_t cpuResumes[8], cpuHalts[8];
 extern "C" uint32_t houji_publish_secondary_state(uint64_t *tcr, uint64_t *root);
 extern "C" char LowResetVectorBase[], const_boot_args[];
 extern "C" uint64_t houji_smp_timer_irqs[8];
@@ -93,6 +96,7 @@ public:
   void haltCPU(void) APPLE_KEXT_OVERRIDE;
   void signalCPU(IOCPU *) APPLE_KEXT_OVERRIDE;
   const OSSymbol *getCPUName(void) APPLE_KEXT_OVERRIDE;
+  static SweetCPU *instance(unsigned id) { return id < 8 ? instances[id] : NULL; }
 };
 OSDefineMetaClassAndStructors(SweetCPU, IOCPU);
 SweetCPU *SweetCPU::instances[8];
@@ -227,7 +231,16 @@ void SweetCPU::startThread(void *argument, wait_result_t) {
 }
 
 void SweetCPU::initCPU(bool boot) {
-  if (!boot || initialized) panic("HOUJI SMP: suspend/resume unsupported");
+  if (!boot) {
+    // A secondary back from CPU_OFF (houji_secondary_entry, arm_init_cpu; PE_init_cpu has set up its GIC interface again).
+    // Interrupts are masked here: no logging.
+    if (!initialized || !getCPUNumber()) panic("HOUJI SMP: resume of a CPU that never started");
+    __atomic_add_fetch(&cpuResumes[getCPUNumber()], 1U, __ATOMIC_RELAXED);
+    ml_broadcast_cpu_event(CPU_BOOTED, getCPUNumber());
+    setCPUState(kIOCPUStateRunning);
+    return;
+  }
+  if (initialized) panic("HOUJI SMP: CPU initialized twice");
   initialized = true;
   unsigned id = getCPUNumber();
   assert(cpu_number() == (int)id);
@@ -360,8 +373,46 @@ extern "C" bool houji_smp_preflight(void) {
 }
 
 void SweetCPU::free(void) { OSSafeReleaseNULL(cpuName); IOCPU::free(); }
-void SweetCPU::quiesceCPU(void) { panic("HOUJI SMP: quiesce unsupported"); }
-void SweetCPU::haltCPU(void) { panic("HOUJI SMP: halt/suspend unsupported"); }
+// On the CPU going down, at the end of cpu_sleep (interrupts masked, caches cleaned): power it off.
+void SweetCPU::quiesceCPU(void) {
+  if (!getCPUNumber()) panic("HOUJI SMP: quiesce of the boot CPU");
+  setCPUState(kIOCPUStateStopped);
+  houji_cpu_off_self();
+}
+// Called on another CPU (IOCPUSleepKernel, or houji_cpu_hotplug): take this one out of the scheduler; it ends in quiesceCPU.
+void SweetCPU::haltCPU(void) {
+  const unsigned id = getCPUNumber();
+  if (!id) panic("HOUJI SMP: boot CPU sleep not implemented");
+  const kern_return_t r = processor_exit(machProcessor);
+  if (r != KERN_SUCCESS) panic("HOUJI SMP: processor_exit(CPU%u) failed %d", id, r);
+  __atomic_add_fetch(&cpuHalts[id], 1U, __ATOMIC_RELAXED);
+}
+// USB console "cpu off N" / "cpu on N": one secondary down or up, outside system sleep (bring-up test of the sleep path).
+static void hotplugThread(void *arg, wait_result_t) {
+  const uintptr_t v = (uintptr_t)arg; const unsigned id = (unsigned)(v & 0xff); const bool on = v >> 8;
+  SweetCPU *cpu = id < 8 ? SweetCPU::instance(id) : NULL;
+  thread_bind(SweetCPU::instance(0)->getMachProcessor());
+  if (cpu_number() != 0) thread_block(THREAD_CONTINUE_NULL);
+  if (!cpu || !id) IOLog("HOUJI SMP: cpu %s %u: no such secondary\n", on ? "on" : "off", id);
+  else if (!on && cpu->getCPUState() == kIOCPUStateRunning) {
+    const uint64_t t0 = mach_absolute_time();
+    cpu->haltCPU();
+    uint64_t ns; absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+    IOLog("HOUJI SMP: CPU%u off in %llu us; state=%u halts=%u\n", id, ns / 1000, cpu->getCPUState(), cpuHalts[id]);
+  } else if (on && cpu->getCPUState() == kIOCPUStateStopped) {
+    const uint64_t t0 = mach_absolute_time();
+    const kern_return_t r = processor_start(cpu->getMachProcessor());
+    uint64_t ns; absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+    IOLog("HOUJI SMP: CPU%u on: processor_start %d in %llu us; state=%u resumes=%u\n", id, r, ns / 1000, cpu->getCPUState(),
+          cpuResumes[id]);
+  } else IOLog("HOUJI SMP: cpu %s %u: state %u, nothing to do\n", on ? "on" : "off", id, cpu->getCPUState());
+  thread_bind(PROCESSOR_NULL);
+  thread_terminate(current_thread());
+}
+extern "C" void houji_cpu_hotplug(unsigned id, int on) {
+  thread_t t;
+  if (kernel_thread_start(hotplugThread, (void *)(uintptr_t)((id & 0xff) | (on ? 0x100 : 0)), &t) == KERN_SUCCESS) thread_deallocate(t);
+}
 const OSSymbol *SweetCPU::getCPUName(void) { return cpuName; }
 extern "C" void houji_cpu_dvfs_start(void) { HoujiCpuDvfs::start(); }
 #endif
