@@ -2122,10 +2122,33 @@ index 8559a66..59c834e 100644
  	while (root) {
  		if (root->metaCast(ioblockstoragedriverClass)) {
 diff --git a/iokit/Kernel/IOServicePM.cpp b/iokit/Kernel/IOServicePM.cpp
-index ebf266b..5a506aa 100644
+index ebf266b..0f94270 100644
 --- a/iokit/Kernel/IOServicePM.cpp
 +++ b/iokit/Kernel/IOServicePM.cpp
-@@ -6952,19 +6952,35 @@ IOService::responseValid( uint32_t refcon, int pid )
+@@ -6340,6 +6340,22 @@ IOService::pmTellAppWithResponse( OSObject * object, void * arg )
+ 	msgType  = context->messageType;
+ 	msgIndex = context->responseArray->getCount();
+ 	msgRef   = ((context->serialNumber & 0xFFFF) << 16) + (msgIndex & 0xFFFF);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* SWEET diagnostic: which app client each sleep notice index belongs to (some never reply). */
++	if (context->us == getPMRootDomain()) {
++		static uint32_t houjiNotices;
++		if (houjiNotices++ < 300) {
++			OSNumber *houjiID = copyClientIDForNotification(object, context);
++			int houjiPid = houjiID ? (int)houjiID->unsigned32BitValue() : -1;
++			char houjiName[32] = "?";
++			if (houjiPid > 0) {
++				proc_name(houjiPid, houjiName, sizeof(houjiName));
++			}
++			OSSafeReleaseNULL(houjiID);
++			printf("HOUJI PM: notice 0x%x index %u to pid %d %s\n", context->messageType, msgIndex, houjiPid, houjiName);
++		}
++	}
++#endif
+ 
+ 	OUR_PMLog(kPMLogAppNotify, msgType, msgRef);
+ 	if (kIOLogDebugPower & gIOKitDebug) {
+@@ -6952,19 +6968,35 @@ IOService::responseValid( uint32_t refcon, int pid )
  	serialComponent  = (refcon >> 16) & 0xFFFF;
  	ordinalComponent = (refcon & 0xFFFF);
  
@@ -2161,7 +2184,7 @@ index ebf266b..5a506aa 100644
  
  	if (fNotifyClientArray) {
  		object = fNotifyClientArray->getObject(ordinalComponent);
-@@ -7050,6 +7066,11 @@ IOService::allowPowerChange( unsigned long refcon )
+@@ -7050,6 +7082,11 @@ IOService::allowPowerChange( unsigned long refcon )
  	request->fArg0 = (void *)            refcon;
  	request->fArg1 = (void *)(uintptr_t) proc_selfpid();
  	request->fArg2 = (void *)            NULL;
