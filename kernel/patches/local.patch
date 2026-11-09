@@ -1907,7 +1907,7 @@ index 4d96763..0b9e90b 100644
  #endif /* DEBUG || DEVELOPMENT */
  
 diff --git a/iokit/Kernel/IOPMrootDomain.cpp b/iokit/Kernel/IOPMrootDomain.cpp
-index 4a06407..1327170 100644
+index 4a06407..a33e5fb 100644
 --- a/iokit/Kernel/IOPMrootDomain.cpp
 +++ b/iokit/Kernel/IOPMrootDomain.cpp
 @@ -111,12 +111,22 @@ __END_DECLS
@@ -1933,7 +1933,7 @@ index 4a06407..1327170 100644
  
  #define DMSG(x...)  do { \
      if (kIOLogPMRootDomain & gIOKitDebug) { \
-@@ -492,6 +502,54 @@ getSystemSleepPreventerString( uint32_t preventer )
+@@ -492,6 +502,57 @@ getSystemSleepPreventerString( uint32_t preventer )
  	return IOFindNameForValue(preventer, systemSleepPreventers);
  }
  
@@ -1978,9 +1978,12 @@ index 4a06407..1327170 100644
 +	    "idle preventers %u system preventers %u systemBooting %d darkWake %d\n", idleSleepEnabled, idleMilliSeconds, sleepSlider,
 +	    userIsActive, idleSleepTimerPending, idleSleepPreventersCount(), preventSystemSleepList ? preventSystemSleepList->getCount() : 0,
 +	    systemBooting, systemDarkWake);
-+	for (unsigned i = 0; preventIdleSleepList && i < preventIdleSleepList->getCount(); i++) {
-+		IOService *s = OSDynamicCast(IOService, preventIdleSleepList->getObject(i));
-+		printf("HOUJI PM: idle sleep preventer %s\n", s ? s->getName() : "?");
++	if (preventIdleSleepList) {
++		OSSharedPtr<OSCollectionIterator> it = OSCollectionIterator::withCollection(preventIdleSleepList.get());
++		while (OSObject *o = it ? it->getNextObject() : NULL) {
++			IOService *s = OSDynamicCast(IOService, o);
++			printf("HOUJI PM: idle sleep preventer %s\n", s ? s->getName() : "?");
++		}
 +	}
 +}
 +#endif
@@ -1988,7 +1991,7 @@ index 4a06407..1327170 100644
  // gDarkWakeFlags
  enum {
  	kDarkWakeFlagPromotionNone       = 0x0000,
-@@ -3107,6 +3165,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
+@@ -3107,6 +3168,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
  		timeSinceReset = ml_get_time_since_reset();
  		kdebugTrace(kPMLogSystemWake, 0, (uintptr_t)(timeSinceReset >> 32), (uintptr_t) timeSinceReset);
  
@@ -2003,7 +2006,7 @@ index 4a06407..1327170 100644
  		if ((gDarkWakeFlags & kDarkWakeFlagPromotionMask) == kDarkWakeFlagPromotionEarly) {
  			wranglerTickled = true;
  			fullWakeReason = kFullWakeReasonLocalUser;
-@@ -3604,7 +3670,7 @@ IOPMrootDomain::systemDidNotSleep( void )
+@@ -3604,7 +3673,7 @@ IOPMrootDomain::systemDidNotSleep( void )
  
  	if (idleSleepEnabled) {
  		if (!wrangler) {
@@ -2012,7 +2015,7 @@ index 4a06407..1327170 100644
  			startIdleSleepTimer(kIdleSleepRetryInterval);
  #else
  			startIdleSleepTimer(idleMilliSeconds);
-@@ -8597,7 +8663,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8597,7 +8666,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  			flags.bit.idleSleepDisabled = true;
  			idleSleepEnabled = false;
  		}
@@ -2021,7 +2024,7 @@ index 4a06407..1327170 100644
  		if (0x7fffffff == minutesToIdleSleep) {
  			minutesToIdleSleep = idleMilliSeconds / 1000;
  		}
-@@ -8787,7 +8853,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8787,7 +8856,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  	if (flags.bit.idleSleepEnabled) {
  		DLOG("idle sleep timer enabled\n");
  		if (!wrangler) {
@@ -2030,7 +2033,7 @@ index 4a06407..1327170 100644
  			startIdleSleepTimer(getTimeToIdleSleep());
  #else
  			changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonIdleSleepEnabled);
-@@ -8818,7 +8884,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8818,7 +8887,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  			if (!wrangler) {
  				changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonEvaluatePolicy);
  				if (idleSleepEnabled) {
