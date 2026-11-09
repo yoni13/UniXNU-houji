@@ -31,6 +31,7 @@ extern "C" {
 #include <sys/errno.h>
 
 extern "C" int houji_fw_file(unsigned which, const char *path, uint8_t **data, size_t *size, size_t max);
+extern "C" struct vnode *rootvnode;   // bsd/vfs: set when the root file system is mounted
 
 // [0] stage (negative: the step that failed), [1] QUP hardware version, [2] GENI firmware revision, [3] bytes received last,
 // [4] controller ready (1), [5] operating baud, [6] board id, [7] milliseconds the bring-up took
@@ -716,7 +717,14 @@ void startIos() {
 // houji_bt=1 at boot: bring the controller up once the Wi-Fi driver has powered the shared rails (it answers only then), then publish
 void bootThread(void *, wait_result_t) {
     makeAddress();
-    if (gEarly) {gPublished = publishIos(); IOLog("HOUJI BT: published before the controller is up (houji_bt_early): %d\n", gPublished);}
+    if (gEarly) {
+        // This thread starts with the USB console, before BSD: kern_control (ctl_register) and the registry plane are ready once the
+        // root file system is mounted, just before launchd starts the daemons.
+        unsigned waited = 0;
+        while (!rootvnode && waited < 120000) {IOSleep(100); waited += 100;}
+        if (rootvnode) gPublished = publishIos();
+        IOLog("HOUJI BT: published before the controller is up (houji_bt_early) after %u ms: %d\n", waited, gPublished);
+    }
     IOSleep(20000);
     for (unsigned attempt = 0; attempt < 32 && !gReady; ++attempt) {
         if (bringUp()) break;
