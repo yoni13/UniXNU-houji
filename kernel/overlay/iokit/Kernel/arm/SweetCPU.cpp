@@ -304,6 +304,9 @@ void SweetCPU::initCPU(bool boot) {
     if (!initialized || !getCPUNumber()) panic("HOUJI SMP: resume of a CPU that never started");
     __atomic_add_fetch(&cpuResumes[getCPUNumber()], 1U, __ATOMIC_RELAXED);
     ml_broadcast_cpu_event(CPU_BOOTED, getCPUNumber());
+    // As at boot: the self-IPI, taken when interrupts are enabled, clears SIGPdisabled (cpu_signal_handler). Without it every
+    // later IPI to this CPU fails: a panic left it out, and an AST it never took timed out task_restartable_ranges_synchronize.
+    signalCPU(this);
     setCPUState(kIOCPUStateRunning);
     return;
   }
