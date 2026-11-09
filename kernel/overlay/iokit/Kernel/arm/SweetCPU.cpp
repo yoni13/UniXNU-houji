@@ -441,8 +441,11 @@ void SweetCPU::bootSleep(void) {
     __builtin_arm_dsb(DSB_SY);
     __builtin_arm_wfi();
     polls++;
-    // what ended WFI: the highest pending interrupt, observed without acknowledging it
-    const uint32_t id = (uint32_t)(__builtin_arm_rsr64("ICC_HPPIR1_EL1") & 0xffffff);
+    // what ended WFI: the highest pending interrupt. Only the timer passes the sleep mask (houji_gic_sleep_mask); acknowledge and
+    // end it, or it stays pending and ends every WFI. Its deadline is reprogrammed on wake (timer_resync_deadlines).
+    const uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+    const uint32_t id = (uint32_t)(iar & 0xffffff);
+    if (id < 1020) {__builtin_arm_wsr64("ICC_EOIR1_EL1", iar); __builtin_arm_isb(ISB_SY);}
     for (unsigned k = 0; k < 6; k++) {
       if (pendingCount[k] && pendingId[k] != id) continue;
       pendingId[k] = id; pendingCount[k]++;
