@@ -3263,10 +3263,10 @@ index f2c2a00..e777b77 100644
   *	void FlushPoC_Dcache(void)
   *
 diff --git a/osfmk/arm64/cpu.c b/osfmk/arm64/cpu.c
-index 94e9130..01179bb 100644
+index 94e9130..1d1f8b6 100644
 --- a/osfmk/arm64/cpu.c
 +++ b/osfmk/arm64/cpu.c
-@@ -888,6 +888,64 @@ init_ctrr_cluster_states(void)
+@@ -888,6 +888,73 @@ init_ctrr_cluster_states(void)
  }
  #endif
  
@@ -3296,6 +3296,8 @@ index 94e9130..01179bb 100644
 + * taking it down waits for the sleep token. CPU_ON restarts it through
 + * houji_secondary_entry and arm_init_cpu, as at boot.
 + */
++uint32_t houji_cpu_off_reached[8];
++int houji_cpu_off_psci = 1;
 +__attribute__((noreturn))
 +void
 +houji_cpu_off_self(void)
@@ -3306,8 +3308,15 @@ index 94e9130..01179bb 100644
 +		panic("HOUJI SMP: CPU_OFF requested on the boot CPU");
 +	}
 +	CleanPoU_Dcache();
++	houji_cpu_off_reached[cdp->cpu_number & 7]++;
 +	cdp->cpu_sleep_token = ARM_CPU_ON_SLEEP_PATH;
 +	__builtin_arm_dsb(DSB_ISH);
++	/* houji_cpu_off=0: park in WFI instead of CPU_OFF (bring-up: separates the scheduler path from the firmware call) */
++	if (!houji_cpu_off_psci) {
++		for (;;) {
++			__builtin_arm_wfi();
++		}
++	}
 +	register uint64_t x0 __asm__("x0") = 0x84000002ULL;
 +	__asm__ volatile ("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
 +	    "x14", "x15", "x16", "x17", "memory", "cc");

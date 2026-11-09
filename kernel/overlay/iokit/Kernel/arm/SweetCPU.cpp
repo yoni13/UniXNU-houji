@@ -25,6 +25,8 @@ extern "C" void houji_secondary_entry(void);
 extern "C" processor_t thread_bind(processor_t processor);
 extern "C" uint64_t houji_cpu_context_pa(unsigned int logical_cpu);
 extern "C" void houji_cpu_off_self(void) __attribute__((noreturn));
+extern "C" uint32_t houji_cpu_off_reached[8];
+extern "C" int houji_cpu_off_psci;
 extern "C" kern_return_t processor_exit(processor_t processor);
 static uint32_t cpuResumes[8], cpuHalts[8];
 extern "C" uint32_t houji_publish_secondary_state(uint64_t *tcr, uint64_t *root);
@@ -383,7 +385,12 @@ void SweetCPU::quiesceCPU(void) {
 void SweetCPU::haltCPU(void) {
   const unsigned id = getCPUNumber();
   if (!id) panic("HOUJI SMP: boot CPU sleep not implemented");
+  static bool parsed;
+  if (!parsed) {parsed = true; int v = 1; PE_parse_boot_argn("houji_cpu_off", &v, sizeof v); houji_cpu_off_psci = v != 0;}
+  IOLog("HOUJI SMP: CPU%u processor_exit (%s)\n", id, houji_cpu_off_psci ? "PSCI CPU_OFF" : "WFI park");
+  IOSleep(200);
   const kern_return_t r = processor_exit(machProcessor);
+  IOLog("HOUJI SMP: CPU%u processor_exit returned %d; reached CPU_OFF %u times\n", id, r, houji_cpu_off_reached[id]);
   if (r != KERN_SUCCESS) panic("HOUJI SMP: processor_exit(CPU%u) failed %d", id, r);
   __atomic_add_fetch(&cpuHalts[id], 1U, __ATOMIC_RELAXED);
 }
