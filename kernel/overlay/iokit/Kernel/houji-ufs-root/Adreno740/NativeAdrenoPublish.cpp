@@ -1230,6 +1230,14 @@ extern "C" void native_adreno_client_report(void){
  IOLog("HOUJI GPU CLIENTS: last mount failure kind=%u status=%x slot=%u count=%u\n",native_adreno_mount_fail[0],native_adreno_mount_fail[1],native_adreno_mount_fail[2],native_adreno_mount_fail[3]);
  for(const auto&rec:clients)if(rec.name[0])
   IOLog("HOUJI GPU CLIENTS: name=%.19s opens=%u refused=%u closes=%u slot=%u peak-MiB=%u last=%x\n",rec.name,rec.opens,rec.refused,rec.closes,rec.slot,rec.peak_mib,rec.last_refusal);
+ /* Imports of other memory (IOSurfaces, no-copy buffers): NativeAdrenoUserClient.cpp's records */
+ extern volatile uint64_t native_adreno_import_diag[10];extern volatile uint64_t native_adreno_import_live[3+8*4];
+ extern volatile uint32_t native_adreno_method_stats[20][4];
+ const volatile uint64_t *d=native_adreno_import_diag,*live=native_adreno_import_live;
+ IOLog("HOUJI GPU IMPORTS: calls=%llu refused=%llu last=%llx stage=%llu bytes=%llu addr=%llx first=%llx stage=%llu bytes=%llu addr=%llx; alive=%llu free-refused=%llu last-free-status=%llx\n",
+  d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8],d[9],live[0],live[1],live[2]);
+ for(unsigned i=0;i<8;i++)if(live[3+i*4])IOLog("HOUJI GPU IMPORTS: recent addr=%llx pid=%llu bytes=%llu handle=%llx state=%llu\n",live[3+i*4],live[3+i*4+1]>>40,live[3+i*4+1]&((1ull<<40)-1),live[3+i*4+2],live[3+i*4+3]);
+ for(unsigned m=0;m<20;m++)if(native_adreno_method_stats[m][1])IOLog("HOUJI GPU METHOD: id=%u calls=%u failed=%u last-status=%x\n",m,native_adreno_method_stats[m][0],native_adreno_method_stats[m][1],native_adreno_method_stats[m][2]);
 }
 
 extern "C" int native_adreno_provider_stop(int(*stop)(void*),void*c){if(!g.lock || !stop)return 1;nativeAdrenoIssuerLock(__LINE__);__atomic_store_n(&nativeAdrenoHintEnabled,0u,__ATOMIC_RELEASE);g.dying=true;g.published=false;(void)native_adreno_board_quiesce();nativeAdrenoStopDiagnostics();int s=stop(c);nativeAdrenoIssuerUnlock();return s;}
