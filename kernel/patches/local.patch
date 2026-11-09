@@ -2121,6 +2121,58 @@ index 8559a66..59c834e 100644
  
  	while (root) {
  		if (root->metaCast(ioblockstoragedriverClass)) {
+diff --git a/iokit/Kernel/IOServicePM.cpp b/iokit/Kernel/IOServicePM.cpp
+index ebf266b..5a506aa 100644
+--- a/iokit/Kernel/IOServicePM.cpp
++++ b/iokit/Kernel/IOServicePM.cpp
+@@ -6952,19 +6952,35 @@ IOService::responseValid( uint32_t refcon, int pid )
+ 	serialComponent  = (refcon >> 16) & 0xFFFF;
+ 	ordinalComponent = (refcon & 0xFFFF);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* SWEET diagnostic: why a root domain acknowledgement is ignored (sleep waited 30 s twice for powerd). */
++	const bool houjiTrace = (this == getPMRootDomain());
++#define HOUJI_ACK_REJECT(why) do { if (houjiTrace) printf("HOUJI PM: ack refcon 0x%x from pid %d ignored: %s (serial %u, responses %u)\n", \
++	    refcon, pid, why, fSerialNumber, fResponseArray ? fResponseArray->getCount() : 0); } while (0)
++#else
++#define HOUJI_ACK_REJECT(why) do { } while (0)
++#endif
+ 	if (serialComponent != fSerialNumber) {
++		HOUJI_ACK_REJECT("serial");
+ 		return false;
+ 	}
+ 
+ 	if (fResponseArray == NULL) {
++		HOUJI_ACK_REJECT("no response array");
+ 		return false;
+ 	}
+ 
+ 	theFlag = fResponseArray->getObject(ordinalComponent);
+ 
+ 	if (theFlag == NULL) {
++		HOUJI_ACK_REJECT("no entry");
+ 		return false;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (houjiTrace) {
++		printf("HOUJI PM: ack refcon 0x%x from pid %d accepted\n", refcon, pid);
++	}
++#endif
+ 
+ 	if (fNotifyClientArray) {
+ 		object = fNotifyClientArray->getObject(ordinalComponent);
+@@ -7050,6 +7066,11 @@ IOService::allowPowerChange( unsigned long refcon )
+ 	request->fArg0 = (void *)            refcon;
+ 	request->fArg1 = (void *)(uintptr_t) proc_selfpid();
+ 	request->fArg2 = (void *)            NULL;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (this == getPMRootDomain()) {
++		printf("HOUJI PM: allowPowerChange refcon 0x%lx from pid %d\n", refcon, proc_selfpid());
++	}
++#endif
+ 	submitPMRequest( request );
+ 
+ 	return kIOReturnSuccess;
 diff --git a/iokit/Kernel/IOStartIOKit.cpp b/iokit/Kernel/IOStartIOKit.cpp
 index d74c063..c64e952 100644
 --- a/iokit/Kernel/IOStartIOKit.cpp
