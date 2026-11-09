@@ -24,7 +24,7 @@ Per-peripheral status, measurements and boot arguments are in [peripherals.md](p
 
 | Area | This fork |
 |---|---|
-| Wi-Fi | WCN7850 over PCIe through the Ath12kWifi module: scan, WPA2 join from Settings, DHCP, DNS, Safari. Root step `tools/root/add-wifi-flags.py`. |
+| Wi-Fi | WCN7850 over PCIe through the Ath12kWifi module: scan, WPA2 join from Settings, DHCP, DNS, Safari (pages draw with `houji_srgb=1`, see `peripherals.md`). Root step `tools/root/add-wifi-flags.py`. |
 | Battery and charging | Own ADSP battery-manager client with USB-PD charge control, thermal current limits, and no charging when full and above 40 C. |
 | Buttons | Power and volume keys by read-only SPMI polling, delivered as HID. |
 | Display | iOS's display power (IOMobileFramebuffer selector 12) drives the panel (DCS 0x28/0x29); iOS brightness through an AppleARMBacklight-compatible service; a touch on a dark screen no longer lights it. |

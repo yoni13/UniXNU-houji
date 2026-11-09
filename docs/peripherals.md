@@ -24,7 +24,7 @@ Safari loading a page by name.
 - USB console: `wifi scan | join SSID PASS | leave | status`; `type TEXT` (`\n` = Return) types through a virtual keyboard.
 
 ## Bluetooth — working: pairing and connection verified (WCN7850 on QUP2 SE6 UART)
-`iokit/Kernel/houji-bt/HoujiBluetooth.cpp`, `houji_bt=1` (default off). USB console `bt probe`, `bt init` (without `houji_bt`),
+`iokit/Kernel/houji-bt/HoujiBluetooth.cpp`, `houji_bt=1` (default off; with it the service is published at the root mount, `houji_bt_early`, default 1). USB console `bt probe`, `bt init` (without `houji_bt`),
 `bt stat`. Wiring from the SteamOS houji port: uart14 = QUPv3 wrapper 2 SE6 (`0x898000`), GPIO 24-27, BT_EN GPIO 17 on the WCN7850
 PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s until the controller answers).
 - Verified on the phone: Settings shows Bluetooth "On"; its page scans (HCI Inquiry repeated, Extended Inquiry Results and LE
