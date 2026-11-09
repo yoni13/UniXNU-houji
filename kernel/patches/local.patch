@@ -1907,7 +1907,7 @@ index 4d96763..0b9e90b 100644
  #endif /* DEBUG || DEVELOPMENT */
  
 diff --git a/iokit/Kernel/IOPMrootDomain.cpp b/iokit/Kernel/IOPMrootDomain.cpp
-index 4a06407..a33e5fb 100644
+index 4a06407..be94b42 100644
 --- a/iokit/Kernel/IOPMrootDomain.cpp
 +++ b/iokit/Kernel/IOPMrootDomain.cpp
 @@ -111,12 +111,22 @@ __END_DECLS
@@ -1933,19 +1933,39 @@ index 4a06407..a33e5fb 100644
  
  #define DMSG(x...)  do { \
      if (kIOLogPMRootDomain & gIOKitDebug) { \
-@@ -492,6 +502,57 @@ getSystemSleepPreventerString( uint32_t preventer )
+@@ -492,6 +502,77 @@ getSystemSleepPreventerString( uint32_t preventer )
  	return IOFindNameForValue(preventer, systemSleepPreventers);
  }
  
 +/*
 + * SWEET runs iOS userland on a kernel configured as macOS (XNU_TARGET_OS_OSX, no display wrangler). powerd sets the system sleep
 + * slider to 0x7fffffff and the idle time in "System Idle Seconds", which only the iOS idle sleep policy honours: there the idle
-+ * timer runs for idleMilliSeconds once nothing prevents idle sleep. HOUJI_IOS_IDLE_SLEEP selects those iOS branches.
++ * timer runs for idleMilliSeconds once nothing prevents idle sleep. HOUJI_IOS_IDLE_SLEEP selects those iOS branches, on SWEET
++ * with houji_sleep=1 (opt-in; without it the system never idle-sleeps, as before). houji_sleep=1 also makes the sleep notice
++ * reply timeout 5 s unless pmtimeout is given: locationd, bluetoothd and CommCenter wait on hardware this port does not
++ * (fully) have and never reply, and each silent client otherwise holds sleep for 30 s.
 + */
-+#if defined(ARM64_BOARD_CONFIG_SWEET)
-+#define HOUJI_IOS_IDLE_SLEEP 1
++#if !defined(XNU_TARGET_OS_OSX)
++#define HOUJI_IOS_IDLE_SLEEP true
++#elif defined(ARM64_BOARD_CONFIG_SWEET)
++extern uint32_t gSleepAckTimeout;
++static int gHoujiSleep = -1;
++static bool
++houjiSleepEnabled(void)
++{
++	if (gHoujiSleep < 0) {
++		int v = 0;
++		PE_parse_boot_argn("houji_sleep", &v, sizeof(v));
++		gHoujiSleep = v != 0;
++		if (gHoujiSleep && gSleepAckTimeout == 0) {
++			gSleepAckTimeout = 5;
++		}
++	}
++	return gHoujiSleep != 0;
++}
++#define HOUJI_IOS_IDLE_SLEEP houjiSleepEnabled()
 +#else
-+#define HOUJI_IOS_IDLE_SLEEP 0
++#define HOUJI_IOS_IDLE_SLEEP false
 +#endif
 +
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -1991,7 +2011,7 @@ index 4a06407..a33e5fb 100644
  // gDarkWakeFlags
  enum {
  	kDarkWakeFlagPromotionNone       = 0x0000,
-@@ -3107,6 +3168,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
+@@ -3107,6 +3188,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
  		timeSinceReset = ml_get_time_since_reset();
  		kdebugTrace(kPMLogSystemWake, 0, (uintptr_t)(timeSinceReset >> 32), (uintptr_t) timeSinceReset);
  
@@ -2006,42 +2026,56 @@ index 4a06407..a33e5fb 100644
  		if ((gDarkWakeFlags & kDarkWakeFlagPromotionMask) == kDarkWakeFlagPromotionEarly) {
  			wranglerTickled = true;
  			fullWakeReason = kFullWakeReasonLocalUser;
-@@ -3604,7 +3673,7 @@ IOPMrootDomain::systemDidNotSleep( void )
- 
+@@ -3605,7 +3694,7 @@ IOPMrootDomain::systemDidNotSleep( void )
  	if (idleSleepEnabled) {
  		if (!wrangler) {
--#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
-+#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT && !HOUJI_IOS_IDLE_SLEEP
- 			startIdleSleepTimer(kIdleSleepRetryInterval);
+ #if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
+-			startIdleSleepTimer(kIdleSleepRetryInterval);
++			startIdleSleepTimer(HOUJI_IOS_IDLE_SLEEP ? idleMilliSeconds : kIdleSleepRetryInterval);
  #else
  			startIdleSleepTimer(idleMilliSeconds);
-@@ -8597,7 +8666,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+ #endif
+@@ -8597,8 +8686,8 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  			flags.bit.idleSleepDisabled = true;
  			idleSleepEnabled = false;
  		}
 -#if !defined(XNU_TARGET_OS_OSX)
-+#if !defined(XNU_TARGET_OS_OSX) || HOUJI_IOS_IDLE_SLEEP
- 		if (0x7fffffff == minutesToIdleSleep) {
+-		if (0x7fffffff == minutesToIdleSleep) {
++#if !defined(XNU_TARGET_OS_OSX) || defined(ARM64_BOARD_CONFIG_SWEET)
++		if (HOUJI_IOS_IDLE_SLEEP && 0x7fffffff == minutesToIdleSleep) {
  			minutesToIdleSleep = idleMilliSeconds / 1000;
  		}
-@@ -8787,7 +8856,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
- 	if (flags.bit.idleSleepEnabled) {
+ #endif /* !defined(XNU_TARGET_OS_OSX) */
+@@ -8788,7 +8877,12 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  		DLOG("idle sleep timer enabled\n");
  		if (!wrangler) {
--#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
-+#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT && !HOUJI_IOS_IDLE_SLEEP
- 			startIdleSleepTimer(getTimeToIdleSleep());
+ #if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
+-			startIdleSleepTimer(getTimeToIdleSleep());
++			if (!HOUJI_IOS_IDLE_SLEEP) {
++				startIdleSleepTimer(getTimeToIdleSleep());
++			} else {
++				changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonIdleSleepEnabled);
++				startIdleSleepTimer( idleMilliSeconds );
++			}
  #else
  			changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonIdleSleepEnabled);
-@@ -8818,7 +8887,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
- 			if (!wrangler) {
+ 			startIdleSleepTimer( idleMilliSeconds );
+@@ -8819,8 +8913,13 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  				changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonEvaluatePolicy);
  				if (idleSleepEnabled) {
--#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
-+#if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT && !HOUJI_IOS_IDLE_SLEEP
- 					if (!extraSleepDelay && !idleSleepTimerPending && !gNoIdleFlag) {
- 						sleepASAP = true;
+ #if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
+-					if (!extraSleepDelay && !idleSleepTimerPending && !gNoIdleFlag) {
+-						sleepASAP = true;
++					if (!HOUJI_IOS_IDLE_SLEEP) {
++						if (!extraSleepDelay && !idleSleepTimerPending && !gNoIdleFlag) {
++							sleepASAP = true;
++						}
++					} else {
++						// stay awake for at least idleMilliSeconds
++						startIdleSleepTimer(idleMilliSeconds);
  					}
+ #else
+ 					// stay awake for at least idleMilliSeconds
 diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
 index 7a32a23..4bc9c80 100644
 --- a/iokit/Kernel/IOPlatformExpert.cpp
