@@ -8,6 +8,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/pwr_mgt/RootDomain.h>
+#include <IOKit/pwr_mgt/IOPMPrivate.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSNumber.h>
 #include <arm64/proc_reg.h>
@@ -37,6 +38,56 @@ extern "C" void houji_gic_sleep_mask(int enter);
 extern "C" void timer_resync_deadlines(void);
 extern "C" boolean_t ml_set_interrupts_enabled_with_debug(boolean_t enable, boolean_t debug);
 static uint32_t sleepCount, sleepLastReason;
+// Wake requests from the root domain's PM settings (powerd's scheduled wakes: alarms, maintenance), one slot per setting:
+// CNTVCT deadlines, 0 = none. The sleep loop wakes at the earliest as a scheduled (dark) wake, as an RTC alarm would.
+static const char *const kWakeSettings[] = {kIOPMSettingAutoWakeSecondsKey, kIOPMSettingAutoWakeCalendarKey,
+    kIOPMSettingDebugWakeRelativeKey, kIOPMSettingMaintenanceWakeCalendarKey, kIOPMSettingSleepServiceWakeCalendarKey};
+static volatile uint64_t wakeAt[5];
+static OSObject *wakeSettingsHandle;
+static int64_t daysFromCivil(int64_t y, unsigned m, unsigned d) {   // days since 1970-01-01 (proleptic Gregorian)
+  y -= m <= 2;
+  const int64_t era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned)(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + (int64_t)doe - 719468;
+}
+static IOReturn wakeSetting(OSObject *, const OSSymbol *type, OSObject *val, uintptr_t slot) {
+  if (slot >= 5) return kIOReturnBadArgument;
+  int64_t seconds = -1;   // -1: cancel
+  if (OSNumber *n = OSDynamicCast(OSNumber, val)) {
+    if (n->unsigned64BitValue()) seconds = (int64_t)n->unsigned64BitValue();
+  } else if (OSData *d = OSDynamicCast(OSData, val)) {
+    if (d->getLength() >= sizeof(IOPMCalendarStruct)) {
+      const IOPMCalendarStruct *c = (const IOPMCalendarStruct *)d->getBytesNoCopy();
+      if (c->year && c->month >= 1 && c->month <= 12 && c->day >= 1) {
+        const int64_t when = daysFromCivil(c->year, c->month, c->day) * 86400 + c->hour * 3600 + c->minute * 60 + c->second;
+        clock_sec_t now; clock_usec_t us;
+        clock_get_calendar_microtime(&now, &us);
+        seconds = when > (int64_t)now ? when - (int64_t)now : 0;
+      }
+    }
+  }
+  uint64_t at = 0;
+  if (seconds >= 0) {nanoseconds_to_absolutetime((uint64_t)seconds * NSEC_PER_SEC, &at); at += __builtin_arm_rsr64("CNTVCT_EL0");}
+  __atomic_store_n(&wakeAt[slot], at, __ATOMIC_RELEASE);
+  IOLog("HOUJI SLEEP: wake request %s: %s%lld s\n", type ? type->getCStringNoCopy() : "?", seconds < 0 ? "cancelled " : "in ",
+        seconds < 0 ? 0LL : (long long)seconds);
+  return kIOReturnSuccess;
+}
+static void wakeSettingsThread(void *, wait_result_t) {
+  IOPMrootDomain *root = NULL;
+  for (unsigned i = 0; i < 600 && !(root = IOService::getPMRootDomain()); i++) IOSleep(100);
+  for (uintptr_t slot = 0; root && slot < 5; slot++) {
+    const OSSymbol *settings[2] = {OSSymbol::withCString(kWakeSettings[slot]), NULL};
+    OSObject *handle = NULL;
+    const IOReturn r = root->registerPMSettingController(settings, wakeSetting, NULL, slot, &handle);
+    if (r != kIOReturnSuccess) IOLog("HOUJI SLEEP: cannot take PM setting %s: %x\n", kWakeSettings[slot], r);
+    else if (!wakeSettingsHandle) wakeSettingsHandle = handle;
+    OSSafeReleaseNULL(settings[0]);
+  }
+  thread_terminate(current_thread());
+}
 static uint64_t sleepLastUs, sleepLastPolls;
 extern "C" uint32_t houji_publish_secondary_state(uint64_t *tcr, uint64_t *root);
 extern "C" char LowResetVectorBase[], const_boot_args[];
@@ -199,6 +250,10 @@ void SweetCPU::finishStartup(void) {
   registerService();
   // CPU0 makes matching workers available; completion is published after both.
   if (!id) cpusRunning();
+  if (!id) {
+    thread_t wakeThread;
+    if (kernel_thread_start(wakeSettingsThread, NULL, &wakeThread) == KERN_SUCCESS) thread_deallocate(wakeThread);
+  }
   unsigned done = __atomic_add_fetch(&completedCPUs, 1U, __ATOMIC_ACQ_REL);
   IOLog("HOUJI SMP: CPU%u online; completed=%u/%u\n", id, done, topology->num_cpus);
   if (done == topology->num_cpus) {
@@ -397,12 +452,10 @@ void SweetCPU::haltCPU(void) {
   if (!id) {bootSleep(); return;}
   static bool parsed;
   if (!parsed) {parsed = true; int v = 1; PE_parse_boot_argn("houji_cpu_off", &v, sizeof v); houji_cpu_off_psci = v != 0;}
-  IOLog("HOUJI SMP: CPU%u processor_exit (%s)\n", id, houji_cpu_off_psci ? "PSCI CPU_OFF" : "WFI park");
-  IOSleep(200);
   // XNU lets a CPU exit only while quiescing for system sleep (ml_cpu_can_exit); IOCPUSleepKernel sets that flag.
   const kern_return_t r = processor_exit(machProcessor);
-  IOLog("HOUJI SMP: CPU%u processor_exit returned %d; reached CPU_OFF %u times\n", id, r, houji_cpu_off_reached[id]);
   if (r == KERN_SUCCESS) __atomic_add_fetch(&cpuHalts[id], 1U, __ATOMIC_RELAXED);
+  else IOLog("HOUJI SMP: CPU%u processor_exit failed %d\n", id, r);
 }
 // System sleep on the boot CPU, the last one (IOCPUSleepKernel: secondaries off, console suspended). Interrupts masked, WFI with
 // the virtual timer re-armed every 50 ms to look at the power key (read directly over SPMI). Wakes on a press after the key was
@@ -426,8 +479,12 @@ void SweetCPU::bootSleep(void) {
   houji_gic_sleep_mask(1);
   const uint64_t t0 = __builtin_arm_rsr64("CNTVCT_EL0");
   bool released = false;
-  uint32_t reason = 0;
-  uint64_t polls = 0;
+  uint32_t reason = 0, wakeSlot = 5;
+  uint64_t polls = 0, wakeDeadline = 0;
+  for (unsigned s = 0; s < 5; s++) {
+    const uint64_t at = __atomic_load_n(&wakeAt[s], __ATOMIC_ACQUIRE);
+    if (at && (!wakeDeadline || at < wakeDeadline)) {wakeDeadline = at; wakeSlot = s;}
+  }
   for (;;) {
     const int key = houji_buttons_power_level();
     if (key == 0) released = true;
@@ -435,6 +492,7 @@ void SweetCPU::bootSleep(void) {
     const uint64_t now = __builtin_arm_rsr64("CNTVCT_EL0");
     if (limit && now - t0 >= limit) {reason = 2; break;}
     if (testKey && now - t0 >= testKey) {reason = 1; break;}
+    if (wakeDeadline && now >= wakeDeadline) {reason = 3; break;}
     __builtin_arm_wsr64("CNTV_CVAL_EL0", now + tick);
     __builtin_arm_wsr64("CNTV_CTL_EL0", 1);   // enabled, not masked: its interrupt (pending, masked here) ends WFI
     __builtin_arm_isb(ISB_SY);
@@ -464,9 +522,10 @@ void SweetCPU::bootSleep(void) {
   // A key wake is a user wake: the root domain promotes it to full wake, and the buttons driver reports the press if the display
   // is still off 300 ms later (as the wake press lights an iPhone). Timed wakes stay dark wakes.
   if (reason == 1) {houji_pm_next_wake_is_user(); houji_buttons_wake_press();}
+  if (reason == 3 && wakeSlot < 5) __atomic_store_n(&wakeAt[wakeSlot], 0ULL, __ATOMIC_RELEASE);   // one-shot
   IOLog("HOUJI SLEEP: woke after %llu ms (%s%s), %llu polls; sleep %u; interrupts were %s\n", ns / 1000000,
-        reason == 1 ? "power key" : "time limit", reason == 1 && testKey ? ", test" : "", polls, sleepCount,
-        enabled ? "enabled" : "masked");
+        reason == 1 ? "power key" : reason == 3 ? "scheduled wake" : "time limit", reason == 1 && testKey ? ", test" : "", polls,
+        sleepCount, enabled ? "enabled" : "masked");
   IOLog("HOUJI SLEEP: pending after WFI (INTID:count) %u:%u %u:%u %u:%u %u:%u %u:%u %u:%u\n", pendingId[0], pendingCount[0],
         pendingId[1], pendingCount[1], pendingId[2], pendingCount[2], pendingId[3], pendingCount[3], pendingId[4], pendingCount[4],
         pendingId[5], pendingCount[5]);
