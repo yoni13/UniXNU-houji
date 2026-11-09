@@ -33,6 +33,7 @@ static uint32_t cpuResumes[8], cpuHalts[8];
 extern "C" int houji_buttons_power_level(void);
 extern "C" void houji_pm_next_wake_is_user(void);
 extern "C" void houji_buttons_wake_press(void);
+extern "C" void houji_gic_sleep_mask(int enter);
 extern "C" void timer_resync_deadlines(void);
 extern "C" boolean_t ml_set_interrupts_enabled_with_debug(boolean_t enable, boolean_t debug);
 static uint32_t sleepCount, sleepLastReason;
@@ -422,6 +423,7 @@ void SweetCPU::bootSleep(void) {
   uint64_t tick, limit = 0;
   nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &tick);
   if (maxS) nanoseconds_to_absolutetime((uint64_t)maxS * NSEC_PER_SEC, &limit);
+  houji_gic_sleep_mask(1);
   const uint64_t t0 = __builtin_arm_rsr64("CNTVCT_EL0");
   bool released = false;
   uint32_t reason = 0;
@@ -448,6 +450,7 @@ void SweetCPU::bootSleep(void) {
     }
   }
   const uint64_t slept = __builtin_arm_rsr64("CNTVCT_EL0") - t0;
+  houji_gic_sleep_mask(0);
   __builtin_arm_wsr64("CNTV_CVAL_EL0", cval);
   __builtin_arm_wsr64("CNTV_CTL_EL0", ctl);
   __builtin_arm_isb(ISB_SY);

@@ -82,9 +82,10 @@ void buttonsThread(void *, wait_result_t) {
         // a key already held when polling starts is not reported until it is released once
         if (first) {last = mask; first = false; native_buttons_stats[3] = (int32_t)mask;}
         if (const uint32_t wake = __atomic_load_n(&gWakePress, __ATOMIC_ACQUIRE)) {
-            // The press that woke the system (a full wake): on an iPhone it also lights the display. 300 ms after the wake, if
-            // iOS has not lit it, report the press (and release); never on a lit display, where it would lock.
-            if (wake < 16) __atomic_store_n(&gWakePress, wake + 1, __ATOMIC_RELEASE);
+            // The press that woke the system (a full wake): on an iPhone it also lights the display. iOS often lights it itself
+            // (about 350 ms after the wake); one second after the wake, if it has not, report the press (and release). Never on
+            // a lit display, where it would lock.
+            if (wake < 50) __atomic_store_n(&gWakePress, wake + 1, __ATOMIC_RELEASE);
             else {
                 if (!houji_screen_is_on() && !(mask & 1) && !(last & 1)) {
                     sweet_hid_key(0, 1); IOSleep(80); sweet_hid_key(0, 0);
