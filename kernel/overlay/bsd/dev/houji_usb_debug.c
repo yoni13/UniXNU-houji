@@ -475,6 +475,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"sleep")) { extern void houji_sleep_now(void); houji_sleep_now(); }
     else if (!strcmp(u.command,"panic")) panic("HOUJI DEBUG: panic requested over USB");
     else if (!strcmp(u.command,"pm")) { extern void houji_pm_report(void); houji_pm_report(); }
+    else if (!strcmp(u.command,"gpu clients")) { extern void native_adreno_client_report(void); native_adreno_client_report(); }
     else if (!strncmp(u.command,"cpu off ",8) || !strncmp(u.command,"cpu on ",7)) {
         extern void houji_cpu_hotplug(unsigned, int);
         const int on=u.command[5]=='n';

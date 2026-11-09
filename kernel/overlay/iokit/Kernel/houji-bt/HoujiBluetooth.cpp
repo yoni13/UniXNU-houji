@@ -735,7 +735,8 @@ extern "C" void houji_bt_command(const char *what) {
             for (unsigned i = 0; i < n; ++i) last[i] = gRing[(gHead - n + i) % sizeof gRing];
             dump("last received", last, n);
         }
-        else IOLog("HOUJI BT: running for iOS; only \"bt stat\"\n");
+        else if (!strncmp(what, "log", 3)) {gLogged = 0; IOLog("HOUJI BT: logging the next 400 packets\n");}
+        else IOLog("HOUJI BT: running for iOS; only \"bt stat\" and \"bt log\"\n");
         return;
     }
     const bool probe = !strncmp(what, "probe", 5), init = !strncmp(what, "init", 4);

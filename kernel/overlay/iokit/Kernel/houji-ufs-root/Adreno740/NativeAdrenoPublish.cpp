@@ -1216,6 +1216,22 @@ static void nativeAdrenoStopDiagnostics(void){
  }
 }
 
+/* USB console "gpu clients": slot owners, refusals and allocation failures while the system runs (the full report prints only on stop). */
+extern "C" void native_adreno_client_report(void){
+ static NativeAdrenoClientRecord clients[8];
+ if(!g.lock || !nativeAdrenoIssuerTryLock(__LINE__)){IOLog("HOUJI GPU CLIENTS: busy; try again\n");return;}
+ memcpy(clients,native_adreno_client_log,sizeof clients);
+ bool slots[NativeAdrenoMaxClients];for(unsigned s=0;s<NativeAdrenoMaxClients;s++)slots[s]=g.slots[s];
+ nativeAdrenoIssuerUnlock();
+ for(unsigned s=0;s<NativeAdrenoMaxClients;s++){
+  const auto&a=native_adreno_client_stats[s];const auto&w=native_adreno_window_overflow[s];
+  IOLog("HOUJI GPU CLIENTS: slot=%u busy=%u live=%u peak-objects=%u failed=%u status=%x window-denied=%u\n",s,slots[s],a[0],a[1],a[2],a[3],w[0]);
+ }
+ IOLog("HOUJI GPU CLIENTS: last mount failure kind=%u status=%x slot=%u count=%u\n",native_adreno_mount_fail[0],native_adreno_mount_fail[1],native_adreno_mount_fail[2],native_adreno_mount_fail[3]);
+ for(const auto&rec:clients)if(rec.name[0])
+  IOLog("HOUJI GPU CLIENTS: name=%.19s opens=%u refused=%u closes=%u slot=%u peak-MiB=%u last=%x\n",rec.name,rec.opens,rec.refused,rec.closes,rec.slot,rec.peak_mib,rec.last_refusal);
+}
+
 extern "C" int native_adreno_provider_stop(int(*stop)(void*),void*c){if(!g.lock || !stop)return 1;nativeAdrenoIssuerLock(__LINE__);__atomic_store_n(&nativeAdrenoHintEnabled,0u,__ATOMIC_RELEASE);g.dying=true;g.published=false;(void)native_adreno_board_quiesce();nativeAdrenoStopDiagnostics();int s=stop(c);nativeAdrenoIssuerUnlock();return s;}
 extern "C" IOMemoryDescriptor *native_gop_handoff_memory(void){return nullptr;}
 extern "C" IOReturn native_gop_handoff_call(uint32_t,task_t,const void*,size_t,void*,size_t){return kIOReturnUnsupported;}
