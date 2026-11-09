@@ -1847,6 +1847,20 @@ index 9432f34..95550c9 100644
  _port_name_to_task:_port_name_to_task_external
  _port_name_to_thread
  _post_sys_powersource
+diff --git a/iokit/IOKit/pwr_mgt/RootDomain.h b/iokit/IOKit/pwr_mgt/RootDomain.h
+index 1b28efa..ce35f01 100644
+--- a/iokit/IOKit/pwr_mgt/RootDomain.h
++++ b/iokit/IOKit/pwr_mgt/RootDomain.h
+@@ -272,6 +272,9 @@ public:
+ 	void                wakeFromDoze( void );
+ 
+ 	void                requestUserActive(IOService *driver, const char *reason);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	void                houjiReportPolicy(void);
++#endif
+ 
+ // KEXT driver announces support of power management feature
+ 
 diff --git a/iokit/Kernel/IOMemoryDescriptor.cpp b/iokit/Kernel/IOMemoryDescriptor.cpp
 index 4d96763..0b9e90b 100644
 --- a/iokit/Kernel/IOMemoryDescriptor.cpp
@@ -1893,10 +1907,33 @@ index 4d96763..0b9e90b 100644
  #endif /* DEBUG || DEVELOPMENT */
  
 diff --git a/iokit/Kernel/IOPMrootDomain.cpp b/iokit/Kernel/IOPMrootDomain.cpp
-index 4a06407..7aecbd2 100644
+index 4a06407..1327170 100644
 --- a/iokit/Kernel/IOPMrootDomain.cpp
 +++ b/iokit/Kernel/IOPMrootDomain.cpp
-@@ -492,6 +492,27 @@ getSystemSleepPreventerString( uint32_t preventer )
+@@ -111,12 +111,22 @@ __END_DECLS
+ #define DEBUG_LOG(x...)
+ #endif
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/* SWEET has no serial console for kprintf: with io=0x20000 the root domain's trace goes to the console log (printf). */
++#define DLOG(x...)  do { \
++    if (kIOLogPMRootDomain & gIOKitDebug) \
++	printf(LOG_PREFIX x); \
++    else \
++	os_log(OS_LOG_DEFAULT, LOG_PREFIX x); \
++} while (false)
++#else
+ #define DLOG(x...)  do { \
+     if (kIOLogPMRootDomain & gIOKitDebug) \
+ 	kprintf(LOG_PREFIX x); \
+     else \
+ 	os_log(OS_LOG_DEFAULT, LOG_PREFIX x); \
+ } while (false)
++#endif
+ 
+ #define DMSG(x...)  do { \
+     if (kIOLogPMRootDomain & gIOKitDebug) { \
+@@ -492,6 +502,54 @@ getSystemSleepPreventerString( uint32_t preventer )
  	return IOFindNameForValue(preventer, systemSleepPreventers);
  }
  
@@ -1919,12 +1956,39 @@ index 4a06407..7aecbd2 100644
 +{
 +	os_atomic_store(&houji_user_wake, 1, relaxed);
 +}
++/* USB console "pm": the root domain's idle sleep inputs. */
++extern "C" void
++houji_pm_report(void)
++{
++	IOPMrootDomain *rd = IOService::getPMRootDomain();
++	if (rd == NULL) {
++		return;
++	}
++	rd->houjiReportPolicy();
++}
++void
++IOPMrootDomain::houjiReportPolicy(void)
++{
++	unsigned long sleepMinutes = 0, dimMinutes = 0;
++	getAggressiveness(kPMMinutesToSleep, &sleepMinutes);
++	getAggressiveness(kPMMinutesToDim, &dimMinutes);
++	printf("HOUJI PM: sleep slider %lu, display dim %lu min; CPU assertion level %d; system sleep %s\n", sleepMinutes, dimMinutes,
++	    (int)getPMAssertionLevel(kIOPMDriverAssertionCPUBit), checkSystemSleepEnabled() ? "enabled" : "disabled");
++	printf("HOUJI PM: idleSleepEnabled %d idleMilliSeconds %u sleepSlider %u userIsActive %d idleSleepTimerPending %d "
++	    "idle preventers %u system preventers %u systemBooting %d darkWake %d\n", idleSleepEnabled, idleMilliSeconds, sleepSlider,
++	    userIsActive, idleSleepTimerPending, idleSleepPreventersCount(), preventSystemSleepList ? preventSystemSleepList->getCount() : 0,
++	    systemBooting, systemDarkWake);
++	for (unsigned i = 0; preventIdleSleepList && i < preventIdleSleepList->getCount(); i++) {
++		IOService *s = OSDynamicCast(IOService, preventIdleSleepList->getObject(i));
++		printf("HOUJI PM: idle sleep preventer %s\n", s ? s->getName() : "?");
++	}
++}
 +#endif
 +
  // gDarkWakeFlags
  enum {
  	kDarkWakeFlagPromotionNone       = 0x0000,
-@@ -3107,6 +3128,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
+@@ -3107,6 +3165,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
  		timeSinceReset = ml_get_time_since_reset();
  		kdebugTrace(kPMLogSystemWake, 0, (uintptr_t)(timeSinceReset >> 32), (uintptr_t) timeSinceReset);
  
@@ -1939,7 +2003,7 @@ index 4a06407..7aecbd2 100644
  		if ((gDarkWakeFlags & kDarkWakeFlagPromotionMask) == kDarkWakeFlagPromotionEarly) {
  			wranglerTickled = true;
  			fullWakeReason = kFullWakeReasonLocalUser;
-@@ -3604,7 +3633,7 @@ IOPMrootDomain::systemDidNotSleep( void )
+@@ -3604,7 +3670,7 @@ IOPMrootDomain::systemDidNotSleep( void )
  
  	if (idleSleepEnabled) {
  		if (!wrangler) {
@@ -1948,7 +2012,7 @@ index 4a06407..7aecbd2 100644
  			startIdleSleepTimer(kIdleSleepRetryInterval);
  #else
  			startIdleSleepTimer(idleMilliSeconds);
-@@ -8597,7 +8626,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8597,7 +8663,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  			flags.bit.idleSleepDisabled = true;
  			idleSleepEnabled = false;
  		}
@@ -1957,7 +2021,7 @@ index 4a06407..7aecbd2 100644
  		if (0x7fffffff == minutesToIdleSleep) {
  			minutesToIdleSleep = idleMilliSeconds / 1000;
  		}
-@@ -8787,7 +8816,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8787,7 +8853,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  	if (flags.bit.idleSleepEnabled) {
  		DLOG("idle sleep timer enabled\n");
  		if (!wrangler) {
@@ -1966,7 +2030,7 @@ index 4a06407..7aecbd2 100644
  			startIdleSleepTimer(getTimeToIdleSleep());
  #else
  			changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonIdleSleepEnabled);
-@@ -8818,7 +8847,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8818,7 +8884,7 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  			if (!wrangler) {
  				changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonEvaluatePolicy);
  				if (idleSleepEnabled) {
