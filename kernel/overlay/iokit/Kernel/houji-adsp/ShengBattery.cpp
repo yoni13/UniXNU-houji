@@ -10,6 +10,7 @@
 // (the fields that hardly change, every tenth time). Charging itself is the DSP firmware's; the one setting written is the input current
 // limit on a computer's USB port (ShengBattmgr.c; boot argument sheng-usb-sdp-ma, 0 leaves the firmware's limit).
 #include <IOKit/IOLib.h>
+#include <string.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOInterruptEventSource.h>
@@ -47,6 +48,8 @@ namespace {
 constexpr uint32_t kRequestMs = 2000, kRefreshMs = 60000, kSlowEvery = 10, kRing = 16, kMessage = 64;
 }
 
+class ShengBattery;
+static ShengBattery *gBattery;
 class ShengBattery : public IOPMPowerSource {
     OSDeclareDefaultStructors(ShengBattery)
     IOWorkLoop *loop = nullptr;
@@ -226,6 +229,52 @@ class ShengBattery : public IOPMPowerSource {
         sheng_battmgr_timeout(&self->bm);
         self->handle(self->bm.cycles_done != before ? BmCycleDone : BmAnswer);
     }
+    IOTimerEventSource *holdEnd = nullptr;
+    // USB console "batt hold N": input suspended for N seconds (the phone runs from the battery with the cable in), then released.
+    static IOReturn holdAction(OSObject *owner, void *arg0, void *, void *, void *) {
+        ShengBattery *self = OSDynamicCast(ShengBattery, owner);
+        const uint32_t seconds = (uint32_t)(uintptr_t)arg0;
+        self->bm.suspend_want = seconds ? 1 : 0;
+        self->bm.suspend_tries = 0;
+        if (seconds) self->holdEnd->setTimeoutMS(seconds * 1000u); else self->holdEnd->cancelTimeout();
+        IOLog("HOUJI BATT HOLD: input suspend %s%s\n", seconds ? "on for " : "off", "");
+        if (seconds) IOLog("HOUJI BATT HOLD: %u s\n", seconds);
+        sheng_battmgr_refresh(&self->bm, 0);
+        self->handle(BmAnswer);
+        return kIOReturnSuccess;
+    }
+    static void holdEndAction(OSObject *owner, IOTimerEventSource *) {
+        ShengBattery *self = OSDynamicCast(ShengBattery, owner);
+        if (!self) return;
+        IOLog("HOUJI BATT HOLD: time is up; input suspend off\n");
+        self->bm.suspend_want = 0;
+        self->bm.suspend_tries = 0;
+        sheng_battmgr_refresh(&self->bm, 0);
+        self->handle(BmAnswer);
+    }
+    static IOReturn reportAction(OSObject *owner, void *, void *, void *, void *) {
+        ShengBattery *self = OSDynamicCast(ShengBattery, owner);
+        const ShengBattmgr &b = self->bm;
+#define R(f) (((b.valid >> (f)) & 1) ? b.value[(f)] : -999999)
+        uint64_t ns; absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+        IOLog("HOUJI BATT: t-ms=%llu counter-uAh=%d gauge1-mAh=%d gauge2-mAh=%d uV=%d uA=%d capacity=%d usb-online=%d input-suspend=%d want=%d sent=%u result=%d cycles=%u\n",
+              ns / 1000000, R(BmCharge), R(BmGauge1Remaining), R(BmGauge2Remaining), R(BmVoltage), R(BmCurrent), R(BmCapacity),
+              R(BmUsbOnline), R(BmInputSuspend), b.suspend_want, b.suspend_sent, b.set_result, b.cycles_done);
+#undef R
+        return kIOReturnSuccess;
+    }
+public:
+    void command(const char *what) {
+        if (!strncmp(what, "hold ", 5)) {
+            uint32_t seconds = 0;
+            for (const char *c = what + 5; *c >= '0' && *c <= '9'; c++) seconds = seconds * 10 + (uint32_t)(*c - '0');
+            if (seconds > 6 * 3600) seconds = 6 * 3600;
+            loop->runAction(&ShengBattery::holdAction, this, (void *)(uintptr_t)seconds);
+        } else if (!strcmp(what, "report") || !*what) {
+            loop->runAction(&ShengBattery::reportAction, this);
+        } else IOLog("HOUJI BATT: commands: batt report | batt hold SECONDS (0 releases)\n");
+    }
+private:
     static void refreshAction(OSObject *owner, IOTimerEventSource *sender) {
         ShengBattery *self = OSDynamicCast(ShengBattery, owner);
         if (!self || !self->wasUp) return;
@@ -250,6 +299,8 @@ public:
         inbox = IOInterruptEventSource::interruptEventSource(this, &ShengBattery::inboxAction);
         request = IOTimerEventSource::timerEventSource(this, &ShengBattery::requestAction);
         refresh = IOTimerEventSource::timerEventSource(this, &ShengBattery::refreshAction);
+        holdEnd = IOTimerEventSource::timerEventSource(this, &ShengBattery::holdEndAction);
+        if (holdEnd) loop->addEventSource(holdEnd);
         if (!loop || !ringLock || !inbox || !request || !refresh || loop->addEventSource(inbox) != kIOReturnSuccess ||
             loop->addEventSource(request) != kIOReturnSuccess || loop->addEventSource(refresh) != kIOReturnSuccess)
             return false;
@@ -258,6 +309,7 @@ public:
         channel = sheng_adsp_channel ? sheng_adsp_channel("PMIC_RTR_ADSP_APPS", 1024, 4, 0, &client, this) : nullptr;
         if (!channel) return false;
         native_battery_stats[0] = 2;
+        gBattery = this;
         return true;
     }
 };
@@ -278,4 +330,10 @@ extern "C" void sheng_battery_start(void) {
         return;
     }
     battery->release();  // the platform's attachment keeps it
+}
+
+// USB console "batt ..."
+extern "C" void houji_batt_command(const char *what) {
+    if (gBattery) gBattery->command(what);
+    else IOLog("HOUJI BATT: no battery service\n");
 }

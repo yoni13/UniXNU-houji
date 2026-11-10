@@ -62,6 +62,7 @@ void sheng_battmgr_init(ShengBattmgr *b)
     b->last_timeout = -1;
     b->sdp_limit_ua = 900000;  /* a configured USB 3 port's 900 mA; the firmware's current limiting backs off if the port sags */
     b->limit_port = -1;
+    b->suspend_want = -1;
 }
 
 uint32_t sheng_battmgr_enable_request(uint8_t out[SHENG_BATTMGR_ENABLE_BYTES])
@@ -195,6 +196,12 @@ static int finish(ShengBattmgr *b)
     b->cycles_done++;
     check_limit(b);
     check_charge(b);
+    if (b->suspend_want >= 0 && ((b->valid >> BmInputSuspend) & 1) && b->value[BmInputSuspend] != b->suspend_want &&
+        b->suspend_tries < 3 && !b->set_count && !b->set_in_flight) {
+        queue_set(b, SHENG_BATTMGR_OP_BOARD_SET, 0x2a, (uint32_t)b->suspend_want);
+        b->suspend_tries++;
+        b->suspend_sent++;
+    }
     if (b->refresh_wanted) {
         const int slow = b->refresh_wanted == 2;
         b->refresh_wanted = 0;
