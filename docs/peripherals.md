@@ -54,15 +54,15 @@ PMU whose rails the Wi-Fi driver turns on (the boot thread retries every 5 s unt
   transport's hook at +0x60 for every transport but USB, without a null check; H4, H4DS and H5 have no such hook (H4BC, APPLEBT,
   PCIE and VIRT do). `/usr/sbin/bluetoothd` patched (`perf-test/patch-bluetoothd.py`: the hook is called only when set, page hash
   rewritten). Verified: off without a crash, then on again from Settings.
-- **Fixed 2026-11-09: Bluetooth took about 30 s to come up**, at boot and on every power on: after HCI init (last command 0xfd3c)
-  bluetoothd sent nothing for 27-30 s. Its unified log shows the wait: "Done starting up stack", then a synchronous CoreTelephony
-  query ("Could not get the Tx state") that ends only when the connection to CommCenter breaks, then "stack did start". CommCenter
-  crash-looped in every boot (no modem). Root image: CommCenter is disabled by moving its job,
-  `/System/Library/LaunchDaemons/com.apple.CommCenter-noncellular.plist` (the one this hardware loads; `com.apple.CommCenter.plist`
-  is refused, error 138), to `/System/Library/com.apple.CommCenter-noncellular.plist.disabled`; move it back to restore it
-  (`perf-test/nbd-rename.py`). launchd ignores a `Disabled` key and `disabled.501.plist` for this job, and loads every file in the
-  directory whatever its extension. Verified: no CommCenter process or crash in the boot, 0xfd3c to the next command 50 ms at boot
-  and on power on (Settings off/on: on in about 2 s).
+- **Open: Bluetooth takes about 30 s to come up**, at boot and on every power on: after HCI init (last command 0xfd3c)
+  bluetoothd sends nothing for 27-30 s. Its unified log shows the wait: "Done starting up stack", then a synchronous CoreTelephony
+  query ("Could not get the Tx state") that ends only when the connection to CommCenter breaks (it crash-loops every 15-25 s:
+  no modem). Disabling CommCenter (moving `com.apple.CommCenter-noncellular.plist`, the job this hardware loads, out of
+  `/System/Library/LaunchDaemons`) removed the wait (0xfd3c to the next command 50 ms), but **broke auto-lock**: SpringBoard's
+  telephony manager then retried its CommCenter connection in a tight loop (about 46,000 "CTServerConnection returned error" in a
+  boot), and each failure reset the backlight idle timer (`updateIdleTimerForReason:"IdleTimerReset"`), so the display never turned
+  off and the phone never idle-slept. Confirmed by restoring the job: display off at 42.9 s again. **CommCenter is enabled again**
+  (2026-11-10); the Bluetooth wait needs another fix (CommCenter's crash, or bluetoothd's telephony query).
 - **Fixed 2026-11-09: Control Center showed Bluetooth unavailable** (dimmed, taps ignored; status bar without Bluetooth) while
   Settings showed it on. SpringBoard's BluetoothManager attaches to bluetoothd five times at its start (unified log: "failed to
   attach with error 9") and never again; bluetoothd exits until the `bluetooth` service exists, which was published only after the
@@ -149,8 +149,8 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   setup, as Linux `dwc3_ep0_complete_data`. Verified (`perf-test/usb-sleep-test.sh`, DTR toggled every second through three
   sleeps): five such transfers ended, console answered after every wake. bootSleep also prints `HOUJI USB SLEEP` (controller
   events and DSTS during sleep).
-- Open: after some wakes the display turns off but the system does not idle-sleep again (cause not found). CommCenter, which
-  crash-looped every 15-25 s, is disabled on the root image (see Bluetooth).
+- Open: after some wakes the display turns off but the system does not idle-sleep again (cause not found). CommCenter crash-loops
+  every 15-25 s (no modem); disabling it breaks auto-lock (see Bluetooth).
 
 ## Root volume (HFSX on UFS userdata through md0) — header guard
 - Incident (2026-11-09): after a USB-console reboot from iOS (`reboot_kernel`, which unmounts the root) the volume did not mount.
