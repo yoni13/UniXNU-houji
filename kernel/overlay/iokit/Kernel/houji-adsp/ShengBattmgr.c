@@ -42,7 +42,8 @@ static const struct {uint8_t opcode, property, slow;} kFields[BmFields] = {
     [BmPdVerified] = {SHENG_BATTMGR_OP_BOARD_GET, 32, 0},
     [BmAuthentic] = {SHENG_BATTMGR_OP_BOARD_GET, 5, 1},
     [BmVerifyProcess] = {SHENG_BATTMGR_OP_BOARD_GET, 20, 0},
-    [BmInputSuspend] = {SHENG_BATTMGR_OP_BOARD_GET, 0x2a, 0},
+    /* houji: input suspend is 54 (0x36), from the stock module's input_suspend_show/store (0x2a is cp_mode there; 0x2a is sheng's) */
+    [BmInputSuspend] = {SHENG_BATTMGR_OP_BOARD_GET, 0x36, 0},
 };
 #define NO_CYCLE 0xff
 
@@ -198,7 +199,7 @@ static int finish(ShengBattmgr *b)
     check_charge(b);
     if (b->suspend_want >= 0 && ((b->valid >> BmInputSuspend) & 1) && b->value[BmInputSuspend] != b->suspend_want &&
         b->suspend_tries < 3 && !b->set_count && !b->set_in_flight) {
-        queue_set(b, SHENG_BATTMGR_OP_BOARD_SET, 0x2a, (uint32_t)b->suspend_want);
+        queue_set(b, SHENG_BATTMGR_OP_BOARD_SET, 0x36, (uint32_t)b->suspend_want);
         b->suspend_tries++;
         b->suspend_sent++;
     }

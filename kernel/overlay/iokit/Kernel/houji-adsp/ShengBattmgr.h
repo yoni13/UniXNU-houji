@@ -60,7 +60,7 @@ typedef struct {
     struct {uint32_t opcode, property, value;} set_queue[2];
     uint32_t set_count, set_in_flight;
     uint8_t hot_hold;              /* houji: charging held, full and above 40 C */
-    /* houji: input suspend (board property 0x2a, the stock charger's input_suspend) wanted by the USB console's "batt hold": -1 leave
+    /* houji: input suspend (board property 0x36 on houji, the stock charger's input_suspend) wanted by the USB console's "batt hold": -1 leave
      * the firmware's, 0 or 1; set until the firmware reports it, three tries per change */
     int32_t suspend_want;
     uint32_t suspend_tries, suspend_sent;
