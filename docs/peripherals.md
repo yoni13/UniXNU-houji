@@ -136,14 +136,17 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   held, so the buttons thread reported it and the fallback press was not sent), display lit, no re-sleep. Not verified: power draw
   (the phone charges over USB throughout; not measured), and time: CNTVCT runs through sleep, so `mach_absolute_time` includes it
   (on an iPhone it stops). Devices are not powered down (display off; GPU, Wi-Fi, UFS keep power).
-- **Measured 2026-11-11: sleep saves almost nothing.** With the USB cable in and the charger input suspended (console
-  `batt hold N`, board property 54; `perf-test/sleep-power.sh`), the battery's charge counter fell 360 mAh in 0.62 h, all of it
-  asleep (one 63 s sleep, one of 2170 s): **580 mA, about 2.4 W**. Awake with the display off, same boot, 1 h: 585 mAh, 584 mA,
-  2.5 W. Only the seven secondary CPUs are off in sleep; GPU, Wi-Fi, UFS, DDR and the rails the boot firmware left voted stay on,
-  and they dominate. The overnight run of 2026-11-10 (92 % to "86 %" in 5 h) was a frozen percentage: the counter, voltage and
-  current are the readings to trust.
-- Also seen in that run: a power source change (input suspended) at the moment iOS began idle sleep made powerd cancel it
-  (`PM notification cancel`, `idle revert`), and iOS never asked again while the display stayed off.
+- **Measured 2026-11-11: sleep saved almost nothing.** With the USB cable in and the charger input suspended (console
+  `batt hold N`, board property 54), the battery's charge counter (1 mAh steps) fell 360 mAh in 0.62 h that held one 63 s and one
+  2170 s sleep (about 98 % of the window asleep): about **580 mA, 2.4 W**. Awake with the display off, same boot, 1 h: 585 mAh,
+  584 mA, 2.5 W. Approximate: the end reading of the sleep window was taken a few seconds after the wake, when the input had been
+  released and charging had resumed. Only the seven secondary CPUs are off in that sleep. Which parts take the 2.4 W is **not
+  measured yet**: no driver powers anything down (GPU with its GMU firmware running, Wi-Fi and its PCIe link, the UFS link, MDSS/DSI
+  with the panel blanked but not asleep, USB, the rails and clocks the boot firmware left on). In the idle log the CPUs sit at their
+  lowest frequency with a few permille of load, and the GPU sensor is the warmest (46-47 C against 45 C).
+- Also seen in that run: iOS's idle sleep at 102 s was cancelled (`PM notification cancel (pid 18, powerd)`, `idle revert`) a few
+  seconds after the input was suspended, and iOS did not ask again in the following hour with the display off. That the power
+  source change caused the cancel is likely but not shown.
 - **Fixed 2026-11-09: panic minutes after a wake.** A boot reset 85 s after a power key wake; the panic log
   (`houji_panic_log=1`, see `log-capture.md`) of a later sleep test showed `wait_while_equals32 … timeout` in
   `task_restartable_ranges_synchronize` (CommCenter), with only CPU0 answering the panic's debugger IPI (all eight answer
