@@ -481,10 +481,9 @@ void SweetCPU::bootSleep(void) {
   uint64_t tick, limit = 0;
   nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &tick);
   if (maxS) nanoseconds_to_absolutetime((uint64_t)maxS * NSEC_PER_SEC, &limit);
-  // console "pw sleep N": this sleep alone ends after N seconds, as a full wake without a key press
-  const uint32_t labS = __atomic_exchange_n(&HoujiPower::labSeconds, 0u, __ATOMIC_ACQ_REL);
-  uint64_t lab = 0;
-  if (labS) nanoseconds_to_absolutetime((uint64_t)labS * NSEC_PER_SEC, &lab);
+  // console "pw sleep N": a full wake without a key press N seconds after the command (a CNTVCT deadline, so it also ends a sleep
+  // that iOS re-entered after one of its own dark wakes)
+  const uint64_t lab = __atomic_load_n(&HoujiPower::labUntil, __ATOMIC_ACQUIRE);
   houji_gic_sleep_mask(1);
   HoujiPower::enter();
   houji_usb_sleep_probe(0);
@@ -503,7 +502,7 @@ void SweetCPU::bootSleep(void) {
     const uint64_t now = __builtin_arm_rsr64("CNTVCT_EL0");
     if (limit && now - t0 >= limit) {reason = 2; break;}
     if (testKey && now - t0 >= testKey) {reason = 1; break;}
-    if (lab && now - t0 >= lab) {reason = 4; break;}
+    if (lab && now >= lab) {reason = 4; break;}
     if (wakeDeadline && now >= wakeDeadline) {reason = 3; break;}
     __builtin_arm_wsr64("CNTV_CVAL_EL0", now + tick);
     __builtin_arm_wsr64("CNTV_CTL_EL0", 1);   // enabled, not masked: its interrupt (pending, masked here) ends WFI
@@ -536,7 +535,7 @@ void SweetCPU::bootSleep(void) {
   // A key wake is a user wake: the root domain promotes it to full wake, and the buttons driver reports the press if the display
   // is still off 300 ms later (as the wake press lights an iPhone). Timed wakes stay dark wakes.
   if (reason == 1) {houji_pm_next_wake_is_user(); houji_buttons_wake_press();}
-  if (reason == 4) houji_pm_next_wake_is_user();
+  if (reason == 4) {__atomic_store_n(&HoujiPower::labUntil, 0ULL, __ATOMIC_RELEASE); houji_pm_next_wake_is_user();}
   if (reason == 3 && wakeSlot < 5) __atomic_store_n(&wakeAt[wakeSlot], 0ULL, __ATOMIC_RELEASE);   // one-shot
   IOLog("HOUJI SLEEP: woke after %llu ms (%s%s), %llu polls; sleep %u; interrupts were %s\n", ns / 1000000,
         reason == 1 ? "power key" : reason == 3 ? "scheduled wake" : reason == 4 ? "measurement" : "time limit", reason == 1 && testKey ? ", test" : "", polls,

@@ -263,6 +263,14 @@ class ShengBattery : public IOPMPowerSource {
 #undef R
         return kIOReturnSuccess;
     }
+    // "batt refresh": a new read cycle now instead of at the next 60 s tick (cycles= in the report counts the finished ones)
+    static IOReturn refreshNowAction(OSObject *owner, void *, void *, void *, void *) {
+        ShengBattery *self = OSDynamicCast(ShengBattery, owner);
+        if (!self || !self->wasUp) return kIOReturnNotReady;
+        sheng_battmgr_refresh(&self->bm, false);
+        self->handle(BmAnswer);
+        return kIOReturnSuccess;
+    }
 public:
     void command(const char *what) {
         if (!strncmp(what, "hold ", 5)) {
@@ -272,7 +280,9 @@ public:
             loop->runAction(&ShengBattery::holdAction, this, (void *)(uintptr_t)seconds);
         } else if (!strcmp(what, "report") || !*what) {
             loop->runAction(&ShengBattery::reportAction, this);
-        } else IOLog("HOUJI BATT: commands: batt report | batt hold SECONDS (0 releases)\n");
+        } else if (!strcmp(what, "refresh")) {
+            loop->runAction(&ShengBattery::refreshNowAction, this);
+        } else IOLog("HOUJI BATT: commands: batt report | batt refresh | batt hold SECONDS (0 releases)\n");
     }
 private:
     static void refreshAction(OSObject *owner, IOTimerEventSource *sender) {

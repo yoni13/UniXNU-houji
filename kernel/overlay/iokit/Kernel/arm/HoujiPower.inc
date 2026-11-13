@@ -9,15 +9,16 @@
  * Console:
  *   pw census            which clocks, root generators, PLLs and power domains of GCC, GPUCC and DISPCC are on (reads only)
  *   pw off MASK          the hooks for every later sleep (hex)
- *   pw sleep N [MASK]    one sleep of N seconds with these hooks (default: the current mask), then a full wake without a key press
- *                        (the display stays off): for measuring a configuration from the battery's charge counter
+ *   pw sleep N [MASK]    sleep now with these hooks (default: the current mask) and wake fully, without a key press (the display
+ *                        stays off), N seconds after the command: for measuring a configuration from the battery's charge counter
  */
 #include "HoujiClockCensus.h"
 extern "C" int houji_ufs_hibernate(int enter, uint64_t *status);
 extern "C" void houji_sleep_now(void);
 namespace HoujiPower {
 enum {kDvfsLowest = 1, kUfsHibernate = 2};
-static volatile uint32_t sleepOff, labSeconds;
+static volatile uint32_t sleepOff;
+static volatile uint64_t labUntil;
 static bool parsed;
 static uint32_t applied, savedRow[HoujiCpuDvfs::domains];
 static int ufsEnter, ufsExit;
@@ -135,8 +136,10 @@ extern "C" void houji_power_command(const char *what) {
     const char *rest = number(what + 6, &seconds, 10);
     if (!rest || seconds < 5 || seconds > 7200) {IOLog("HOUJI POWER: pw sleep N [MASK], N 5..7200 s\n"); return;}
     if (number(rest, &m, 16)) sleepOff = m;
-    __atomic_store_n(&labSeconds, seconds, __ATOMIC_RELEASE);
-    IOLog("HOUJI POWER: one sleep of %u s with hooks %x\n", seconds, mask());
+    uint64_t ticks = 0;
+    nanoseconds_to_absolutetime((uint64_t)seconds * NSEC_PER_SEC, &ticks);
+    __atomic_store_n(&labUntil, __builtin_arm_rsr64("CNTVCT_EL0") + ticks, __ATOMIC_RELEASE);
+    IOLog("HOUJI POWER: sleep until %u s from now with hooks %x\n", seconds, mask());
     houji_sleep_now();
   } else IOLog("HOUJI POWER: pw census | pw off MASK | pw sleep N [MASK]; hooks %x\n", mask());
 }
