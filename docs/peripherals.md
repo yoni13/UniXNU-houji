@@ -147,6 +147,29 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
 - Also seen in that run: iOS's idle sleep at 102 s was cancelled (`PM notification cancel (pid 18, powerd)`, `idle revert`) a few
   seconds after the input was suspended, and iOS did not ask again in the following hour with the display off. That the power
   source change caused the cancel is likely but not shown.
+- **Measured 2026-11-13: where the idle power goes (first round).** The "charge counter" is not a coulomb counter: it stayed at
+  2588 mAh for 9 min at about 700 mA and then fell 82 mAh at once, together with the percentage; windows under an hour cannot be
+  measured with it. The fuel gauge's current reading is usable but only while awake, so parts were compared awake (no
+  `houji_sleep`), display off by iOS, input suspended, one boot per configuration, 11-15 read cycles each over 2-3 min
+  (`perf-test/awake-lab.sh`, median of current x voltage; about every third sample is 0.3-0.8 W higher):
+
+  | Configuration | Median | Change |
+  |---|---|---|
+  | everything started (Wi-Fi, Bluetooth), panel blanked | 2.49 W | |
+  | same boot, panel asleep (`screen sleepin 1`, DCS 0x10) | 2.26 W | -0.23 W |
+  | same boot, panel asleep and CPUs 1-7 off (`cpu off N`) | 2.31 W | none visible (noisier: 2.07-2.75 W) |
+  | `houji_wifi=0`, panel blanked | 2.22 W | -0.27 W |
+  | `houji_wifi=0`, no `houji_bt`, panel blanked | 2.19 W | -0.03 W (within the spread) |
+
+  One boot each, so boot-to-boot variation is not known. Panel sleep and Wi-Fi together account for about 0.5 W; about 2 W remains
+  with neither, not attributed: GPU (GX on, GMU running), UFS link, USB controller and PHYs, MDSS/DSI, ADSP, and the SoC's shared
+  rails, buses and memory, which never enter a low-power state (no CPU idle state below WFI, no RPMh sleep votes).
+- **Sleep hooks and tools** (`arm/HoujiPower.inc`): `houji_sleep_off=MASK` / console `pw off MASK` (1: CPU frequency domains to their
+  lowest row during sleep, applied on the phone; 2: UFS link HIBERN8, **not working**: the host reported not idle (-4) at every
+  attempt, cause not read yet); `pw sleep N [MASK]` sleeps and wakes fully N seconds later without a key (verified: 15-120 s
+  sleeps woke on time); `pw census` lists the clocks and power domains that are on in GCC and GPUCC (46 of 116 GCC branches:
+  USB, UFS, PCIe0, QUP, GPU buses). Not measured: what the hooks save (needs hour-long windows).
+- Open: a sleep forced while the display is on (`pw sleep`, console `sleep`) leaves the panel lit through the sleep.
 - **Fixed 2026-11-09: panic minutes after a wake.** A boot reset 85 s after a power key wake; the panic log
   (`houji_panic_log=1`, see `log-capture.md`) of a later sleep test showed `wait_while_equals32 … timeout` in
   `task_restartable_ranges_synchronize` (CommCenter), with only CPU0 answering the panic's debugger IPI (all eight answer
