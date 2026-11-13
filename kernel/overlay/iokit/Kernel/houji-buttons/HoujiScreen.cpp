@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Panel power for iOS's display state. backboardd switches the display with IOMobileFramebuffer selector 12 (scalar 0 off, 1 on: seen
 // on every power-key sleep and wake and on auto-lock); SweetFramebuffer forwards it here. Off: brightness 0, then DCS display off (0x28)
-// and, with houji_panel_sleep=1, sleep in (0x10). On: sleep out (0x11, 120 ms) when it slept, display on (0x29), then the brightness
+// and, with houji_panel_sleep=1 (the default with houji_sleep=1), sleep in (0x10). On: sleep out (0x11, 120 ms) when it slept, display on (0x29), then the brightness
 // read back from the panel at start (DCS 0x52). Nothing else changes the panel's state: a touch on a dark screen does not light it,
 // matching iOS, which ignores touches while its display is off.
 // iOS's own idle timer never fires on this port (Auto-Lock set, no dim or sleep request ever arrives), so with the display on and no
@@ -118,7 +118,9 @@ void screenThread(void *, wait_result_t) {
     if (!gMap) {st[0] = -1; return;}
     gDsi = reinterpret_cast<volatile uint8_t *>(gMap->getVirtualAddress());
     gCmd.io = {nullptr, rd, wr};
-    unsigned sleepIn = 0; PE_parse_boot_argn("houji_panel_sleep", &sleepIn, sizeof sleepIn);
+    // sleep in at display-off: with houji_sleep=1 unless houji_panel_sleep=0 (measured 0.23 W less than a blanked panel)
+    unsigned sleepIn = 0; PE_parse_boot_argn("houji_sleep", &sleepIn, sizeof sleepIn);
+    PE_parse_boot_argn("houji_panel_sleep", &sleepIn, sizeof sleepIn);
     gSleepIn = sleepIn != 0;
     unsigned level = 0;
     if (PE_parse_boot_argn("houji_screen_level", &level, sizeof level) && level >= HBL_MIN && level <= HBL_MAX) gLevel = level;

@@ -218,6 +218,18 @@ class ShengBattery : public IOPMPowerSource {
             IOSimpleLockUnlock(self->ringLock);
             if (!length) break;
             const int result = sheng_battmgr_receive(&self->bm, data, length);
+            if (result == BmCycleDone && self->wakeReports) {
+                // The read cycles that end right after a wake from system sleep. The DSP was not asleep: when its current reading is
+                // older than the wake, this is the battery current of the sleep itself. ms: since the wake / since the request.
+                const ShengBattmgr &b = self->bm;
+                uint64_t now; absolutetime_to_nanoseconds(mach_absolute_time(), &now);
+                IOLog("HOUJI BATT WAKE: n=%u ms-after-wake=%llu ms-after-request=%llu uV=%d uA=%d input-suspend=%d usb-online=%d cycles=%u\n",
+                      3 - self->wakeReports, (now - self->wakeNs) / 1000000, (now - self->wakeRequestNs) / 1000000,
+                      ((b.valid >> BmVoltage) & 1) ? b.value[BmVoltage] : -1, ((b.valid >> BmCurrent) & 1) ? b.value[BmCurrent] : -1,
+                      ((b.valid >> BmInputSuspend) & 1) ? b.value[BmInputSuspend] : -1,
+                      ((b.valid >> BmUsbOnline) & 1) ? b.value[BmUsbOnline] : -1, b.cycles_done);
+                if (--self->wakeReports) {sheng_battmgr_refresh(&self->bm, 0); self->pump();}
+            }
             if (result == BmAnswer || result == BmCycleDone) self->request->cancelTimeout();
             self->handle(result);
         }
@@ -263,6 +275,18 @@ class ShengBattery : public IOPMPowerSource {
 #undef R
         return kIOReturnSuccess;
     }
+    uint32_t wakeReports = 0;
+    uint64_t wakeNs = 0, wakeRequestNs = 0;
+    static IOReturn wakeAction(OSObject *owner, void *arg0, void *, void *, void *) {
+        ShengBattery *self = OSDynamicCast(ShengBattery, owner);
+        if (!self || !self->wasUp) return kIOReturnNotReady;
+        self->wakeNs = *(const uint64_t *)arg0;
+        absolutetime_to_nanoseconds(mach_absolute_time(), &self->wakeRequestNs);
+        self->wakeReports = 2;
+        sheng_battmgr_refresh(&self->bm, 0);
+        self->handle(BmAnswer);
+        return kIOReturnSuccess;
+    }
     // "batt refresh": a new read cycle now instead of at the next 60 s tick (cycles= in the report counts the finished ones)
     static IOReturn refreshNowAction(OSObject *owner, void *, void *, void *, void *) {
         ShengBattery *self = OSDynamicCast(ShengBattery, owner);
@@ -272,6 +296,7 @@ class ShengBattery : public IOPMPowerSource {
         return kIOReturnSuccess;
     }
 public:
+    void wake(uint64_t wakeNanoseconds) {loop->runAction(&ShengBattery::wakeAction, this, &wakeNanoseconds);}
     void command(const char *what) {
         if (!strncmp(what, "hold ", 5)) {
             uint32_t seconds = 0;
@@ -343,6 +368,10 @@ extern "C" void sheng_battery_start(void) {
 }
 
 // USB console "batt ..."
+// After a wake from system sleep (SweetCPU, from a thread): read the battery now and report it (HOUJI BATT WAKE)
+extern "C" void houji_batt_wake_sample(uint64_t wakeNanoseconds) {
+    if (gBattery) gBattery->wake(wakeNanoseconds);
+}
 extern "C" void houji_batt_command(const char *what) {
     if (gBattery) gBattery->command(what);
     else IOLog("HOUJI BATT: no battery service\n");

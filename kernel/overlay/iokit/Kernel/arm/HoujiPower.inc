@@ -6,6 +6,11 @@
  * boot CPU with interrupts masked and every other CPU off: no logging, no blocking; results are kept and printed after the wake.
  *   1  all four CPU frequency domains to their lowest row for the sleep (the governor thread is frozen where the sleep caught it)
  *   2  the UFS link into HIBERN8 (houji_ufs_hibernate)
+ * Measurement only (never set these in houji_sleep_off for use):
+ *   80   the boot CPU spins instead of waiting in WFI: a known extra load, to check that a reading reflects the sleep
+ *   100  GPU off and NOT restored: GX and CX-GMU clock branches off, then both power domains collapsed (GPUCC). The GPU is dead
+ *        until the next boot: read the battery at the wake, then reboot.
+ *   200  display controller off and NOT restored: both MDSS power domains collapsed (DISPCC). Reboot afterwards.
  * Console:
  *   pw census            which clocks, root generators, PLLs and power domains of GCC, GPUCC and DISPCC are on (reads only)
  *   pw off MASK          the hooks for every later sleep (hex)
@@ -16,7 +21,21 @@
 extern "C" int houji_ufs_hibernate(int enter, uint64_t *status);
 extern "C" void houji_sleep_now(void);
 namespace HoujiPower {
-enum {kDvfsLowest = 1, kUfsHibernate = 2};
+enum {kDvfsLowest = 1, kUfsHibernate = 2, kSpin = 0x80, kGpuKill = 0x100, kMdssKill = 0x200};
+static volatile uint32_t *gpucc, *dispcc;
+static uint32_t killSeen[4];
+static void dsbDelay(unsigned us) {__asm__ volatile("dsb sy" ::: "memory"); IODelay(us);}
+// from a thread, before the sleep: the windows the kill switches write
+static void mapKill(uint32_t m) {
+  auto map = [](uint64_t base, uint32_t size) -> volatile uint32_t * {
+    IODeviceMemory *d = IODeviceMemory::withRange(base, size);
+    IOMemoryMap *k = d ? d->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (d) d->release();
+    return k ? (volatile uint32_t *)k->getVirtualAddress() : nullptr;   // kept for good
+  };
+  if ((m & kGpuKill) && !gpucc) gpucc = map(0x3d90000ULL, 0xa000);
+  if ((m & kMdssKill) && !dispcc) dispcc = map(0xaf00000ULL, 0x20000);
+}
 static volatile uint32_t sleepOff;
 static volatile uint64_t labUntil;
 static bool parsed;
@@ -44,6 +63,19 @@ static void enter(void) {
     ufsEnter = houji_ufs_hibernate(1, &ufsEnterStatus);
     if (!ufsEnter) applied |= kUfsHibernate;
   }
+  if (m & kSpin) applied |= kSpin;
+  if ((m & kGpuKill) && gpucc && !(applied & kGpuKill)) {
+    gpucc[0x90a8 / 4] &= ~1u; gpucc[0x913c / 4] &= ~1u; dsbDelay(200);   // gx_gfx3d, cx_gmu branches
+    gpucc[0x905c / 4] |= 1u; dsbDelay(500);                                 // GX: SW_COLLAPSE
+    gpucc[0x9108 / 4] |= 1u; dsbDelay(2000);                                // CX
+    killSeen[0] = gpucc[0x905c / 4]; killSeen[1] = gpucc[0x9108 / 4];
+    applied |= kGpuKill;
+  }
+  if ((m & kMdssKill) && dispcc && !(applied & kMdssKill)) {
+    dispcc[0x9000 / 4] |= 1u; dispcc[0xb000 / 4] |= 1u; dsbDelay(2000);
+    killSeen[2] = dispcc[0x9000 / 4]; killSeen[3] = dispcc[0xb000 / 4];
+    applied |= kMdssKill;
+  }
 }
 static void leave(void) {
   if (applied & kUfsHibernate) ufsExit = houji_ufs_hibernate(0, &ufsExitStatus);
@@ -56,8 +88,8 @@ static void leave(void) {
   }
 }
 static void report(void) {
-  IOLog("HOUJI POWER: sleep hooks asked %x applied %x; ufs enter %d (%llx) exit %d (%llx)\n", mask(), applied, ufsEnter, ufsEnterStatus,
-        ufsExit, ufsExitStatus);
+  IOLog("HOUJI POWER: sleep hooks asked %x applied %x; ufs enter %d (%llx) exit %d (%llx); gdsc gx=%08x cx=%08x mdss=%08x int2=%08x\n",
+        mask(), applied, ufsEnter, ufsEnterStatus, ufsExit, ufsExitStatus, killSeen[0], killSeen[1], killSeen[2], killSeen[3]);
 }
 
 static void censusThread(void *, wait_result_t) {
@@ -79,8 +111,9 @@ static void censusThread(void *, wait_result_t) {
     IOLog("HOUJI POWER CENSUS: gcc votes 52000=%08x 52008=%08x 52010=%08x 52018=%08x 52020=%08x 52028=%08x gdsc-collapse 5214c=%08x "
           "gpu-ahb=%08x disp-ahb=%08x\n", va[0][0x52000 / 4], va[0][0x52008 / 4], va[0][0x52010 / 4], va[0][0x52018 / 4],
           va[0][0x52020 / 4], va[0][0x52028 / 4], va[0][0x5214c / 4], gpuAhb, dispAhb);
-    if (gpuAhb >> 31) va[1] = nullptr;
-    if (dispAhb >> 31) va[2] = nullptr;
+    // enabled (bit 0); bit 31 also reads "off" while hardware gating idles the clock
+    if (!(gpuAhb & 1)) va[1] = nullptr;
+    if (!(dispAhb & 1)) va[2] = nullptr;
   }
   for (unsigned b = 0; b < blocks; b++) {
     if (!va[b]) {IOLog("HOUJI POWER CENSUS: %s not read (not mapped, or its bus clock is off)\n", houjiCensusBlocks[b].name); continue;}
@@ -129,13 +162,13 @@ extern "C" void houji_power_command(const char *what) {
     if (kernel_thread_start(censusThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
   } else if (!strncmp(what, "off ", 4)) {
     uint32_t m = mask();
-    if (number(what + 4, &m, 16)) sleepOff = m;
+    if (number(what + 4, &m, 16)) {mapKill(m); sleepOff = m;}
     IOLog("HOUJI POWER: sleep hooks %x\n", mask());
   } else if (!strncmp(what, "sleep ", 6)) {
     uint32_t seconds = 0, m = mask();
     const char *rest = number(what + 6, &seconds, 10);
     if (!rest || seconds < 5 || seconds > 7200) {IOLog("HOUJI POWER: pw sleep N [MASK], N 5..7200 s\n"); return;}
-    if (number(rest, &m, 16)) sleepOff = m;
+    if (number(rest, &m, 16)) {mapKill(m); sleepOff = m;}
     uint64_t ticks = 0;
     nanoseconds_to_absolutetime((uint64_t)seconds * NSEC_PER_SEC, &ticks);
     __atomic_store_n(&labUntil, __builtin_arm_rsr64("CNTVCT_EL0") + ticks, __ATOMIC_RELEASE);

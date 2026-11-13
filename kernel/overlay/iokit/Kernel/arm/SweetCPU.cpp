@@ -445,6 +445,11 @@ extern "C" bool houji_smp_preflight(void) {
 }
 
 void SweetCPU::free(void) { OSSafeReleaseNULL(cpuName); IOCPU::free(); }
+extern "C" void houji_batt_wake_sample(uint64_t wakeNanoseconds);
+static void battWakeThread(void *arg, wait_result_t) {
+  houji_batt_wake_sample((uint64_t)(uintptr_t)arg);
+  thread_terminate(current_thread());
+}
 // On the CPU going down, at the end of cpu_sleep (interrupts masked, caches cleaned): power it off.
 void SweetCPU::quiesceCPU(void) {
   if (!getCPUNumber()) panic("HOUJI SMP: quiesce of the boot CPU");
@@ -508,7 +513,8 @@ void SweetCPU::bootSleep(void) {
     __builtin_arm_wsr64("CNTV_CTL_EL0", 1);   // enabled, not masked: its interrupt (pending, masked here) ends WFI
     __builtin_arm_isb(ISB_SY);
     __builtin_arm_dsb(DSB_SY);
-    __builtin_arm_wfi();
+    if (HoujiPower::applied & HoujiPower::kSpin) {while (__builtin_arm_rsr64("CNTVCT_EL0") - now < tick) {}}
+    else __builtin_arm_wfi();
     polls++;
     houji_usb_sleep_probe(1);
     // what ended WFI: the highest pending interrupt. Only the timer passes the sleep mask (houji_gic_sleep_mask); acknowledge and
@@ -545,6 +551,12 @@ void SweetCPU::bootSleep(void) {
         pendingId[5], pendingCount[5]);
   houji_usb_sleep_probe(2);
   HoujiPower::report();
+  // the battery current right after a key or measurement wake (HOUJI BATT WAKE), read from a thread
+  if (reason == 1 || reason == 4) {
+    uint64_t wakeNs; absolutetime_to_nanoseconds(mach_absolute_time(), &wakeNs);
+    thread_t t;
+    if (kernel_thread_start(battWakeThread, (void *)(uintptr_t)wakeNs, &t) == KERN_SUCCESS) thread_deallocate(t);
+  }
 }
 // USB console "sleep": ask the root power domain to sleep now, as a sleep request from iOS would
 extern "C" void houji_sleep_now(void) {
