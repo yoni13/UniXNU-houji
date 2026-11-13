@@ -21,6 +21,7 @@
 #include "HoujiCpuPolicy.h"
 #include "HoujiSmpGic.h"
 #include "HoujiCpuDvfs.inc"
+#include "HoujiPower.inc"
 
 extern "C" void houji_secondary_entry(void);
 // sched_prim.h only exports this internal primitive to osfmk.
@@ -480,7 +481,12 @@ void SweetCPU::bootSleep(void) {
   uint64_t tick, limit = 0;
   nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &tick);
   if (maxS) nanoseconds_to_absolutetime((uint64_t)maxS * NSEC_PER_SEC, &limit);
+  // console "pw sleep N": this sleep alone ends after N seconds, as a full wake without a key press
+  const uint32_t labS = __atomic_exchange_n(&HoujiPower::labSeconds, 0u, __ATOMIC_ACQ_REL);
+  uint64_t lab = 0;
+  if (labS) nanoseconds_to_absolutetime((uint64_t)labS * NSEC_PER_SEC, &lab);
   houji_gic_sleep_mask(1);
+  HoujiPower::enter();
   houji_usb_sleep_probe(0);
   const uint64_t t0 = __builtin_arm_rsr64("CNTVCT_EL0");
   bool released = false;
@@ -497,6 +503,7 @@ void SweetCPU::bootSleep(void) {
     const uint64_t now = __builtin_arm_rsr64("CNTVCT_EL0");
     if (limit && now - t0 >= limit) {reason = 2; break;}
     if (testKey && now - t0 >= testKey) {reason = 1; break;}
+    if (lab && now - t0 >= lab) {reason = 4; break;}
     if (wakeDeadline && now >= wakeDeadline) {reason = 3; break;}
     __builtin_arm_wsr64("CNTV_CVAL_EL0", now + tick);
     __builtin_arm_wsr64("CNTV_CTL_EL0", 1);   // enabled, not masked: its interrupt (pending, masked here) ends WFI
@@ -517,6 +524,7 @@ void SweetCPU::bootSleep(void) {
     }
   }
   const uint64_t slept = __builtin_arm_rsr64("CNTVCT_EL0") - t0;
+  HoujiPower::leave();
   houji_gic_sleep_mask(0);
   __builtin_arm_wsr64("CNTV_CVAL_EL0", cval);
   __builtin_arm_wsr64("CNTV_CTL_EL0", ctl);
@@ -528,14 +536,16 @@ void SweetCPU::bootSleep(void) {
   // A key wake is a user wake: the root domain promotes it to full wake, and the buttons driver reports the press if the display
   // is still off 300 ms later (as the wake press lights an iPhone). Timed wakes stay dark wakes.
   if (reason == 1) {houji_pm_next_wake_is_user(); houji_buttons_wake_press();}
+  if (reason == 4) houji_pm_next_wake_is_user();
   if (reason == 3 && wakeSlot < 5) __atomic_store_n(&wakeAt[wakeSlot], 0ULL, __ATOMIC_RELEASE);   // one-shot
   IOLog("HOUJI SLEEP: woke after %llu ms (%s%s), %llu polls; sleep %u; interrupts were %s\n", ns / 1000000,
-        reason == 1 ? "power key" : reason == 3 ? "scheduled wake" : "time limit", reason == 1 && testKey ? ", test" : "", polls,
+        reason == 1 ? "power key" : reason == 3 ? "scheduled wake" : reason == 4 ? "measurement" : "time limit", reason == 1 && testKey ? ", test" : "", polls,
         sleepCount, enabled ? "enabled" : "masked");
   IOLog("HOUJI SLEEP: pending after WFI (INTID:count) %u:%u %u:%u %u:%u %u:%u %u:%u %u:%u\n", pendingId[0], pendingCount[0],
         pendingId[1], pendingCount[1], pendingId[2], pendingCount[2], pendingId[3], pendingCount[3], pendingId[4], pendingCount[4],
         pendingId[5], pendingCount[5]);
   houji_usb_sleep_probe(2);
+  HoujiPower::report();
 }
 // USB console "sleep": ask the root power domain to sleep now, as a sleep request from iOS would
 extern "C" void houji_sleep_now(void) {

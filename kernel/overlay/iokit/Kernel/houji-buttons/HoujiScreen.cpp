@@ -14,7 +14,8 @@
 // Brightness: HoujiBacklight below answers iOS's AppleARMBacklight queries (lonzzi/UniXNU-houji's approach: the registry object stays
 // HoujiBacklight, only io_object_conforms_to and backboardd's property writes are extended, see patches/local.patch IOUserClient.cpp)
 // and hands CoreBrightness's levels (0..65536, FadePeriod) to the same thread, so one owner drives the command FIFO.
-// USB console: "screen off", "screen on" (the panel only; iOS keeps its own state), "screen LEVEL" (25..2866).
+// USB console: "screen off", "screen on" (the panel only; iOS keeps its own state), "screen LEVEL" (25..2866), "screen sleepin 0|1"
+// (houji_panel_sleep while running).
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
@@ -261,7 +262,11 @@ extern "C" void houji_screen_power(int on) {
 // "off", "on", or a level 25..2866
 extern "C" void houji_screen_command(const char *what) {
     if (st[0] != 1) return;
-    if (!strcmp(what, "off")) postPower(1);
+    if (!strncmp(what, "sleepin ", 8)) {   // as houji_panel_sleep, changed while running; takes effect at the next "off"
+        gSleepIn = what[8] == '1';
+        IOLog("HOUJI SCREEN: panel sleep %s\n", gSleepIn ? "on" : "off");
+    }
+    else if (!strcmp(what, "off")) postPower(1);
     else if (!strcmp(what, "on")) postPower(2);
     else {unsigned v = 0; for (const char *c = what; *c >= '0' && *c <= '9'; ++c) v = v * 10 + (unsigned)(*c - '0');
           if (v >= HBL_MIN && v <= HBL_MAX) postLevel(v, false);}

@@ -815,3 +815,55 @@ extern "C" int native_ufs_part_read(uint32_t lun, uint64_t lba, uint32_t blocks,
   }
   return granted && hostRead4k((uint8_t)lun, lba, blocks, dst) == kIOReturnSuccess;
 }
+
+// System sleep (SweetCPU::bootSleep through HoujiPower.inc: one CPU left, interrupts masked, no thread can run): the link into
+// HIBERN8 (enter != 0) and back, with the UIC commands DME_HIBERNATE_ENTER (0x17) / EXIT (0x18), each waited for at most 500 ms.
+// Entered only with no request outstanding and the host lock free; the lock is then held until the exit, so a thread that was about
+// to issue a command waits. Returns 0 on success; on enter a negative value means "not entered, nothing changed". A failed exit
+// (retried once) poisons the transport: later commands fail instead of hanging. status: IS | HCS << 16 | polls (100 us) << 32.
+extern "C" int houji_ufs_hibernate(int enter, uint64_t *status)
+{
+  static bool hibernating;
+  if (status) *status = 0;
+  if (!gHost.ready || gHost.poisoned || !gHost.hc || !gHost.lock) return -1;
+  const uintptr_t hc = gHost.hc;
+  if (enter) {
+    if (hibernating) return -2;
+    if (!IOLockTryLock (gHost.lock)) return -3;
+    if (read32 (hc, 0x58) || read32 (hc, 0x70) || !(read32 (hc, 0x30) & 8)) {
+      IOLockUnlock (gHost.lock);
+      return -4;
+    }
+  } else if (!hibernating) {
+    return -2;
+  }
+  const uint32_t done = enter ? 0x40U : 0x20U;   // IS: UHES / UHXS
+  int result = -5;
+  for (unsigned attempt = 0; attempt < (enter ? 1U : 2U) && result; ++attempt) {
+    write32 (hc, 0x20, 0x460);                   // clear UHES, UHXS, UCCS
+    write32 (hc, 0x94, 0); write32 (hc, 0x98, 0); write32 (hc, 0x9c, 0);
+    __asm__ volatile ("dsb sy" ::: "memory");
+    write32 (hc, 0x90, enter ? 0x17 : 0x18);
+    __asm__ volatile ("dsb sy" ::: "memory");
+    uint32_t is = 0; uint64_t polls = 0;
+    for (; polls < 5000; ++polls) {
+      is = read32 (hc, 0x20);
+      if (is & done) break;
+      IODelay (100);
+    }
+    const uint32_t hcs = read32 (hc, 0x30);
+    write32 (hc, 0x20, is & 0x460);
+    if (status) *status = (uint64_t)(is & 0xffff) | (uint64_t)(hcs & 0xffff) << 16 | polls << 32;
+    // UPMCRS (HCS 10:8) 1: the power mode change (here: hibernate) completed locally
+    if ((is & done) && ((hcs >> 8) & 7) == 1) result = 0;
+  }
+  if (enter) {
+    if (result) {IOLockUnlock (gHost.lock); return result;}
+    hibernating = true;
+    return 0;
+  }
+  hibernating = false;
+  if (result) gHost.poisoned = true;
+  IOLockUnlock (gHost.lock);
+  return result;
+}
