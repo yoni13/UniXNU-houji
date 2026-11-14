@@ -358,7 +358,8 @@ static void handle_setup(void)
  * (houji_panic_recovery=1). The host armed the no-wipe recovery BCB. */
 static void reboot_thread(void *arg __unused,wait_result_t result __unused)
 {
-    printf("HOUJI DEBUG: reboot requested over USB; syncing filesystems\n");
+    extern int houji_ufs_arm_recovery_bcb(void);
+    printf("HOUJI DEBUG: reboot requested over USB; recovery request %d; syncing filesystems\n",houji_ufs_arm_recovery_bcb());
     reboot_kernel(RB_AUTOBOOT,(char *)"houji usb debug reboot");
     printf("HOUJI DEBUG: reboot_kernel returned\n");
     thread_terminate(current_thread());
@@ -668,6 +669,7 @@ static void watchdog_thread(void *arg,wait_result_t result __unused)
     unote("HOUJI USB: watchdog: console not configured after %u s (failed=%u events=%u); rebooting\n",seconds,u.failed,u.events);
     houji_usb_report();
     gesture_sleep_ms(25000);   /* one more saved checkpoint */
+    { extern int houji_ufs_arm_recovery_bcb(void); (void)houji_ufs_arm_recovery_bcb(); }
     reboot_kernel(RB_AUTOBOOT,(char *)"houji usb watchdog");
     thread_terminate(current_thread());
 }
