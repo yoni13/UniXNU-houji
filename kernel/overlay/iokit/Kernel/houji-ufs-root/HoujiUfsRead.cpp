@@ -563,41 +563,11 @@ extern "C" int houji_ufs_arm_recovery_bcb(void) {
   const char *why=setRecoveryBoot();
   return why?EIO:0;
 }
-// houji_boot_stay=1 (an image installed in boot_a): the boot image arms the recovery request on every start, so a failed start
-// comes back in OrangeFox. Once the system has run for two minutes the request is cleared, so the next power-on or restart starts
-// this system again instead of stopping in recovery. The console's "reboot" arms it again first (houji_ufs_arm_recovery_bcb).
-static const char *clearRecoveryBoot(void) {
-  static uint8_t block[4096],back[4096];
-  if(hostRead4k(0,1024,1,block)!=kIOReturnSuccess)return "BCB read";
-  bool armed=false;
-  for(unsigned i=0;i<864;i++)if(block[i]){armed=true;break;}
-  if(!armed)return nullptr;
-  bzero(block,864);
-  gRecoveryArmed=true;
-  IOReturn r=writeNativeBlocks(1024,1,block);
-  if(r==kIOReturnSuccess)r=flushNative();
-  gRecoveryArmed=false;
-  if(r!=kIOReturnSuccess)return "BCB write/flush";
-  if(hostRead4k(0,1024,1,back)!=kIOReturnSuccess || memcmp(block,back,sizeof(back)))return "BCB readback";
-  return nullptr;
-}
-static void stayAfterGoodStart(void) {
-  static int stay=-1; static bool done;
-  if(stay<0){int v=0;PE_parse_boot_argn("houji_boot_stay",&v,sizeof(v));stay=v==1;}
-  if(!stay || done)return;
-  uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
-  if(ns<120ULL*NSEC_PER_SEC)return;
-  done=true;
-  const char *why=clearRecoveryBoot();
-  IOLog("HOUJI RECOVERY: houji_boot_stay=1, up %llu s: recovery request %s; the next start is this system\n",ns/NSEC_PER_SEC,
-        why?why:"cleared (verified)");
-}
 extern "C" void houji_ufs_checkpoint(const char *stage,unsigned stopId) {
   initializeNativeFlags();
   if(!gLogEnabled && !gRootEnabled)return;
   IOLockLock(gCheckpointLock);
   ensureNative();nativeStage(stage);
-  stayAfterGoodStart();
   int target=0;PE_parse_boot_argn("houji_checkpoint_stop",&target,sizeof(target));
   bool panicProbeArmed=false;
   if(stopId==3 && target==3 && gLogEnabled && gReturnRecovery) {

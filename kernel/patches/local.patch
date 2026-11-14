@@ -3554,10 +3554,10 @@ index 94e9130..1d1f8b6 100644
  cpu_start(int cpu)
  {
 diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
-index 76582da..9143953 100644
+index 76582da..db1f0e8 100644
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
-@@ -742,12 +742,42 @@ ml_get_machine_mem(void)
+@@ -742,15 +742,55 @@ ml_get_machine_mem(void)
  	return machine_info.memory_size;
  }
  
@@ -3600,7 +3600,20 @@ index 76582da..9143953 100644
  		PEHaltRestart(kPERestartCPU);
  	} else {
  		printf("CPU halted\n");
-@@ -2049,7 +2079,7 @@ static inline uint64_t
++#if defined(SWEET) && SWEET
++		{
++			/* Shutdown: PSCI SYSTEM_OFF (the platform expert's halt ended in a restart). */
++			register uint64_t x0 __asm__("x0") = 0x84000008U;
++			__asm__ volatile("dsb sy\n\tsmc #0" : "+r"(x0) ::
++			    "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
++			    "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
++			    "cc", "memory");
++		}
++#endif
+ 		PEHaltRestart(kPEHaltCPU);
+ 	}
+ 	while (1) {
+@@ -2049,7 +2089,7 @@ static inline uint64_t
  nonspeculative_timebase(void)
  {
  #if defined(HAS_ACNTVCT)
@@ -3609,7 +3622,7 @@ index 76582da..9143953 100644
  #elif __ARM_ARCH_8_6__
  	return __builtin_arm_rsr64("CNTVCTSS_EL0");
  #else
-@@ -2164,6 +2194,18 @@ ml_get_decrementer(void)
+@@ -2164,6 +2204,18 @@ ml_get_decrementer(void)
  	return dec;
  }
  
