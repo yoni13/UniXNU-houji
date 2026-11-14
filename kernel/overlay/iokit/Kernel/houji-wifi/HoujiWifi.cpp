@@ -550,6 +550,10 @@ void wifiStack(volatile uint32_t *m, uint64_t barBytes, volatile uint32_t *cfg, 
     PE_parse_boot_argn("houji_wifi_debug", &gDebug, sizeof gDebug);
     PE_parse_boot_argn("houji_wifi_scan_policy", &nw_wifi_scan_policy, sizeof nw_wifi_scan_policy);
     PE_parse_boot_argn("houji_wifi_hw_mode", &nw_wifi_hw_mode, sizeof nw_wifi_hw_mode);
+    // Default: the dual MAC configuration is sent with no concurrent scans and no dual-radio modes. Left alone, the firmware scans with
+    // both radios at once and gives 5180-5320 MHz to the radio that also does 2.4 GHz, which receives nothing there on this phone
+    // (rx_clear at the idle floor with access points at -40 dBm on channels 36 and 52). houji_wifi_mac_config=0 restores that.
+    nw_wifi_mac_config[0] = 1;
     PE_parse_boot_argn("houji_wifi_mac_config", &nw_wifi_mac_config[0], sizeof(unsigned int));
     PE_parse_boot_argn("houji_wifi_mac_scan", &nw_wifi_mac_config[1], sizeof(unsigned int));
     PE_parse_boot_argn("houji_wifi_mac_fw", &nw_wifi_mac_config[2], sizeof(unsigned int));
