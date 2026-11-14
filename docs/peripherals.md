@@ -215,8 +215,15 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   setup, as Linux `dwc3_ep0_complete_data`. Verified (`perf-test/usb-sleep-test.sh`, DTR toggled every second through three
   sleeps): five such transfers ended, console answered after every wake. bootSleep also prints `HOUJI USB SLEEP` (controller
   events and DSTS during sleep).
-- Open: after some wakes the display turns off but the system does not idle-sleep again (cause not found). CommCenter crash-loops
-  every 15-25 s (no modem); disabling it breaks auto-lock (see Bluetooth).
+- **Fixed 2026-11-14: the system stayed awake with the display off after a cancelled idle sleep.** powerd cancels an idle sleep when
+  one of its scheduled wakes is seconds away or the power source changes (`PM notification cancel`, `idle revert`); afterwards the
+  root domain had idle sleep enabled, no preventers and **no idle timer pending** (console `pm`), and nothing asked again: a boot
+  stayed awake 10 min and more with the display off. With `houji_sleep=1` a board thread checks every 30 s while the display is
+  off and `IOPMrootDomain::houjiIdleRetry` re-arms the idle timer only in exactly that state (awake, idle sleep enabled, no idle
+  or system sleep preventers, system sleep allowed, no timer pending); the attempt is a normal idle sleep. Verified: plain boot
+  line, display off at 44 s, sleeps at 73 s, a re-arm at 83 s, sleeps at 105 s and 158 s (then asleep until iOS's next wake,
+  8 h away), UFS HIBERN8 on all three. CommCenter crash-loops every 15-25 s (no modem); disabling it breaks auto-lock (see
+  Bluetooth).
 
 ## Root volume (HFSX on UFS userdata through md0) — header guard
 - Incident (2026-11-09): after a USB-console reboot from iOS (`reboot_kernel`, which unmounts the root) the volume did not mount.
