@@ -1,0 +1,12 @@
+houji: the dual MAC configuration the board can set.
+--- a/src/nw_wifi.c	2026-11-15 01:35:09.272223216 +0800
++++ b/src/nw_wifi.c	2026-11-15 01:35:09.292529630 +0800
+@@ -21,6 +21,8 @@
+ unsigned int nw_wifi_scan_policy;
+ /* houji: the hardware mode index sent at start (kernel/ath12k/0002-houji-hw-mode.patch); 1 is what the driver always sent. */
+ unsigned int nw_wifi_hw_mode = 1;
++/* houji: send, scan bits, firmware mode bits of the dual MAC configuration (kernel/ath12k/0003-houji-mac-config.patch). */
++unsigned int nw_wifi_mac_config[3];
+ 
+ struct nw_wifi_stats nw_wifi_stats;
+ static void on_rx(struct ieee80211_hw *hw, struct sk_buff *skb) { (void)hw; nw_sta_rx(skb); }

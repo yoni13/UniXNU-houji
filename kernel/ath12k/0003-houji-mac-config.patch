@@ -1,0 +1,52 @@
+houji: the dual MAC configuration can be sent to the firmware (boot arguments houji_wifi_mac_config, _mac_scan, _mac_fw).
+--- a/wmi.c	2026-11-15 01:35:09.262691129 +0800
++++ b/wmi.c	2026-11-15 01:35:09.288350617 +0800
+@@ -4241,6 +4241,31 @@
+ 	return 0;
+ }
+ 
++/* houji: WMI_PDEV_SET_MAC_CONFIG (dual MAC configuration), as the vendor driver's policy manager sends it: which scans and
++ * connections may use both radios at once. Fixed parameters: pdev id, concurrent scan bits, firmware mode bits. */
++int houji_wmi_set_mac_config(struct ath12k_base *ab, u32 scan_bits, u32 fw_mode_bits);
++int houji_wmi_set_mac_config(struct ath12k_base *ab, u32 scan_bits, u32 fw_mode_bits)
++{
++	struct ath12k_wmi_base *wmi_ab = &ab->wmi_ab;
++	struct sk_buff *skb;
++	__le32 *cmd;
++	int ret;
++
++	skb = ath12k_wmi_alloc_skb(wmi_ab, 4 * sizeof(*cmd));
++	if (!skb)
++		return -ENOMEM;
++	cmd = (__le32 *)skb->data;
++	cmd[0] = ath12k_wmi_tlv_cmd_hdr(WMI_TAG_PDEV_SET_MAC_CONFIG_CMD, 4 * sizeof(*cmd));
++	cmd[1] = cpu_to_le32(WMI_PDEV_ID_SOC);
++	cmd[2] = cpu_to_le32(scan_bits);
++	cmd[3] = cpu_to_le32(fw_mode_bits);
++	ret = ath12k_wmi_cmd_send(&wmi_ab->wmi[0], skb, WMI_PDEV_SET_MAC_CONFIG_CMDID);
++	if (ret)
++		dev_kfree_skb(skb);
++	ath12k_info(ab, "houji: dual MAC configuration scan %08x mode %08x: %d\n", scan_bits, fw_mode_bits, ret);
++	return ret;
++}
++
+ int ath12k_wmi_set_hw_mode(struct ath12k_base *ab,
+ 			   enum wmi_host_hw_mode_config_type mode)
+ {
+--- a/core.c	2026-11-15 01:35:09.266440171 +0800
++++ b/core.c	2026-11-15 01:35:09.291944107 +0800
+@@ -952,6 +952,14 @@
+ 		/* houji: the index into the firmware's own list of modes (boot argument houji_wifi_hw_mode, default 1) */
+ 		extern unsigned int nw_wifi_hw_mode;
+ 		ret = ath12k_wmi_set_hw_mode(ab, nw_wifi_hw_mode);
++		{
++			/* houji: boot argument houji_wifi_mac_config=1 sends the dual MAC configuration
++			 * (houji_wifi_mac_scan, houji_wifi_mac_fw: the two bit fields, default 0 = one radio at a time) */
++			extern unsigned int nw_wifi_mac_config[3];
++			int houji_wmi_set_mac_config(struct ath12k_base *ab, u32 scan_bits, u32 fw_mode_bits);
++			if (!ret && nw_wifi_mac_config[0])
++				houji_wmi_set_mac_config(ab, nw_wifi_mac_config[1], nw_wifi_mac_config[2]);
++		}
+ 		if (ret) {
+ 			ath12k_err(ab, "failed to send dbs mode: %d\n", ret);
+ 			goto err_reo_cleanup;

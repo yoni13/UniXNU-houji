@@ -32,6 +32,7 @@ extern "C" void sheng_wifi_net_start(const uint8_t mac[6]);
 extern "C" void nw_wifi_ps_set(int on);          // the module (houji patch 0003)
 extern "C" unsigned int nw_wifi_scan_policy;     // the module (houji patch 0004): boot argument houji_wifi_scan_policy
 extern "C" unsigned int nw_wifi_hw_mode;         // the module (houji patch 0005): boot argument houji_wifi_hw_mode
+extern "C" unsigned int nw_wifi_mac_config[3];   // the module (houji patch 0006): houji_wifi_mac_config, _mac_scan, _mac_fw
 extern "C" uint64_t houji_dvfs_touch_time(void);  // HoujiCpuDvfs.inc: the last touch   // WifiNet.cpp: en0 and the registry entries the system looks for
 extern "C" int houji_modem_file(const char *path, uint8_t **data, size_t *size, size_t max);   // AdspFirmware.c
 
@@ -549,6 +550,9 @@ void wifiStack(volatile uint32_t *m, uint64_t barBytes, volatile uint32_t *cfg, 
     PE_parse_boot_argn("houji_wifi_debug", &gDebug, sizeof gDebug);
     PE_parse_boot_argn("houji_wifi_scan_policy", &nw_wifi_scan_policy, sizeof nw_wifi_scan_policy);
     PE_parse_boot_argn("houji_wifi_hw_mode", &nw_wifi_hw_mode, sizeof nw_wifi_hw_mode);
+    PE_parse_boot_argn("houji_wifi_mac_config", &nw_wifi_mac_config[0], sizeof(unsigned int));
+    PE_parse_boot_argn("houji_wifi_mac_scan", &nw_wifi_mac_config[1], sizeof(unsigned int));
+    PE_parse_boot_argn("houji_wifi_mac_fw", &nw_wifi_mac_config[2], sizeof(unsigned int));
     if (!arenaInit()) {native_wifi_stats[0] = (uint32_t)-20; return;}
     uint32_t route[3] = {};
     const char *why = houji_smmu_route_stream(0x1401, gArenaPa, gArena.bytes, route);
