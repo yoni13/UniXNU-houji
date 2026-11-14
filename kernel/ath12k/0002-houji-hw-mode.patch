@@ -1,0 +1,14 @@
+houji: the hardware mode index sent to the firmware at start can be chosen (boot argument houji_wifi_hw_mode).
+--- a/core.c	2026-11-15 01:24:14.310642119 +0800
++++ b/core.c	2026-11-15 01:24:14.344824378 +0800
+@@ -949,7 +949,9 @@
+ 
+ 	/* put hardware to DBS mode */
+ 	if (ab->hw_params->single_pdev_only) {
+-		ret = ath12k_wmi_set_hw_mode(ab, WMI_HOST_HW_MODE_DBS);
++		/* houji: the index into the firmware's own list of modes (boot argument houji_wifi_hw_mode, default 1) */
++		extern unsigned int nw_wifi_hw_mode;
++		ret = ath12k_wmi_set_hw_mode(ab, nw_wifi_hw_mode);
+ 		if (ret) {
+ 			ath12k_err(ab, "failed to send dbs mode: %d\n", ret);
+ 			goto err_reo_cleanup;

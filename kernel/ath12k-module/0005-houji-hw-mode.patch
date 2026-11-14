@@ -1,0 +1,12 @@
+houji: a hardware mode index the board can set.
+--- a/src/nw_wifi.c	2026-11-15 01:24:14.332382708 +0800
++++ b/src/nw_wifi.c	2026-11-15 01:24:14.345191730 +0800
+@@ -19,6 +19,8 @@
+ extern unsigned int ath12k_debug_mask;
+ /* houji: the scan policy handed to the firmware with every scan (kernel/ath12k/0001-houji-scan-policy.patch); the board sets it. */
+ unsigned int nw_wifi_scan_policy;
++/* houji: the hardware mode index sent at start (kernel/ath12k/0002-houji-hw-mode.patch); 1 is what the driver always sent. */
++unsigned int nw_wifi_hw_mode = 1;
+ 
+ struct nw_wifi_stats nw_wifi_stats;
+ static void on_rx(struct ieee80211_hw *hw, struct sk_buff *skb) { (void)hw; nw_sta_rx(skb); }

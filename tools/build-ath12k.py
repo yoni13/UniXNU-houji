@@ -78,7 +78,7 @@ def tool(name):
 
 keep = {'_nw_wifi_start', '_nw_wifi_step', '_nw_wifi_stop', '_nw_wifi_stats', '_nw_wifi_set_events', '_nw_wifi_scan', '_nw_wifi_bss_count',
         '_nw_wifi_bss_get', '_nw_wifi_connect', '_nw_wifi_disconnect', '_nw_wifi_tx', '_nw_wifi_status_get', '_nw_wifi_where',
-        '_nw_wifi_tx_reasons', '_nw_wifi_ps_set', '_nw_wifi_scan_policy'}
+        '_nw_wifi_tx_reasons', '_nw_wifi_ps_set', '_nw_wifi_scan_policy', '_nw_wifi_hw_mode'}
 objs = [o for _, o, _ in jobs]
 names = set()
 for o in objs:
