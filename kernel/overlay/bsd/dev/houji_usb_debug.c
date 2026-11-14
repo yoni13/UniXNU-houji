@@ -457,6 +457,57 @@ static void type_command(const char *text)
  * every running CPU. "pac keys" also writes the IA and GA keys at EL1 and signs and authenticates one pointer with EnIA set for
  * the length of the test; a hypervisor that traps key access or the instructions turns this into a panic, which is the answer.
  */
+/*
+ * Physical memory outside what this kernel owns (console "mem w ADDR", "mem r ADDR", "mem t ADDR LEN", hexadecimal): w fills
+ * 1 MiB with a pattern derived from each word's address, r counts the words that still hold it and shows the first four, t
+ * prints the printable text found there. For checking whether RAM keeps its contents across a restart, and for reading what
+ * another kernel left there.
+ */
+static uint64_t mem_hex(const char **s)
+{
+    uint64_t v=0;
+    while (**s==' ') ++*s;
+    for (;;++*s) {
+        const char c=**s;
+        if (c>='0' && c<='9') v=v<<4|(uint64_t)(c-'0');
+        else if (c>='a' && c<='f') v=v<<4|(uint64_t)(c-'a'+10);
+        else break;
+    }
+    return v;
+}
+static void mem_thread(void *arg,wait_result_t result __unused)
+{
+    const char *s=arg;const char op=*s++;
+    const uint64_t pa=mem_hex(&s)&~0xfffull;uint64_t length=op=='t'?mem_hex(&s):0x100000;
+    if (!pa || !length || length>0x1000000 || (op!='w' && op!='r' && op!='t')) printf("HOUJI MEM: mem w|r ADDR, mem t ADDR LEN\n");
+    else {
+        length=(length+0xfff)&~0xfffull;
+        const vm_offset_t va=ml_io_map(pa,length);
+        if (!va) printf("HOUJI MEM: cannot map %llx\n",pa);
+        else if (op=='w') {
+            for (uint64_t i=0;i<length;i+=8) *(volatile uint64_t *)(va+i)=(pa+i)*0x9e3779b97f4a7c15ull;
+            printf("HOUJI MEM: wrote pattern %llx +%llx\n",pa,length);
+        } else if (op=='r') {
+            uint64_t same=0;
+            for (uint64_t i=0;i<length;i+=8) same+=*(volatile uint64_t *)(va+i)==(pa+i)*0x9e3779b97f4a7c15ull;
+            printf("HOUJI MEM: %llx pattern words %llu of %llu; first %016llx %016llx %016llx %016llx\n",pa,same,length/8,
+                *(volatile uint64_t *)va,*(volatile uint64_t *)(va+8),*(volatile uint64_t *)(va+16),*(volatile uint64_t *)(va+24));
+        } else {
+            char line[100];unsigned n=0;uint64_t lines=0;
+            for (uint64_t i=0;i<length;++i) {
+                const char c=*(volatile char *)(va+i);
+                if (c>=32 && c<127 && n<sizeof(line)-1) line[n++]=c;
+                if (c=='\n' || n==sizeof(line)-1) {
+                    if (n) { line[n]=0;printf("HOUJI MEM| %s\n",line);if (!(++lines&31)) delay(20000); }
+                    n=0;
+                }
+            }
+            printf("HOUJI MEM: text end, %llu lines\n",lines);
+        }
+    }
+    thread_terminate(current_thread());
+}
+
 static struct { uint64_t isar1,isar2,signed_ptr,auth_ptr,ga; uint32_t seen; } pac_result[8];
 static void pac_xcall(void *arg)
 {
@@ -535,6 +586,11 @@ static void command_line(void)
     else if (!strcmp(u.command,"panic")) panic("HOUJI DEBUG: panic requested over USB");
     else if (!strncmp(u.command,"pw ",3)) { extern void houji_power_command(const char *); houji_power_command(u.command+3); }
     else if (!strcmp(u.command,"usb phy")) houji_usb_phy_state("now");
+    else if (!strncmp(u.command,"mem ",4) && u.command[4] && u.command[5]==' ') {
+        static char mem_request[64];thread_t t;
+        strlcpy(mem_request,u.command+4,sizeof(mem_request));
+        if (kernel_thread_start(mem_thread,mem_request,&t)==KERN_SUCCESS) thread_deallocate(t);
+    }
     else if (!strcmp(u.command,"pac") || !strcmp(u.command,"pac keys")) {
         thread_t t;
         if (kernel_thread_start(pac_thread,(void *)(uintptr_t)(u.command[3]!=0),&t)==KERN_SUCCESS) thread_deallocate(t);
