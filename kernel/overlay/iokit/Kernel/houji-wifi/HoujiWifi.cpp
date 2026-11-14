@@ -332,10 +332,13 @@ void pPoll() {}
 uint32_t gLogRepeats, gDebugLines, gDebug;
 bool has(const char *s, const char *w) {for (; *s; ++s) {size_t k = 0; while (w[k] && s[k] == w[k]) ++k; if (!w[k]) return true;} return false;}
 void pLog(int level, const char *line) {
-    if (has(line, "chan scan list") || has(line, "mac channel [")) {++gLogRepeats; return;}
-    if (level >= 7 && (!gDebug || gDebugLines >= 2000 || has(line, "htc rx completion") || has(line, "rx ce pipe") || has(line, "ext irq:") ||
-                       has(line, "event mgmt rx") || has(line, "mgmt rx event") || has(line, "chan info vdev_id") ||
-                       has(line, "scan event foreign channel"))) {++gLogRepeats; return;}
+    // houji_wifi_debug=2 also keeps the channel list sent to the firmware and the channel each scan step visits (limit 6000 lines).
+    const bool channels = has(line, "mac channel [") || has(line, "scan event foreign channel");
+    if (has(line, "chan scan list") || (channels && gDebug != 2)) {++gLogRepeats; return;}
+    if (level >= 7 && (!gDebug || gDebugLines >= (gDebug == 2 ? 6000u : 2000u) || has(line, "htc rx completion") || has(line, "rx ce pipe") ||
+                       has(line, "ext irq:") || has(line, "event mgmt rx") || has(line, "mgmt rx event") || has(line, "chan info vdev_id"))) {
+        ++gLogRepeats; return;
+    }
     static uint32_t recent[16];
     uint32_t h = 2166136261u;
     for (const char *c = line; *c; ++c) h = (h ^ static_cast<uint8_t>(*c)) * 16777619u;
