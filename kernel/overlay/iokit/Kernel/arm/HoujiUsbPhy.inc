@@ -206,3 +206,22 @@ void houji_usb_phy_cold(void) {
   IOSleep(20);
   note("HOUJI USB PHY: TEST houji_usb_cold=1: repeater off, PHYs and controller reset, reference off\n");
 }
+
+// Console "reboot bootloader": the PMIC reboot-reason cell (SDAM, SID 0 0x7100 + 0x48) set to "bootloader" and read back, so the
+// reset that follows stops in fastboot. With this system installed in boot_a that is the way back to a PC-driven start: OrangeFox
+// has no kernel of its own (it starts with boot_a's). Returns 0 when the cell was written and verified.
+extern "C" int houji_reboot_reason_bootloader(void);
+int houji_reboot_reason_bootloader(void) {
+  using namespace HoujiUsbPhy;
+  if (!openAll()) return 10;
+  br_found f;
+  int rc = br_find(&arb, &f);
+  if (rc) return rc;
+  if (!spmiObs) spmiObs = mapIo(0xc440000, ((uint64_t)BR_OBS_APID_STRIDE * f.apids + 0xfff) & ~0xfffull);
+  volatile uint32_t *chn = mapIo(0xc500000 + (uint64_t)BR_CHNL_APID_STRIDE * (uint32_t)f.apid, 0x1000);
+  if (!spmiObs || !chn) return 11;
+  uint8_t before = 0, after = 0;
+  rc = br_set_bootloader(spmiObs, chn - (BR_CHNL_APID_STRIDE * (uint32_t)f.apid) / 4, &arb, f.apid, &before, &after);
+  IOLog("HOUJI REBOOT: reason cell apid=%d owner=%d %02x -> %02x rc=%d\n", f.apid, f.owner, before, after, rc);
+  return rc;
+}

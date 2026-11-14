@@ -356,10 +356,11 @@ static void handle_setup(void)
 }
 /* XNU's own reboot: sync and unmount, then halt_all_cpus -> PSCI reset
  * (houji_panic_recovery=1). The host armed the no-wipe recovery BCB. */
-static void reboot_thread(void *arg __unused,wait_result_t result __unused)
+static void reboot_thread(void *arg,wait_result_t result __unused)
 {
     extern int houji_ufs_arm_recovery_bcb(void);
-    printf("HOUJI DEBUG: reboot requested over USB; recovery request %d; syncing filesystems\n",houji_ufs_arm_recovery_bcb());
+    if (arg) printf("HOUJI DEBUG: reboot to the bootloader requested over USB; syncing filesystems\n");
+    else printf("HOUJI DEBUG: reboot requested over USB; recovery request %d; syncing filesystems\n",houji_ufs_arm_recovery_bcb());
     reboot_kernel(RB_AUTOBOOT,(char *)"houji usb debug reboot");
     printf("HOUJI DEBUG: reboot_kernel returned\n");
     thread_terminate(current_thread());
@@ -492,6 +493,12 @@ static void command_line(void)
     }
     else if (!strncmp(u.command,"bt ",3)) { extern void houji_bt_command(const char *); houji_bt_command(u.command+3); }
     else if (!strncmp(u.command,"wifi ",5)) { extern void houji_wifi_command(const char *); houji_wifi_command(u.command+5); bzero(u.command,sizeof(u.command)); }
+    else if (!strcmp(u.command,"reboot bootloader")) {
+        extern int houji_reboot_reason_bootloader(void);
+        static bool requested;thread_t t;int rc=houji_reboot_reason_bootloader();
+        if (rc) printf("HOUJI DEBUG: reboot reason not set (%d); not rebooting\n",rc);
+        else if (!requested && kernel_thread_start(reboot_thread,(void *)1,&t)==KERN_SUCCESS) { requested=true;thread_deallocate(t); }
+    }
     else if (!strcmp(u.command,"reboot")) {
         static bool requested;thread_t t;
         if (requested) printf("HOUJI DEBUG: reboot already in progress\n");
@@ -658,7 +665,7 @@ static int identity(void)
     return huc_route(route,cbar,sctlr,((route>>16)&3)==0?read_reg(s,0x1800+4*cb):0)?1:0;
 }
 /* houji_usb_watchdog_s=N (tests of a power-on boot): no host has configured the console N seconds after the driver started ->
- * reboot (to recovery, the armed boot request), where the saved log tells why. */
+ * reboot to the bootloader (fastboot), where a PC can take over. */
 static void watchdog_thread(void *arg,wait_result_t result __unused)
 {
     unsigned seconds=(unsigned)(uintptr_t)arg;
@@ -669,7 +676,7 @@ static void watchdog_thread(void *arg,wait_result_t result __unused)
     unote("HOUJI USB: watchdog: console not configured after %u s (failed=%u events=%u); rebooting\n",seconds,u.failed,u.events);
     houji_usb_report();
     gesture_sleep_ms(25000);   /* one more saved checkpoint */
-    { extern int houji_ufs_arm_recovery_bcb(void); (void)houji_ufs_arm_recovery_bcb(); }
+    { extern int houji_reboot_reason_bootloader(void); printf("HOUJI USB: watchdog: bootloader reason %d\n",houji_reboot_reason_bootloader()); }
     reboot_kernel(RB_AUTOBOOT,(char *)"houji usb watchdog");
     thread_terminate(current_thread());
 }
