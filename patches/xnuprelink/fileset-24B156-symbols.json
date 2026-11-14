@@ -1015,6 +1015,48 @@
       "original_sha256": "461f0cd8c82fda303d244bd2e7d866dfa0a3a0e88e4e29eeaa32547988cb1a92",
       "native_symbol": "_ml_io_read8",
       "evidence": "Loads and returns one byte at x0. Directly precedes ml_io_read16, ml_io_read32 and ml_io_read64, which have the same shape for their widths. Source osfmk/arm64/machine_routines.c ml_io_read8; the native development build adds its timing checks around the same read. Ported from 0xfffffe000ad4e7c4 (order pair, identical masked instruction shape)."
+    },
+    {
+      "original": "0xfffffff00ac1a120",
+      "original_size": 80,
+      "original_sha256": "b9c0d3ff90b2a5986067ae4a76a5ddf507074b21d1a86b7669056e99ba9a1585",
+      "native_symbol": "_kern_os_zfree",
+      "evidence": "Twin of 0xfffffe000ad3f09c in kernelcache 38e6d9fa5f78 (gap-order pair), which the matcher names _kern_os_zfree there by reference-order; here the symbol order differs and no automatic match exists."
+    },
+    {
+      "original": "0xfffffff00ac90b24",
+      "original_size": 80,
+      "original_sha256": "02d9817fc1b280a475493cdd2deeeb876217128a728de0a96b401fba3dcceaf9",
+      "native_symbol": "_zfree",
+      "evidence": "Twin of 0xfffffe000adb6ff0 in kernelcache 38e6d9fa5f78 (gap-order pair), which the matcher names _zfree there by reference-order; here the symbol order differs and no automatic match exists."
+    },
+    {
+      "original": "0xfffffff00ac91768",
+      "original_size": 128,
+      "original_sha256": "f8f4b2a5adc6615a87770c06b662a826ebdb3715e8443383c87ecf7126f0921c",
+      "native_symbol": "_zone_require_ro",
+      "evidence": "Twin of 0xfffffe000adb7cbc in kernelcache 38e6d9fa5f78 (gap-order pair), which the matcher names _zone_require_ro there by reference-order; here the symbol order differs and no automatic match exists."
+    },
+    {
+      "original": "0xfffffff00ae39ab8",
+      "original_size": 84,
+      "original_sha256": "38ccecc4e61fc8b630c598e31681199739e1b958c09f3e8ea82f6ec51974d4dd",
+      "native_symbol": "_decmpfs_cnode_free",
+      "evidence": "Twin of 0xfffffe000af731ac in kernelcache 38e6d9fa5f78 (gap-order pair), which the matcher names _decmpfs_cnode_free there by reference-order; here the symbol order differs and no automatic match exists."
+    },
+    {
+      "original": "0xfffffff00b12b0ec",
+      "original_size": 120,
+      "original_sha256": "fc8553f14dd74420873123dd6f561039eeadb2b5085eacb6059851c9d5458956",
+      "native_symbol": "_proc_ppid",
+      "evidence": "Twin of 0xfffffe000b2626d8 in kernelcache 38e6d9fa5f78 (calls pair), which the matcher names _proc_ppid there by reference-order; here the symbol order differs and no automatic match exists."
+    },
+    {
+      "original": "0xfffffff00b18c728",
+      "original_size": 132,
+      "original_sha256": "2616bd9c14220811be4af120a05456937f60b69845c6c604645fa0107215d745",
+      "native_symbol": "_ubc_upl_commit_range",
+      "evidence": "Twin of 0xfffffe000b2c42f0 in kernelcache 38e6d9fa5f78 (calls pair), which the matcher names _ubc_upl_commit_range there by reference-order; here the symbol order differs and no automatic match exists."
     }
   ],
   "data": [
