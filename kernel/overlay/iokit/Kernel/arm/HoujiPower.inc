@@ -242,7 +242,8 @@ static void rpmhThread(void *, wait_result_t) {
 }
 struct VoteArgs {char name[9]; uint32_t value;};
 static void voteThread(void *arg, wait_result_t) {
-  VoteArgs v = *(VoteArgs *)arg; IOFreeType((VoteArgs *)arg, VoteArgs);
+  VoteArgs *heap = (VoteArgs *)arg;
+  VoteArgs v = *heap; IOFreeType(heap, VoteArgs);
   uint32_t address = 0;
   if (loadNames() && openRsc())
     for (unsigned i = 0; i < nameCount && !address; i++) if (!strncmp(names[i].id, v.name, 8)) address = names[i].address;
