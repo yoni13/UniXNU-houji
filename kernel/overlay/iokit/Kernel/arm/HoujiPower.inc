@@ -2,9 +2,10 @@
  * Power work for system sleep: what is switched down while the boot CPU waits in SweetCPU::bootSleep, and tools to find where the
  * power goes. Included by SweetCPU.cpp after HoujiCpuDvfs.inc.
  *
- * Sleep hooks (a mask; boot argument houji_sleep_off=MASK, default 0 = none; console "pw off MASK").
- * Measured in sleep (battery current read 40 ms after the wake): 2.12 W without hooks, 1.00 W with the UFS link in HIBERN8. Not the
- * default: a boot that used it 8 times lost its UFS transport 77 min after the last one (cause not found yet). enter() and leave() run on the
+ * Sleep hooks (a mask; boot argument houji_sleep_off=MASK; default 2, the UFS link, with houji_sleep=1, else 0; console "pw off MASK").
+ * Measured in sleep (battery current read 40 ms after the wake): 2.12 W without hooks, 1.00 W with the UFS link in HIBERN8. One
+ * boot that used it lost its UFS transport 77 min after the last HIBERN8 (cause not found; not reproduced in a 30-cycle stress
+ * test and a 90-min soak); a transport failure now logs HOUJI UFS POISON. houji_sleep_off=0 turns it off. enter() and leave() run on the
  * boot CPU with interrupts masked and every other CPU off: no logging, no blocking; results are kept and printed after the wake.
  *   1  all four CPU frequency domains to their lowest row for the sleep (the governor thread is frozen where the sleep caught it)
  *   2  the UFS link into HIBERN8 (houji_ufs_hibernate)
@@ -65,7 +66,8 @@ static uint64_t ufsEnterStatus, ufsExitStatus;
 static uint32_t mask(void) {
   if (!parsed) {
     parsed = true;
-    uint32_t v = 0;
+    uint32_t sleep = 0; PE_parse_boot_argn("houji_sleep", &sleep, sizeof sleep);
+    uint32_t v = sleep ? kUfsHibernate : 0;
     PE_parse_boot_argn("houji_sleep_off", &v, sizeof v);
     sleepOff = v;
   }

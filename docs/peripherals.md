@@ -147,7 +147,7 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
 - Also seen in that run: iOS's idle sleep at 102 s was cancelled (`PM notification cancel (pid 18, powerd)`, `idle revert`) a few
   seconds after the input was suspended, and iOS did not ask again in the following hour with the display off. That the power
   source change caused the cancel is likely but not shown.
-- **2026-11-14: UFS link in HIBERN8 halves sleep power, but is opt-in again (`houji_sleep_off=2`) after a storage failure.** Measured in sleep from the battery current
+- **2026-11-14: UFS link in HIBERN8 halves sleep power; the default with `houji_sleep=1` (`houji_sleep_off=0` turns it off).** Measured in sleep from the battery current
   that a read cycle started at the wake returns (`HOUJI BATT WAKE`, 25-45 ms after it; the fuel gauge keeps measuring while the SoC
   sleeps), 3-5 sleeps of 20 s per step, one boot per row group, charger input suspended (`perf-test/sleep-sample.py`):
 
@@ -155,7 +155,7 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   |---|---|
   | as before (panel blanked, nothing powered down) | 2.35 W (2.27-2.39) |
   | **panel asleep** (DCS 0x10; the default with `houji_sleep=1`) | **2.07-2.13 W** |
-  | + **UFS link in HIBERN8** (`houji_sleep_off=2`) | **1.00 W** (1.00-1.02) |
+  | + **UFS link in HIBERN8** (the default with `houji_sleep=1`) | **1.00 W** (1.00-1.02) |
   | same, 5 sleeps of 60 s; same boot without it: 1.81, 2.11 W | **0.99 W** (all 5) |
   | panel asleep + GPU power domains collapsed (GX/CX GDSC, measurement only, not restored) | 2.09 W |
   | + display controller domains collapsed (measurement only) | 2.09 W |
