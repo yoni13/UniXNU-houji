@@ -1,0 +1,16 @@
+houji: the scan policy for the firmware's two radios can be chosen (boot argument houji_wifi_scan_policy).
+--- a/wmi.c	2026-11-15 00:35:32.370192216 +0800
++++ b/wmi.c	2026-11-15 00:35:32.387784517 +0800
+@@ -2648,6 +2648,12 @@
+ 	cmd->num_ssids = cpu_to_le32(arg->num_ssids);
+ 	cmd->ie_len = cpu_to_le32(arg->extraie.len);
+ 	cmd->n_probes = cpu_to_le32(arg->n_probes);
++	{
++		/* houji: boot argument houji_wifi_scan_policy, the firmware's scan policy for its two radios
++		 * (scan_ctrl_flags_ext bits 1:0; 1 = one radio visits every channel). */
++		extern unsigned int nw_wifi_scan_policy;
++		cmd->scan_ctrl_flags_ext = cpu_to_le32(nw_wifi_scan_policy & 3);
++	}
+ 
+ 	ptr += sizeof(*cmd);
+ 

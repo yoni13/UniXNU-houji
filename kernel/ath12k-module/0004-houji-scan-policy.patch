@@ -1,0 +1,12 @@
+houji: a scan policy the board can set (the firmware's dual-radio scan never received anything on 5180-5320 MHz).
+--- a/src/nw_wifi.c	2026-11-15 00:35:51.442147429 +0800
++++ b/src/nw_wifi.c	2026-11-15 00:35:51.458286955 +0800
+@@ -17,6 +17,8 @@
+ void ath12k_wifi7_pci_exit(void);
+ int mhi_init_hook(void);
+ extern unsigned int ath12k_debug_mask;
++/* houji: the scan policy handed to the firmware with every scan (kernel/ath12k/0001-houji-scan-policy.patch); the board sets it. */
++unsigned int nw_wifi_scan_policy;
+ 
+ struct nw_wifi_stats nw_wifi_stats;
+ static void on_rx(struct ieee80211_hw *hw, struct sk_buff *skb) { (void)hw; nw_sta_rx(skb); }
