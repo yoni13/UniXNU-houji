@@ -22,6 +22,7 @@
 #include "HoujiSmpGic.h"
 #include "HoujiCpuDvfs.inc"
 #include "HoujiPower.inc"
+#include "HoujiUsbPhy.inc"
 
 extern "C" void houji_secondary_entry(void);
 // sched_prim.h only exports this internal primitive to osfmk.

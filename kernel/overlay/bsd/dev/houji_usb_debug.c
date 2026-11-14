@@ -33,7 +33,7 @@ extern const char *houji_smmu_route_stream(uint16_t, uint64_t, uint64_t, uint32_
 void houji_usb_debug_start(void);
 void houji_usb_report(void);
 /* Early USB lines leave the rolling log long before a checkpoint; keep them. */
-static char usb_notes[3072];
+static char usb_notes[8192];
 static unsigned usb_notes_n;
 static void note_add(const char *line,int n)
 {
@@ -43,6 +43,12 @@ static void note_add(const char *line,int n)
 }
 #define unote(...) do { char _l[200]; int _n=snprintf(_l,sizeof(_l),__VA_ARGS__); \
     printf("%s",_l); note_add(_l,_n<(int)sizeof(_l)?_n:(int)sizeof(_l)-1); } while (0)
+/* iokit/Kernel/arm/HoujiUsbPhy.inc: the USB 2 PHY bring-up a power-on boot needs, its register report, and the cold-state test. */
+extern int houji_usb_phy_start(void);
+extern void houji_usb_phy_state(const char *);
+extern void houji_usb_phy_cold(void);
+void houji_usb_note(const char *line);
+void houji_usb_note(const char *line) { unote("%s",line); }
 
 #define GCTL 0xc110
 #define GCTL_DSBLCLKGTNG 1u
@@ -163,17 +169,6 @@ static void wr(unsigned off,uint32_t v)
 {
     *(volatile uint32_t *)(u.regs+off)=v;
     __asm__ volatile("dsb sy" ::: "memory");
-}
-static void phys_write32(uint64_t pa,uint32_t v)
-{
-    *(volatile uint32_t *)pa=v;
-    __asm__ volatile("dsb sy" ::: "memory");
-}
-static uint32_t phys_read32(uint64_t pa)
-{
-    uint32_t v=*(volatile uint32_t *)pa;
-    __asm__ volatile("dmb oshld" ::: "memory");
-    return v;
 }
 /* Linux v6.12 dwc3_gadget_dctl_write_safe: do not replay link requests. */
 static void dctl_write(uint32_t v) { wr(DCTL,v&~LINK_REQUEST_MASK); }
@@ -485,6 +480,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"sleep")) { extern void houji_sleep_now(void); houji_sleep_now(); }
     else if (!strcmp(u.command,"panic")) panic("HOUJI DEBUG: panic requested over USB");
     else if (!strncmp(u.command,"pw ",3)) { extern void houji_power_command(const char *); houji_power_command(u.command+3); }
+    else if (!strcmp(u.command,"usb phy")) houji_usb_phy_state("now");
     else if (!strcmp(u.command,"pm")) { extern void houji_pm_report(void); houji_pm_report(); }
     else if (!strcmp(u.command,"batt") || !strncmp(u.command,"batt ",5)) { extern void houji_batt_command(const char *); houji_batt_command(u.command[4]?u.command+5:""); }
     else if (!strcmp(u.command,"gpu clients")) { extern void native_adreno_client_report(void); native_adreno_client_report(); }
@@ -660,6 +656,21 @@ static int identity(void)
     unote("HOUJI USB: SID40 route=%08x cbar=%08x sctlr=%08x\n",route,cbar,sctlr);
     return huc_route(route,cbar,sctlr,((route>>16)&3)==0?read_reg(s,0x1800+4*cb):0)?1:0;
 }
+/* houji_usb_watchdog_s=N (tests of a power-on boot): no host has configured the console N seconds after the driver started ->
+ * reboot (to recovery, the armed boot request), where the saved log tells why. */
+static void watchdog_thread(void *arg,wait_result_t result __unused)
+{
+    unsigned seconds=(unsigned)(uintptr_t)arg;
+    for (unsigned i=0;i<seconds;i++) {
+        if (u.configured) { printf("HOUJI USB: watchdog satisfied after %u s\n",i);thread_terminate(current_thread());return; }
+        gesture_sleep_ms(1000);
+    }
+    unote("HOUJI USB: watchdog: console not configured after %u s (failed=%u events=%u); rebooting\n",seconds,u.failed,u.events);
+    houji_usb_report();
+    gesture_sleep_ms(25000);   /* one more saved checkpoint */
+    reboot_kernel(RB_AUTOBOOT,(char *)"houji usb watchdog");
+    thread_terminate(current_thread());
+}
 void houji_usb_debug_start(void)
 {
     static bool attempted;
@@ -667,7 +678,13 @@ void houji_usb_debug_start(void)
     int enabled=0;PE_parse_boot_argn("houji_usb",&enabled,sizeof(enabled));
     if ((enabled!=1 && enabled!=2) || attempted) return;
     PE_parse_boot_argn("houji_usb_fail_panic",&fail_panic,sizeof(fail_panic));
-    attempted=true;u.mps=512;u.coding[0]=0;u.coding[1]=0xc2;u.coding[2]=1;u.coding[6]=8;
+    attempted=true;
+    {
+        unsigned watchdog=0;thread_t t;
+        PE_parse_boot_argn("houji_usb_watchdog_s",&watchdog,sizeof(watchdog));
+        if (watchdog>=30 && kernel_thread_start(watchdog_thread,(void *)(uintptr_t)watchdog,&t)==KERN_SUCCESS) thread_deallocate(t);
+    }
+    u.mps=512;u.coding[0]=0;u.coding[1]=0xc2;u.coding[2]=1;u.coding[6]=8;
     unote("HOUJI USB: CDC ACM candidate002 build %s %s, RAM log and read-only commands\n",__DATE__,__TIME__);
     DTEntry root;
     void const *compatible=NULL,*target=NULL;
@@ -704,6 +721,15 @@ void houji_usb_debug_start(void)
     unote("HOUJI USB: id=%08x hwparams0=%08x awidth=%u gctl=%08x dctl=%08x dsts=%08x\n",
         id,hw,width,rd(GCTL),rd(DCTL),rd(DSTS));
     if ((id>>16)!=0x5533 && (id>>16)!=0x3331) return;
+    int cold=0;PE_parse_boot_argn("houji_usb_cold",&cold,sizeof(cold));
+    if (cold==1) {
+        /* Test: the state a power-on boot starts from, on a phone booted through fastboot. */
+        houji_usb_phy_cold();
+        uint32_t g=rd(GCTL);
+        if (((g>>12)&3)!=2) wr(GCTL,(g&~(3u<<12))|(2u<<12));
+        unote("HOUJI USB: cold test gctl %08x->%08x dctl=%08x dsts=%08x phy2=%08x pipe3=%08x\n",
+            g,rd(GCTL),rd(DCTL),rd(DSTS),rd(GUSB2PHYCFG0),rd(GUSB3PIPECTL0));
+    }
     int route=((rd(GCTL)>>12)&3)==2?identity():0;
     if (!route) {
         unote("HOUJI USB: device mode/identity guard refused; controller untouched\n");return;
@@ -724,108 +750,6 @@ void houji_usb_debug_start(void)
     }
     vm_offset_t qs=ml_io_map(0xa6f8800,0x100);
     if (!qs) return;
-    /* Vendor bring-up (reverse-engineered from this phone's own ABL:
-     * uefi_a UsbConfigDxe SSUsb1InitCommon + sub_8610 + sub_E25C).
-     * On a normal power-on ABL leaves the controller with its soft reset
-     * unable to complete, because the eUSB2 HS PHY was left parked and the
-     * controller reset branch was never pulsed. The vendor's own sequence
-     * before any DWC3 device init is:
-     *   1. pulse the USB30 PRIM master-clock reset (GCC 0x139018 bit 0,
-     *      the CBCR .halt of gcc_usb30_prim_master_clk BCR domain),
-     *   2. assert then release QUSB2PHY PRIM BCR (GCC 0x112000),
-     *   3. re-program the eUSB2 HS PHY at 0x88e3000 with the exact
-     *      register sequence UsbConfigDxe uses,
-     *   4. clear GUSB2PHYCFG ENBLSLPM/SUSPHY and GUSB3PIPECTL per
-     *      SSUsb1InitCommon.
-     * Only the standalone wedge executes this; healthy fastboot handoff
-     * states take the existing proven path unchanged. */
-    if (rd(DCTL)&RESET) {
-        /* The controller is stuck in soft reset (normal-boot leftover).
-         * Stop the bus first: retract event enable and RUN. */
-        unote("HOUJI USB: standalone wedge; running vendor platform bring-up\n");
-        wr(DEVTEN,0);
-        /* GCC offsets from torvalds drivers/clk/qcom/gcc-sm8650.c, base
-         * 0x100000: USB30_PRIM_BCR 0x39000 (abs 0x139000), master CBCR
-         * 0x39018 (abs 0x139018), QUSB2PHY_PRIM_BCR 0x12000 (abs
-         * 0x112000), USB3_PHY_PRIM_BCR 0x50000, USB3PHY_PHY_PRIM_BCR
-         * 0x50004, USB3_DP_PHY_PRIM_BCR 0x50008 (abs 0x150000..08).
-         * Sequence mirrors UsbConfigDxe sub_8610: master clock reset
-         * pulse, then PHY BCR assert/deassert. */
-        phys_write32(0x100139018,read_reg(gcc,0x18)|(1u<<0));
-        delay(10000);
-        phys_write32(0x100139018,read_reg(gcc,0x18)&~(1u<<0));
-        delay(10000);
-        /* USB30 PRIM block reset pulse: this is what makes the stuck
-         * CSFTRST state disappear; the vendor performs the equivalent
-         * through the clock protocol before any core init. Assert,
-         * wait, release, then wait for the block to re-power. */
-        phys_write32(0x100139000,1u);
-        delay(10000);
-        phys_write32(0x100139000,0u);
-        delay(50000);
-        uint32_t gdscr=phys_read32(0x100139004);
-        unote("HOUJI USB: after BCR pulse gdscr=%08x master=%08x\n",
-            gdscr,phys_read32(0x100139018));
-        if (!(gdscr&(1u<<31))) { fail("GDSC power after BCR pulse");return; }
-        phys_write32(0x100112000,1u);   /* QUSB2PHY PRIM BCR assert */
-        phys_write32(0x100150000,1u);   /* USB3 PHY PRIM BCR assert */
-        phys_write32(0x100150008,1u);   /* USB3 DP PHY PRIM BCR assert */
-        phys_write32(0x100150004,1u);   /* USB3PHY PHY PRIM BCR assert */
-        delay(10000);
-        phys_write32(0x100150004,0u);   /* release, reverse order */
-        phys_write32(0x100150008,0u);
-        phys_write32(0x100150000,0u);
-        phys_write32(0x100112000,0u);
-        delay(10000);
-        /* 3. eUSB2 HS PHY register sequence (sub_E25C of this phone's
-         *    UsbConfigDxe). All writes are to the 0x88e3000 block. */
-        phys_write32(0x088e3094,2);       /* CFG0: UTMI override */
-        phys_write32(0x088e3050,2);      /* UTMI_CTRL5: POR */
-        delay(100000);                    /* vendor stalls 10ms here */
-        phys_write32(0x088e3130,4);       /* APB_ACCESS_CMD: logic reset */
-        phys_write32(0x088e3098,0);      /* CMN_CTRL0 */
-        phys_write32(0x088e30b8,1);      /* FSEL_SEL */
-        phys_write32(0x088e3054,73);     /* HS_PHY_CTRL_COMMON0: ENABLE|FSEL 19.2M */
-        phys_write32(0x088e305c,200);    /* CFG_CTRL_2: PLL fb div 7:0 */
-        phys_write32(0x088e3058,2);      /* CFG_CTRL_1 */
-        phys_write32(0x088e3068,33);     /* CFG_CTRL_5 */
-        phys_write32(0x088e306c,80);     /* CFG_CTRL_6 */
-        phys_write32(0x088e3064,23);     /* HS_PHY_CTRL2: suspend-n */
-        /* hs_phy_cfg DTB list is empty on this phone (verified in
-         * xbl_config_a); no additional pairs to apply. */
-        phys_write32(0x088e3078,24);     /* CFG_CTRL_8 */
-        phys_write32(0x088e307c,200);    /* CFG_CTRL_9 */
-        phys_write32(0x088e303c,1);      /* UTMI_CTRL0: opmode non-driving */
-        phys_write32(0x088e3054,75);     /* HS_PHY_CTRL_COMMON0: RETENABLEN */
-        phys_write32(0x088e3050,0);      /* UTMI_CTRL5: release POR */
-        phys_write32(0x088e3064,23);     /* HS_PHY_CTRL2 */
-        phys_write32(0x088e3094,0);      /* CFG0: release override */
-        delay(200000);                   /* vendor stalls 20ms */
-        /* 4. DWC3-side per SSUsb1InitCommon. */
-        uint32_t pipe3=rd(GUSB3PIPECTL0);
-        wr(GUSB3PIPECTL0,pipe3&~(0x1fu<<8)); /* clear DEP1P2P3 fields */
-        wr(GUSB3PIPECTL0,rd(GUSB3PIPECTL0)|(1u<<27)); /* UX_EXIT_PX */
-        wr(0xc0f0,rd(0xc0f0)|1u);            /* vendor: GCTL region bit */
-        wr(GUSB3PIPECTL0,rd(GUSB3PIPECTL0)|(1u<<10)); /* LFPSFILT */
-        wr(GUSB3PIPECTL0,rd(GUSB3PIPECTL0)|(1u<<27));
-        /* GUCTL (0xd030 in the vendor dump region) */
-        wr(0xd030,(rd(0xd030)&~0xfu)|5u);
-        wr(0xd030,(rd(0xd030)&0xff00ffffu)|0x60000u);
-        wr(0xc0fc,rd(0xc0fc)|(1u<<24));
-        wr(0xc0fc,rd(0xc0fc)|(1u<<31));
-        wr(0xc0fc,(rd(0xc0fc)&0xffa0ffffu)|0x5f0000u);
-        uint32_t phy2b=rd(GUSB2PHYCFG0);
-        wr(GUSB2PHYCFG0,phy2b&~USB2_ENBLSLPM);
-        /* The block reset restores GCTL strap defaults; re-assert device
-         * mode exactly as the vendor's DwcInitialize+core-init does. */
-        uint32_t gctl2=rd(GCTL);
-        if (((gctl2>>12)&3)!=2) {
-            wr(GCTL,(gctl2&~(3u<<12))|(2u<<12));
-            unote("HOUJI USB: re-assert device mode gctl %08x->%08x\n",
-                gctl2,rd(GCTL));
-        }
-        reset_state("after vendor bring-up");
-    }
     /* First stop any old device DMA; soft reset must finish before replacing
      * descriptors or enabling a previously faulting SMMU stream. */
     reset_state("before halt");
@@ -863,7 +787,26 @@ void houji_usb_debug_start(void)
     reset_state("before reset");
     dctl_write((rd(DCTL)&~RUN)|RESET);
     for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
-    if (rd(DCTL)&RESET) { reset_state("reset timeout");fail("controller reset timeout after SUSPHY pre-clear");return; }
+    if (rd(DCTL)&RESET) {
+        /* Power-on boot: nobody started the PHYs, and the soft reset waits for their clocks. Start the USB 2 PHY the way Linux
+         * does, then reset again. After "fastboot boot" the reset completes and none of this runs. */
+        reset_state("reset timeout");
+        houji_usb_phy_state("before");
+        int phy=houji_usb_phy_start();
+        for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
+        houji_usb_phy_state("after");
+        unote("HOUJI USB: PHY bring-up rc=%d; first reset %s after %u ms\n",phy,(rd(DCTL)&RESET)?"still pending":"completed",i);
+        if (rd(DCTL)&RESET) { reset_state("reset timeout after PHY bring-up");fail("controller reset timeout after PHY bring-up");return; }
+        uint32_t g=rd(GCTL);
+        if (!(g&GCTL_DSBLCLKGTNG)) wr(GCTL,g|GCTL_DSBLCLKGTNG);
+        phy2=rd(GUSB2PHYCFG0);
+        if (phy2&(USB2_SUSPHY|USB2_ENBLSLPM)) wr(GUSB2PHYCFG0,phy2&~(USB2_SUSPHY|USB2_ENBLSLPM));
+        wr(GUSB3PIPECTL0,rd(GUSB3PIPECTL0)&~(1u<<17));
+        dctl_write((rd(DCTL)&~RUN)|RESET);
+        for (i=0;i<500 && (rd(DCTL)&RESET);i++) delay(1000);
+        reset_state("after PHY bring-up");
+        if (rd(DCTL)&RESET) { fail("second controller reset timeout");return; }
+    }
     if (!(rd(DSTS)&HALTED) || (rd(DCTL)&RUN)) { fail("controller not halted after reset");return; }
     if (route==2) {
         uint32_t r[3]={0};
