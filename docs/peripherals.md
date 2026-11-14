@@ -172,7 +172,9 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   transport; it now does (`HOUJI UFS POISON`, controller and UIC error registers, time since the last HIBERN8 exit), and
   `pw ufs N` checks the link with N real reads. Whether HIBERN8 caused it is not known: afterwards 30 cycles of a 20 s
   HIBERN8 sleep each followed by 20 reads all passed (`perf-test/ufs-stress.py`); the failing boot also had long sleeps, 5-min
-  `houji_sleep_max_s` wakes, and a last sleep without HIBERN8. The first version never entered: it read 0x70
+  `houji_sleep_max_s` wakes, and a last sleep without HIBERN8. A 90-min soak through iOS's own sleeps with HIBERN8 and 5-min wakes
+  (`perf-test/ufs-soak.py`): 18 wakes, 16 HIBERN8 entries and exits (2 skipped: host lock taken, -3), a 10-read check after the
+  wakes and after a final full wake, all passed, no POISON line, no SIGBUS. The failure was not reproduced. The first version never entered: it read 0x70
   (UTMRLBA, never zero) as the task doorbell instead of 0x78 (UTMRLDBR). Comparison: the Linux recovery kernel on the same phone,
   display off, USB connected, input suspended, idles awake at 212 mA, 0.85 W (no system suspend, only WFI and a cluster state).
   Remaining open: what the rest of the 1.0 W is (the SoC never enters a deep idle state; Wi-Fi stays associated), auto-hibernate
