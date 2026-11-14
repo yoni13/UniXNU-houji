@@ -333,11 +333,12 @@ void pPoll() {}
 uint32_t gLogRepeats, gDebugLines, gDebug;
 bool has(const char *s, const char *w) {for (; *s; ++s) {size_t k = 0; while (w[k] && s[k] == w[k]) ++k; if (!w[k]) return true;} return false;}
 void pLog(int level, const char *line) {
-    // houji_wifi_debug=2 also keeps the channel list sent to the firmware and the channel each scan step visits (limit 6000 lines).
-    const bool channels = has(line, "mac channel [") || has(line, "scan event foreign channel");
+    // houji_wifi_debug=2 also keeps the channel list sent to the firmware, the channel each scan step visits and its noise and activity
+    // counters (limit 6000 lines).
+    const bool channels = has(line, "mac channel [") || has(line, "scan event foreign channel") || has(line, "chan info vdev_id");
     if (has(line, "chan scan list") || (channels && gDebug != 2)) {++gLogRepeats; return;}
     if (level >= 7 && (!gDebug || gDebugLines >= (gDebug == 2 ? 6000u : 2000u) || has(line, "htc rx completion") || has(line, "rx ce pipe") ||
-                       has(line, "ext irq:") || has(line, "event mgmt rx") || has(line, "mgmt rx event") || has(line, "chan info vdev_id"))) {
+                       has(line, "ext irq:") || has(line, "event mgmt rx") || has(line, "mgmt rx event"))) {
         ++gLogRepeats; return;
     }
     static uint32_t recent[16];
