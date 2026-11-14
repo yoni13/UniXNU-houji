@@ -22,6 +22,7 @@
 #include "houji_ram_upload.h"
 #include <machine/atomic.h>
 #include <sys/reboot.h>
+#include <kern/cpu_number.h>
 extern int reboot_kernel(int, char *);
 
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
@@ -451,6 +452,57 @@ static void type_command(const char *text)
     if (kernel_thread_start(type_thread,NULL,&t)!=KERN_SUCCESS) { bzero(type_text,sizeof(type_text));os_atomic_store(&type_busy,0,release);return; }
     thread_deallocate(t);
 }
+/*
+ * Pointer authentication check for an arm64e system (console "pac" and "pac keys"). "pac" reads the two feature registers on
+ * every running CPU. "pac keys" also writes the IA and GA keys at EL1 and signs and authenticates one pointer with EnIA set for
+ * the length of the test; a hypervisor that traps key access or the instructions turns this into a panic, which is the answer.
+ */
+static struct { uint64_t isar1,isar2,signed_ptr,auth_ptr,ga; uint32_t seen; } pac_result[8];
+static void pac_xcall(void *arg)
+{
+    const int cpu=cpu_number();
+    if (cpu<0 || cpu>=8) return;
+    pac_result[cpu].isar1=__builtin_arm_rsr64("ID_AA64ISAR1_EL1");
+    pac_result[cpu].isar2=__builtin_arm_rsr64("S3_0_C0_C6_2");
+    pac_result[cpu].seen=1;
+    if (!arg) return;
+    const uint64_t lo=__builtin_arm_rsr64("S3_0_C2_C1_0"),hi=__builtin_arm_rsr64("S3_0_C2_C1_1");
+    const uint64_t glo=__builtin_arm_rsr64("S3_0_C2_C3_0"),ghi=__builtin_arm_rsr64("S3_0_C2_C3_1");
+    const uint64_t sctlr=__builtin_arm_rsr64("SCTLR_EL1");
+    __builtin_arm_wsr64("S3_0_C2_C1_0",0x0123456789abcdefull);__builtin_arm_wsr64("S3_0_C2_C1_1",0xfedcba9876543210ull);
+    __builtin_arm_wsr64("S3_0_C2_C3_0",0x1111222233334444ull);__builtin_arm_wsr64("S3_0_C2_C3_1",0x5555666677778888ull);
+    __builtin_arm_wsr64("SCTLR_EL1",sctlr|(1ull<<31));__builtin_arm_isb(15);
+    register uint64_t x0 __asm__("x0")=0xfffffff007004000ull;
+    register uint64_t x1 __asm__("x1")=0x1234;
+    register uint64_t x2 __asm__("x2")=0x5678;
+    __asm__ volatile(".inst 0xdac10020":"+r"(x0):"r"(x1));          /* pacia x0, x1 */
+    pac_result[cpu].signed_ptr=x0;
+    __asm__ volatile(".inst 0xdac11020":"+r"(x0):"r"(x1));          /* autia x0, x1 */
+    pac_result[cpu].auth_ptr=x0;
+    __asm__ volatile(".inst 0x9ac23020":"+r"(x0):"r"(x1),"r"(x2));  /* pacga x0, x1, x2 */
+    pac_result[cpu].ga=x0;
+    __builtin_arm_wsr64("SCTLR_EL1",sctlr);__builtin_arm_isb(15);
+    __builtin_arm_wsr64("S3_0_C2_C1_0",lo);__builtin_arm_wsr64("S3_0_C2_C1_1",hi);
+    __builtin_arm_wsr64("S3_0_C2_C3_0",glo);__builtin_arm_wsr64("S3_0_C2_C3_1",ghi);
+    pac_result[cpu].seen=2;
+}
+static void pac_thread(void *arg,wait_result_t result __unused)
+{
+    extern unsigned int cpu_broadcast_xcall_simple(boolean_t,void (*)(void *),void *);
+    bzero(pac_result,sizeof(pac_result));
+    printf("HOUJI PAC: %s, CurrentEL %llu\n",arg?"keys and instructions":"feature registers",(__builtin_arm_rsr64("CurrentEL")>>2)&3);
+    (void)cpu_broadcast_xcall_simple(TRUE,pac_xcall,arg);
+    for (int i=0;i<8;++i) {
+        if (!pac_result[i].seen) { printf("HOUJI PAC: cpu%d did not answer\n",i); continue; }
+        printf("HOUJI PAC: cpu%d isar1 %016llx isar2 %016llx\n",i,pac_result[i].isar1,pac_result[i].isar2);
+        if (pac_result[i].seen==2)
+            printf("HOUJI PAC: cpu%d signed %016llx auth %016llx ga %016llx %s\n",i,pac_result[i].signed_ptr,pac_result[i].auth_ptr,
+                pac_result[i].ga,pac_result[i].signed_ptr!=0xfffffff007004000ull && pac_result[i].auth_ptr==0xfffffff007004000ull &&
+                (pac_result[i].ga>>32)?"ok":"FAILED");
+    }
+    thread_terminate(current_thread());
+}
+
 static void command_line(void)
 {
     u.command[u.command_n]=0;
@@ -483,6 +535,10 @@ static void command_line(void)
     else if (!strcmp(u.command,"panic")) panic("HOUJI DEBUG: panic requested over USB");
     else if (!strncmp(u.command,"pw ",3)) { extern void houji_power_command(const char *); houji_power_command(u.command+3); }
     else if (!strcmp(u.command,"usb phy")) houji_usb_phy_state("now");
+    else if (!strcmp(u.command,"pac") || !strcmp(u.command,"pac keys")) {
+        thread_t t;
+        if (kernel_thread_start(pac_thread,(void *)(uintptr_t)(u.command[3]!=0),&t)==KERN_SUCCESS) thread_deallocate(t);
+    }
     else if (!strcmp(u.command,"pm")) { extern void houji_pm_report(void); houji_pm_report(); }
     else if (!strcmp(u.command,"batt") || !strncmp(u.command,"batt ",5)) { extern void houji_batt_command(const char *); houji_batt_command(u.command[4]?u.command+5:""); }
     else if (!strcmp(u.command,"gpu clients")) { extern void native_adreno_client_report(void); native_adreno_client_report(); }
