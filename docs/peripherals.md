@@ -9,6 +9,18 @@ Device facts come from the handset's own devicetree, the SteamOS houji port and 
 limit; the battery current vote is `houji_fcc_ma` (default 1000, 500 mA outside 10–40 °C, 0 = leave the firmware alone).
 
 ## Wi-Fi — working (WCN7850 on PCIe0)
+- **2026-11-15: 5 GHz channels 36-64 were never received; fixed by sending the dual MAC configuration.** Left alone, the vendor
+  firmware (WLAN.HMT.2.0.c2) scans with both radios at once: one walks 2.4 GHz and then 5180-5320 MHz, the other 5500-5825 MHz
+  (`houji_wifi_debug=2` keeps the per-channel scan lines). The first radio hears nothing on 5 GHz on this phone: `rx_clear` stays
+  at the idle floor (67 of 50000) on 5180 and 5260 MHz with access points there that a PC beside it receives at full strength,
+  and no log of the port ever held a network below 5500 MHz. Regulatory rules (TW, from 802.11d) and the channel list sent to the
+  firmware include those channels; the scan policy flag and the hardware mode index change nothing. The stock driver's policy
+  manager sends `WMI_PDEV_SET_MAC_CONFIG`; ath12k does not. Sending it with no concurrent scan and no dual-radio mode bits (now
+  the default, `houji_wifi_mac_config=0` turns it off; `houji_wifi_mac_scan`, `houji_wifi_mac_fw` set the two fields) makes one
+  radio visit every channel: both `yun10122` radios on channels 36 and 52 are in every scan. Why the first radio's 5 GHz path is
+  deaf is not known (the stock devicetree has an "antenna share" supply and a `xiaomi-wifi` input GPIO 46: an antenna shared
+  with the modem is a guess). Seen from the access point this looked like a failing 2.4 GHz join: Aruba band steering refuses
+  (status 17) or drops (reason 3) a dual-band client on 2.4 GHz. A join on channel 36/52 is not verified yet.
 `iokit/Kernel/houji-wifi/`, module built by `tools/build-ath12k.py` from UniXNU/Ath12kWifi plus `kernel/ath12k-module/*.patch`.
 On by default (`houji_wifi=0` off). Verified: scan, WPA2 join on 5 GHz (80 MHz) and 2.4 GHz from Settings, DHCP, default route, DNS,
 Safari loading a page by name.
