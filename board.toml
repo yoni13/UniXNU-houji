@@ -64,8 +64,9 @@ kernel-ctrr-to-be-enabled = 0
 
 # Stage 0: everything runs from RAM, nothing is written to UFS.
 [payload]
-volume = "HOUJIPAY"
-size_mib = 96
+# The firmware RAM disk driver of this phone looks for this FAT label.
+volume = "HOUJIESP"
+size_mib = 128
 loader = "firmware"
 title = "houji iOS 27.2.1"
 # Equals the DTS memory node: the contiguous range at 0x8C0000000 of the firmware's high RAM.

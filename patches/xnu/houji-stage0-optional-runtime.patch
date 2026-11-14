@@ -1,0 +1,19 @@
+diff --git a/bsd/kern/bsd_stubs.c b/bsd/kern/bsd_stubs.c
+index 589c138..7885284 100644
+--- a/bsd/kern/bsd_stubs.c
++++ b/bsd/kern/bsd_stubs.c
+@@ -412,3 +412,14 @@ devsw_unlock(dev_t dev, int mode)
+ 	}
+ 	kfree_type(struct devsw_lock, lock);
+ }
++
++/*
++ * houji stage 0: the boot log writer and the source storage runtime of the board package are not built yet. The kernel
++ * refers to both as optional; a static kernel link still needs the names. Remove with the first board archive that defines them.
++ */
++volatile uint32_t boot_log_rounds = 1;
++void native_source_storage_start(void);
++void
++native_source_storage_start(void)
++{
++}

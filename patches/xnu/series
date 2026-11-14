@@ -9,3 +9,4 @@ sheng/zzzz-sheng-ipados27-bringup.patch
 sheng/vmwait-dyld-pager-source-release.patch
 sheng/zzzzzzzzzz-sheng-sigp-reinit-assert.patch
 sheng/zzzzzzzzzzz-sheng-edge-matrix.patch
+houji-stage0-optional-runtime.patch
