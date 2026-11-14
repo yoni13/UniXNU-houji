@@ -13,11 +13,15 @@
  *   200  display controller off and NOT restored: both MDSS power domains collapsed (DISPCC). Reboot afterwards.
  * Console:
  *   pw census            which clocks, root generators, PLLs and power domains of GCC, GPUCC and DISPCC are on (reads only)
+ *   pw rpmh              the commands held in every TCS of the apps RSC (DRV 2), with the resource names from the command database,
+ *                        and the CPU L3 vote (reads only)
+ *   pw vote NAME HEX     one active-only RPMh write of HEX to resource NAME's address (+0) through active TCS 2, waited for
  *   pw off MASK          the hooks for every later sleep (hex)
  *   pw sleep N [MASK]    sleep now with these hooks (default: the current mask) and wake fully, without a key press (the display
  *                        stays off), N seconds after the command: for measuring a configuration from the battery's charge counter
  */
 #include "HoujiClockCensus.h"
+#include "../houji-adsp/QcomRpmh.h"
 extern "C" int houji_ufs_hibernate(int enter, uint64_t *status);
 extern "C" void houji_sleep_now(void);
 namespace HoujiPower {
@@ -154,6 +158,110 @@ static const char *number(const char *p, uint32_t *value, unsigned base) {
   if (any) *value = v;
   return any ? p : nullptr;
 }
+// ---- RPMh (apps RSC DRV 2: 0x17a20000, TCS block at +0xd00; command database 0x81c60000) ----
+static constexpr uint64_t kRsc = 0x17a20000ULL, kCmdDbBase = 0x81c60000ULL;
+static constexpr uint32_t kTcsBlock = 0xd00, kCmdDbBytes = 0x20000;
+struct CmdDbName {char id[9]; uint32_t address;};
+static CmdDbName *names;
+static unsigned nameCount;
+static IOLock *rpmhLock;
+static volatile uint32_t *rsc;
+static bool loadNames(void) {
+  if (names) return true;
+  IODeviceMemory *m = IODeviceMemory::withRange(kCmdDbBase, kCmdDbBytes);
+  IOMemoryMap *map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache | kIOMapReadOnly) : nullptr;
+  if (m) m->release();
+  if (!map) return false;
+  const volatile uint8_t *db = (const volatile uint8_t *)map->getVirtualAddress();
+  auto le16 = [db](uint32_t at) -> uint32_t {return db[at] | (uint32_t)db[at + 1] << 8;};
+  auto le32 = [le16](uint32_t at) -> uint32_t {return le16(at) | le16(at + 2) << 16;};
+  if (le32(4) != 0x0c0330db) {map->release(); return false;}   // QCOM_CMD_DB_MAGIC
+  unsigned total = 0;
+  for (unsigned s = 0; s < 8 && le16(8 + 16 * s); s++) total += le16(8 + 16 * s + 6);
+  names = (CmdDbName *)IOMallocZeroData(sizeof(CmdDbName) * (total ? total : 1));
+  if (!names) {map->release(); return false;}
+  for (unsigned s = 0; s < 8 && le16(8 + 16 * s); s++) {
+    const uint32_t heads = 144 + le16(8 + 16 * s + 2), count = le16(8 + 16 * s + 6);
+    for (uint32_t e = 0; e < count && nameCount < total && heads + 24 * e + 24 <= kCmdDbBytes; e++) {
+      CmdDbName &n = names[nameCount++];
+      for (unsigned i = 0; i < 8; i++) n.id[i] = (char)db[heads + 24 * e + i];
+      n.address = le32(heads + 24 * e + 16);
+    }
+  }
+  map->release();
+  return true;
+}
+static const char *nameOf(uint32_t address) {
+  for (unsigned i = 0; i < nameCount; i++) if (names[i].address == address) return names[i].id;
+  for (unsigned i = 0; i < nameCount; i++) if ((names[i].address & ~0xfu) == (address & ~0xfu)) return names[i].id;   // +4, +8: a VRM's fields
+  return "?";
+}
+static bool openRsc(void) {
+  if (rsc) return true;
+  IODeviceMemory *m = IODeviceMemory::withRange(kRsc, 0x10000);
+  IOMemoryMap *map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept for good
+  if (m) m->release();
+  rsc = map ? (volatile uint32_t *)map->getVirtualAddress() : nullptr;
+  return rsc != nullptr;
+}
+static void rpmhThread(void *, wait_result_t) {
+  if (!loadNames() || !openRsc()) {IOLog("HOUJI POWER RPMH: cannot read the RSC or the command database\n"); thread_terminate(current_thread()); return;}
+  const QcomRscLayout l = qcom_rsc_layout(rsc[0]);
+  IOLog("HOUJI POWER RPMH: drv id %08x, %u names; irq-status %08x\n", rsc[0], nameCount, rsc[(kTcsBlock + l.irq_status) / 4]);
+  for (unsigned t = 0; t < 8; t++) {
+    const uint32_t base = kTcsBlock + l.tcs_stride * t;
+    const uint32_t control = rsc[(base + l.control) / 4], enable = rsc[(base + l.cmd_enable) / 4], status = rsc[(base + l.status) / 4];
+    IOLog("HOUJI POWER RPMH TCS%u: control=%08x enable=%04x status=%08x wait=%04x\n", t, control, enable, status, rsc[(base + l.wait_for_cmpl) / 4]);
+    for (unsigned c = 0; c < 16; c++) {
+      const uint32_t cmd = base + l.cmd_stride * c;
+      const uint32_t msgid = rsc[(cmd + l.cmd_msgid) / 4], address = rsc[(cmd + l.cmd_addr) / 4], data = rsc[(cmd + l.cmd_data) / 4];
+      if (!address && !data) continue;
+      IOLog("HOUJI POWER RPMH TCS%u.%u: %s msgid=%08x addr=%05x %-8s data=%08x\n", t, c, (enable >> c) & 1 ? "on " : "off", msgid, address,
+            nameOf(address), data);
+    }
+    IOSleep(3);
+  }
+  // CPU L3 (qcom,dcvs-hw l3: l3-base 0x17d90000, table at +0x100, shared vote at +0x90)
+  IODeviceMemory *m = IODeviceMemory::withRange(0x17d90000ULL, 0x1000);
+  IOMemoryMap *map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache | kIOMapReadOnly) : nullptr;
+  if (m) m->release();
+  if (map) {
+    const volatile uint32_t *l3 = (const volatile uint32_t *)map->getVirtualAddress();
+    char line[200]; unsigned used = 0;
+    for (unsigned i = 0; i < 40; i++) {
+      const uint32_t raw = l3[0x100 / 4 + i];
+      if (i && raw == l3[0x100 / 4 + i - 1]) break;
+      const int n = snprintf(line + used, sizeof line - used, " %u", (raw & 255) * 19200 / 1000);
+      if (n > 0 && used + (unsigned)n < sizeof line) used += (unsigned)n;
+    }
+    IOLog("HOUJI POWER RPMH L3: 0=%08x 20=%08x 90=%08x 320=%08x table MHz:%s\n", l3[0], l3[0x20 / 4], l3[0x90 / 4], l3[0x320 / 4], line);
+    map->release();
+  }
+  IOLog("HOUJI POWER RPMH: done\n");
+  thread_terminate(current_thread());
+}
+struct VoteArgs {char name[9]; uint32_t value;};
+static void voteThread(void *arg, wait_result_t) {
+  VoteArgs v = *(VoteArgs *)arg; IOFreeType((VoteArgs *)arg, VoteArgs);
+  uint32_t address = 0;
+  if (loadNames() && openRsc())
+    for (unsigned i = 0; i < nameCount && !address; i++) if (!strncmp(names[i].id, v.name, 8)) address = names[i].address;
+  if (!address) {IOLog("HOUJI POWER VOTE: no resource %s\n", v.name); thread_terminate(current_thread()); return;}
+  if (!rpmhLock) rpmhLock = IOLockAlloc();
+  IOLockLock(rpmhLock);
+  const QcomRscLayout l = qcom_rsc_layout(rsc[0]);
+  QcomRpmhWrite w[16];
+  const unsigned n = qcom_rpmh_active_request(&l, 2, &address, &v.value, 1, w, 16);
+  for (unsigned i = 0; i < n; i++) {rsc[(kTcsBlock + w[i].offset) / 4] = w[i].value; __asm__ volatile("dsb sy" ::: "memory");}
+  bool done = false;
+  for (unsigned i = 0; i < 100 && !done; i++) {done = (rsc[(kTcsBlock + l.irq_status) / 4] >> 2) & 1; if (!done) IOSleep(1);}
+  const unsigned m = qcom_rpmh_finish(&l, 2, w, 16);
+  for (unsigned i = 0; i < m; i++) rsc[(kTcsBlock + w[i].offset) / 4] = w[i].value;
+  __asm__ volatile("dsb sy" ::: "memory");
+  IOLockUnlock(rpmhLock);
+  IOLog("HOUJI POWER VOTE: %s (%05x) = %08x %s\n", v.name, address, v.value, done ? "done" : "NOT acknowledged in 100 ms");
+  thread_terminate(current_thread());
+}
 }  // namespace HoujiPower
 extern "C" void houji_power_command(const char *what) {
   using namespace HoujiPower;
@@ -174,5 +282,18 @@ extern "C" void houji_power_command(const char *what) {
     __atomic_store_n(&labUntil, __builtin_arm_rsr64("CNTVCT_EL0") + ticks, __ATOMIC_RELEASE);
     IOLog("HOUJI POWER: sleep until %u s from now with hooks %x\n", seconds, mask());
     houji_sleep_now();
-  } else IOLog("HOUJI POWER: pw census | pw off MASK | pw sleep N [MASK]; hooks %x\n", mask());
+  } else if (!strcmp(what, "rpmh")) {
+    thread_t t;
+    if (kernel_thread_start(rpmhThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
+  } else if (!strncmp(what, "vote ", 5)) {
+    VoteArgs *v = IOMallocType(VoteArgs);
+    const char *p = what + 5; unsigned i = 0;
+    while (*p && *p != ' ' && i < 8) v->name[i++] = *p++;
+    v->name[i] = 0;
+    v->value = 0;
+    thread_t t;
+    if (!number(p, &v->value, 16) || kernel_thread_start(voteThread, v, &t) != KERN_SUCCESS) {
+      IOFreeType(v, VoteArgs); IOLog("HOUJI POWER: pw vote NAME HEX\n");
+    } else thread_deallocate(t);
+  } else IOLog("HOUJI POWER: pw census | pw rpmh | pw vote NAME HEX | pw off MASK | pw sleep N [MASK]; hooks %x\n", mask());
 }

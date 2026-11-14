@@ -830,7 +830,7 @@ extern "C" int houji_ufs_hibernate(int enter, uint64_t *status)
   if (enter) {
     if (hibernating) return -2;
     if (!IOLockTryLock (gHost.lock)) return -3;
-    const uint32_t doorbell = read32 (hc, 0x58), tasks = read32 (hc, 0x70), hcs = read32 (hc, 0x30);
+    const uint32_t doorbell = read32 (hc, 0x58), tasks = read32 (hc, 0x78), hcs = read32 (hc, 0x30);   // UTRLDBR, UTMRLDBR, HCS
     if (doorbell || tasks || !(hcs & 8)) {
       // not idle: status = HCS << 16 | task doorbell << 8 | transfer doorbell (low bytes)
       if (status) *status = (uint64_t)(hcs & 0xffff) << 16 | (uint64_t)(tasks & 0xff) << 8 | (doorbell & 0xff);
