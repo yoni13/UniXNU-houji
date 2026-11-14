@@ -94,6 +94,8 @@ static bool vote(const char *name, const uint32_t *offsets, const uint32_t *valu
   IOLockLock(rpmhLock);
   const QcomRscLayout l = qcom_rsc_layout(rsc[0]);
   QcomRpmhWrite w[16];
+  // The done flag only appears for a TCS whose bit is set in IRQ_ENABLE (first register of the TCS block); nobody takes the interrupt.
+  rsc[kTcsBlock / 4] |= 1u << 2;
   const unsigned n = qcom_rpmh_active_request(&l, 2, addresses, values, count, w, 16);
   for (unsigned i = 0; i < n; i++) {rsc[(kTcsBlock + w[i].offset) / 4] = w[i].value; __asm__ volatile("dsb sy" ::: "memory");}
   bool done = false;
@@ -135,10 +137,10 @@ int houji_usb_phy_start(void) {
     note("HOUJI USB PHY: regulator votes ldoi1=%d ldoi3=%d ldob15=%d ldob5=%d\n", a, b, c, d);
     IOSleep(5);
   }
-  // 2. Repeater: enable, the tuning the bootloader's fastboot leaves on this phone, device mode (no forced 19.2 MHz clock).
+  // 2. Repeater: enable, the stock devicetree's device-mode tuning (qcom,param-override-seq), device mode (no forced 19.2 MHz clock).
   int repeaterOk = -1;
   if (repeater >= 0) {
-    static const uint8_t tune[12] = {0x00, 0x08, 0x00, 0x00, 0x03, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00};   // registers 0x50..0x5b
+    static const uint8_t tune[12] = {0x00, 0x0f, 0x04, 0x07, 0x03, 0x01, 0x03, 0x01, 0x02, 0x01, 0x03, 0x02};   // registers 0x50..0x5b
     int rc = rptWrite(0x46, 0x80);
     for (unsigned i = 0; i < 12; i++) rc |= rptWrite((uint8_t)(0x50 + i), tune[i]);
     rc |= rptWrite(0xe8, 0); rc |= rptWrite(0xed, 0);
