@@ -147,6 +147,30 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
 - Also seen in that run: iOS's idle sleep at 102 s was cancelled (`PM notification cancel (pid 18, powerd)`, `idle revert`) a few
   seconds after the input was suspended, and iOS did not ask again in the following hour with the display off. That the power
   source change caused the cancel is likely but not shown.
+- **Fixed 2026-11-14: sleep now saves power: UFS link in HIBERN8 and the panel asleep.** Measured in sleep from the battery current
+  that a read cycle started at the wake returns (`HOUJI BATT WAKE`, 25-45 ms after it; the fuel gauge keeps measuring while the SoC
+  sleeps), 3-5 sleeps of 20 s per step, one boot per row group, charger input suspended (`perf-test/sleep-sample.py`):
+
+  | Sleep configuration | Power |
+  |---|---|
+  | as before (panel blanked, nothing powered down) | 2.35 W (2.27-2.39) |
+  | panel asleep (DCS 0x10; now the default with `houji_sleep=1`) | 2.07-2.13 W |
+  | + **UFS link in HIBERN8** (now the default sleep hook with `houji_sleep=1`) | **1.00 W** (1.00-1.02) |
+  | default build (`houji_sleep=1`, no other argument), 5 sleeps of 60 s; same boot without hooks: 1.81, 2.11 W | **0.99 W** (all 5) |
+  | panel asleep + GPU power domains collapsed (GX/CX GDSC, measurement only, not restored) | 2.09 W |
+  | + display controller domains collapsed (measurement only) | 2.09 W |
+  | panel asleep, CPU frequency domains lowest / L3 1555 -> 364 MHz / LLCC, MM, SNoC, PCIe NoC votes low | 2.08-2.13 W |
+  | panel asleep, MX or CX rail vote lowered to SVS | 2.10 W |
+  | boot CPU spinning instead of WFI (check of the method) | 2.36 W against 2.35 W |
+
+  HIBERN8: `houji_ufs_hibernate` (HoujiUfsRead.cpp) sends DME_HIBERNATE_ENTER (0x17) from bootSleep with interrupts masked, only
+  when no transfer or task is outstanding and the host lock is free (it is then held to the exit, 0x18, retried once; a failed exit
+  poisons the transport). Entry completes in one 100 us poll, exit in about 6. Verified: applied on iOS's own idle sleeps, 13+ sleeps with
+  HIBERN8 in one boot without UFS or journal errors, the system answering 21 min later. The first version never entered: it read 0x70
+  (UTMRLBA, never zero) as the task doorbell instead of 0x78 (UTMRLDBR). Comparison: the Linux recovery kernel on the same phone,
+  display off, USB connected, input suspended, idles awake at 212 mA, 0.85 W (no system suspend, only WFI and a cluster state).
+  Remaining open: what the rest of the 1.0 W is (the SoC never enters a deep idle state; Wi-Fi stays associated), auto-hibernate
+  (AHIT) for awake idle.
 - **Measured 2026-11-13: where the idle power goes (first round).** The "charge counter" is not a coulomb counter: it stayed at
   2588 mAh for 9 min at about 700 mA and then fell 82 mAh at once, together with the percentage; windows under an hour cannot be
   measured with it. The fuel gauge's current reading is usable but only while awake, so parts were compared awake (no
@@ -165,8 +189,8 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
   with neither, not attributed: GPU (GX on, GMU running), UFS link, USB controller and PHYs, MDSS/DSI, ADSP, and the SoC's shared
   rails, buses and memory, which never enter a low-power state (no CPU idle state below WFI, no RPMh sleep votes).
 - **Sleep hooks and tools** (`arm/HoujiPower.inc`): `houji_sleep_off=MASK` / console `pw off MASK` (1: CPU frequency domains to their
-  lowest row during sleep, applied on the phone; 2: UFS link HIBERN8, **not working**: the host reported not idle (-4) at every
-  attempt, cause not read yet); `pw sleep N [MASK]` sleeps and wakes fully N seconds later without a key (verified: 15-120 s
+  lowest row during sleep; 2: UFS link HIBERN8, the default with `houji_sleep=1`; 4: CPU L3 lowest; 0x80/0x100/0x200 measurement
+  only); `pw rpmh` dumps the apps RSC's TCS contents and the L3 vote, `pw vote NAME HEX` sends one RPMh write, `pw l3 N`; `pw sleep N [MASK]` sleeps and wakes fully N seconds later without a key (verified: 15-120 s
   sleeps woke on time); `pw census` lists the clocks and power domains that are on in GCC and GPUCC (46 of 116 GCC branches:
   USB, UFS, PCIe0, QUP, GPU buses). Not measured: what the hooks save (needs hour-long windows).
 - Open: a sleep forced while the display is on (`pw sleep`, console `sleep`) leaves the panel lit through the sleep.
