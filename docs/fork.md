@@ -34,7 +34,7 @@ Per-peripheral status, measurements and boot arguments are in [peripherals.md](p
 | Cameras | Opt-in probe (`houji_camera=1`) powers all four sensors and reads their chip IDs. No streaming yet. |
 | Thermal | Repeated sensor spikes count as heat; CPU and GPU caps by TSENS level. |
 | USB console | Commands for taps, swipes, typing, Wi-Fi, screen, power key, camera probe and logs (`kernel/overlay/bsd/dev/houji_usb_debug.c`). |
-| Standalone boot | The installed image prepares its own run state: a fresh UEFI transcript, a pristine `XnuLog.bin` (CRC-verified against the kernel constant), and the exact no-wipe recovery BCB armed in-image at LBA 1024. A power-on boot from `boot_a` needs no host-side `dd`/`rm`. |
+| Standalone boot | The installed image prepares its own run state: a fresh UEFI transcript, a pristine `XnuLog.bin` (CRC-verified against the kernel constant), and the exact no-wipe recovery BCB armed in-image at LBA 1024. A power-on boot from `boot_a` needs no host-side `dd`/`rm`; the USB console starts its own PHY (2026-11-14). OrangeFox is not reachable while this image is in `boot_a` (it uses `boot_a`'s kernel): console `reboot bootloader` goes to fastboot. |
 
 Not taken from upstream: its battery/ADSP stack (this fork has its own), its CPU/GPU governors (including X4 boost
 frequencies), its thermal policy, display-timing diagnostics, network-stack stub, sample cache and newer `MASTER.arm64.sweet`

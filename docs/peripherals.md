@@ -389,9 +389,35 @@ path, no `fastboot boot`). Evidence pulled from logfs afterwards
   check (it panics otherwise).
 - `misc`: cleared by OrangeFox at its own startup, as documented.
 
-Known gap from this run: the XNU USB console did not enumerate on a
-standalone power-on (`HOUJI CHARGER: usb-online=0` in the snapshot). In
-PC-assisted sessions ABL's fastboot had already initialized the USB
-controller; on a normal power-on nothing does, and the kernel console
-driver expects an inherited controller. Kernel-side USB controller bring-up
-is the follow-up; it does not affect boot or the desktop.
+Gap from that run, fixed below: the XNU USB console did not enumerate on a
+standalone power-on. In PC-assisted sessions ABL's fastboot had already
+initialized the USB PHYs; on a normal power-on nothing does.
+
+### USB console after a power-on boot (2026-11-14)
+
+- **Cause.** After a normal boot the DWC3 soft reset (`DCTL.CSFTRST`) never completes: the controller is at its reset values
+  (`gctl=00102000 dctl=00f00000 phy2=00102500 pipe3=030c1002`), `TCSR_USB2_CLKREF_EN` is off and `GCC_QUSB2PHY_PRIM_BCR` is
+  asserted, so the core has no PHY clock. The 2026-11-05 "vendor bring-up" never ran as intended: it wrote to physical addresses
+  as if they were pointers (a kernel abort whenever it was reached), which is what the panics of that day were. It is removed.
+- **Fix** (`iokit/Kernel/arm/HoujiUsbPhy.inc`, called by the console driver only when the reset times out, so the fastboot
+  handoff path is unchanged). The Linux v6.12 sequence for this SoC: RPMh votes for the repeater rails (ldob15 1.8 V, ldob5
+  3.104 V) and enables for the PHY rails (ldoi1, ldoi3); the PM8550B eUSB2 repeater over SPMI (enable, the stock devicetree's
+  device-mode tuning); `TCSR_USB2_CLKREF_EN`; a `GCC_QUSB2PHY_PRIM_BCR` pulse; the eUSB2 PHY at `0x88e3000` (38.4 MHz
+  reference; the registers read back equal to what ABL's fastboot leaves); UTMI clock as PIPE clock in QSCRATCH (the USB 3 PHY
+  stays off: high speed only). The RPMh done flag needs the TCS bit in `IRQ_ENABLE`.
+- **Evidence.** `houji_usb_cold=1` (a test: repeater off, PHY and controller resets, reference off on a fastboot-booted phone)
+  reproduces the power-on register state exactly; with it the reset times out, the bring-up runs and the console enumerates.
+  Installed in `boot_a` and started through ABL's normal path: console 30-33 s after `fastboot reboot` (four starts), after a
+  console restart, and after a forced power-off and power-on by hand. Console `usb phy` prints the registers.
+- **Recovery needs boot_a's kernel.** The OrangeFox image in `recovery_a` has no kernel (`kernel_size 0`): with this image in
+  `boot_a`, "reboot to recovery" and a recovery boot request start iOS again, and Volume-Up + Power does not reach OrangeFox.
+  (The 2026-11-04 text above about landing in OrangeFox is wrong for an installed image.) The way to a PC is fastboot:
+  console **`reboot bootloader`** sets the PMIC reboot reason (SDAM `0x7148` = bootloader, verified `00 -> 04`) before the
+  reset; **`houji_reboot_bootloader=1`** does that for every restart (console, iOS, panic; tested with the console `reboot`).
+  `houji_usb_watchdog_s=N` (tests) restarts to the bootloader when no host configured the console in N s. For OrangeFox,
+  restore the stock `boot_a` (`restore-stock-boot.sh`), then install again. A `fastboot boot` of the stock kernel with the
+  OrangeFox ramdisk did not start recovery.
+- **Shutdown.** Settings > General > Shut Down restarted the phone: `halt_all_cpus(false)` ended in the platform expert's
+  restart. It now calls PSCI `SYSTEM_OFF` first. Not verified on the phone yet.
+- Install: `perf-test/selfboot-install.sh` from OrangeFox (stock `boot_a`), or from fastboot: `avbtool add_hash_footer`
+  (AOSP test key, partition size 100663296), `fastboot flash boot_a`, `fastboot reboot`.
