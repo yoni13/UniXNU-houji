@@ -2,8 +2,9 @@
  * Power work for system sleep: what is switched down while the boot CPU waits in SweetCPU::bootSleep, and tools to find where the
  * power goes. Included by SweetCPU.cpp after HoujiCpuDvfs.inc.
  *
- * Sleep hooks (a mask; boot argument houji_sleep_off=MASK; default 2, the UFS link, with houji_sleep=1, else 0; console "pw off MASK").
- * Measured in sleep (battery current read 40 ms after the wake): 2.12 W without hooks, 1.00 W with the UFS link in HIBERN8. enter() and leave() run on the
+ * Sleep hooks (a mask; boot argument houji_sleep_off=MASK, default 0 = none; console "pw off MASK").
+ * Measured in sleep (battery current read 40 ms after the wake): 2.12 W without hooks, 1.00 W with the UFS link in HIBERN8. Not the
+ * default: a boot that used it 8 times lost its UFS transport 77 min after the last one (cause not found yet). enter() and leave() run on the
  * boot CPU with interrupts masked and every other CPU off: no logging, no blocking; results are kept and printed after the wake.
  *   1  all four CPU frequency domains to their lowest row for the sleep (the governor thread is frozen where the sleep caught it)
  *   2  the UFS link into HIBERN8 (houji_ufs_hibernate)
@@ -17,6 +18,7 @@
  *   pw census            which clocks, root generators, PLLs and power domains of GCC, GPUCC and DISPCC are on (reads only)
  *   pw rpmh              the commands held in every TCS of the apps RSC (DRV 2), with the resource names from the command database,
  *                        and the CPU L3 vote (reads only)
+ *   pw ufs N             N reads through the UFS transport (LUN 0 block 1): a link check
  *   pw l3 N              the CPU L3 cache to row N of its table (0: 364 MHz; the boot firmware leaves row 12, 1555 MHz)
  *   pw vote NAME HEX     one active-only RPMh write of HEX to resource NAME's address (+0) through active TCS 2, waited for
  *   pw off MASK          the hooks for every later sleep (hex)
@@ -26,6 +28,7 @@
 #include "HoujiClockCensus.h"
 #include "../houji-adsp/QcomRpmh.h"
 extern "C" int houji_ufs_hibernate(int enter, uint64_t *status);
+extern "C" unsigned houji_ufs_probe(unsigned count, uint32_t *first);
 extern "C" void houji_sleep_now(void);
 namespace HoujiPower {
 enum {kDvfsLowest = 1, kUfsHibernate = 2, kL3Lowest = 4, kSpin = 0x80, kGpuKill = 0x100, kMdssKill = 0x200};
@@ -62,8 +65,7 @@ static uint64_t ufsEnterStatus, ufsExitStatus;
 static uint32_t mask(void) {
   if (!parsed) {
     parsed = true;
-    uint32_t sleep = 0; PE_parse_boot_argn("houji_sleep", &sleep, sizeof sleep);
-    uint32_t v = sleep ? kUfsHibernate : 0;
+    uint32_t v = 0;
     PE_parse_boot_argn("houji_sleep_off", &v, sizeof v);
     sleepOff = v;
   }
@@ -265,6 +267,12 @@ static void rpmhThread(void *, wait_result_t) {
   IOLog("HOUJI POWER RPMH: done\n");
   thread_terminate(current_thread());
 }
+static void ufsProbeThread(void *arg, wait_result_t) {
+  uint32_t first = 0;
+  const unsigned n = (unsigned)(uintptr_t)arg, ok = houji_ufs_probe(n, &first);
+  IOLog("HOUJI POWER UFS: %u of %u reads ok%s, first failure %x\n", ok, n, ok == n ? "" : " (TRANSPORT FAILING)", first);
+  thread_terminate(current_thread());
+}
 struct VoteArgs {char name[9]; uint32_t value;};
 static void voteThread(void *arg, wait_result_t) {
   VoteArgs *heap = (VoteArgs *)arg;
@@ -308,6 +316,12 @@ extern "C" void houji_power_command(const char *what) {
     __atomic_store_n(&labUntil, __builtin_arm_rsr64("CNTVCT_EL0") + ticks, __ATOMIC_RELEASE);
     IOLog("HOUJI POWER: sleep until %u s from now with hooks %x\n", seconds, mask());
     houji_sleep_now();
+  } else if (!strncmp(what, "ufs ", 4)) {
+    uint32_t n = 1;
+    number(what + 4, &n, 10);
+    if (n < 1 || n > 1000) n = 1;
+    thread_t t;
+    if (kernel_thread_start(ufsProbeThread, (void *)(uintptr_t)n, &t) == KERN_SUCCESS) thread_deallocate(t);
   } else if (!strncmp(what, "l3 ", 3)) {
     uint32_t row = 0;
     if (number(what + 3, &row, 10) && row < 18 && mapL3()) {

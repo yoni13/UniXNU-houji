@@ -866,7 +866,25 @@ extern "C" int houji_ufs_hibernate(int enter, uint64_t *status)
     return 0;
   }
   hibernating = false;
-  if (result) gHost.poisoned = true;
+  gUfsHibernateExits++;
+  absolutetime_to_nanoseconds (mach_absolute_time (), &gUfsHibernateExitNs);
+  if (result) {ufsPoisonNote ("hibernate exit failed", 0); gHost.poisoned = true;}
   IOLockUnlock (gHost.lock);
   return result;
+}
+
+// Console "pw ufs N" (a thread): N reads of LUN 0 block 1 (the GPT header, a read the policy allows) through the real transport, as a
+// check that the link works (after HIBERN8 exits). Returns the number that succeeded; *first: the status of the first failure.
+extern "C" unsigned houji_ufs_probe (unsigned count, uint32_t *first)
+{
+  void *buffer = IOMallocData (4096);
+  unsigned ok = 0;
+  *first = 0;
+  for (unsigned i = 0; buffer && i < count; i++) {
+    const IOReturn r = hostRead4k (0, 1, 1, buffer);
+    if (r == kIOReturnSuccess) ok++;
+    else if (!*first) *first = (uint32_t) r;
+  }
+  if (buffer) IOFreeData (buffer, 4096);
+  return ok;
 }

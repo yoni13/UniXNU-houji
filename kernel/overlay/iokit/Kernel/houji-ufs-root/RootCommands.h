@@ -51,6 +51,20 @@ static bool houjiUfsFirmwareCommandAllowed(const uint8_t *u,unsigned n,unsigned 
   return false;
 }
 
+// Why the transport was poisoned (a poisoned host refuses all later commands): the controller's status and UIC error registers.
+static uint64_t gUfsHibernateExits, gUfsHibernateExitNs;
+static void ufsPoisonNote (const char *where, uint32_t ocs)
+{
+  uint64_t now = 0;
+  absolutetime_to_nanoseconds (mach_absolute_time (), &now);
+  const uintptr_t hc = gHost.hc;
+  IOLog ("HOUJI UFS POISON: %s ocs=%u IS=%08x HCS=%08x DB=%08x TMDB=%08x UECPA=%08x UECDL=%08x UECN=%08x UECT=%08x UECDME=%08x "
+         "op=%02x lun=%u polls=%u hibernate-exits=%llu ms-since-last=%llu\n", where, ocs, read32 (hc, 0x20), read32 (hc, 0x30),
+         read32 (hc, 0x58), read32 (hc, 0x78), read32 (hc, 0x38), read32 (hc, 0x3c), read32 (hc, 0x40), read32 (hc, 0x44),
+         read32 (hc, 0x48), gRootDiagnostic.opcode, gRootDiagnostic.lun, gRootDiagnostic.polls, gUfsHibernateExits,
+         gUfsHibernateExitNs ? (now - gUfsHibernateExitNs) / 1000000 : 0);
+}
+
 // Issue the UPIU already placed at gHost.virt + kUcdOffset through request slot 0. `direction` is
 // the UTRD data direction (0 none, 1 from host, 2 to host). Direction 1 is reachable only through hostWrite4k, which
 // confines it to the persistent store window. Returns the overall command status
@@ -68,11 +82,13 @@ static IOReturn hostSubmit (uint32_t direction, uint32_t dataBytes, uint32_t tim
       (dataBytes ? (direction != 1 && direction != 2) : direction != 0)) return kIOReturnBadArgument;
   if (gHost.poisoned) return kIOReturnNotReady;
   if (read32 (gHost.hc, 0x58) != 0) {
+    ufsPoisonNote ("submit: doorbell busy", *ocs);
     gHost.poisoned = true;
     gHost.ready = false;
     return recordTransport (kIOReturnBusy, *ocs);
   }
   if (read32 (gHost.hc, 0x20) & kUfsFatalStatus) {
+    ufsPoisonNote ("submit: fatal status before", *ocs);
     gHost.poisoned = true;
     gHost.ready = false;
     return recordTransport (kIOReturnIOError, *ocs);
@@ -120,6 +136,7 @@ static IOReturn hostSubmit (uint32_t direction, uint32_t dataBytes, uint32_t tim
   if (end != UfsTransferEnd::Completed) {
     // No cancel/reset/retry: the controller may still own the buffer, even
     // with DB=0. Keep it allocated and prohibit all subsequent CPU writes.
+    ufsPoisonNote (end == UfsTransferEnd::Timeout ? "transfer timeout" : "transfer fatal status", *ocs);
     gHost.poisoned = true;
     gHost.ready = false;
     return recordTransport (end == UfsTransferEnd::Timeout ? kIOReturnTimeout : kIOReturnIOError, *ocs);
@@ -134,12 +151,14 @@ static bool hostClearUcd (void)
   if (gHost.poisoned) return false;
   // Check before touching the command/response area, not just before ringing.
   if (read32 (gHost.hc, 0x58) != 0) {
+    ufsPoisonNote ("clear: doorbell busy", 15);
     gHost.poisoned = true;
     gHost.ready = false;
     recordTransport (kIOReturnBusy, 15);
     return false;
   }
   if (read32 (gHost.hc, 0x20) & kUfsFatalStatus) {
+    ufsPoisonNote ("clear: fatal status", 15);
     gHost.poisoned = true;
     gHost.ready = false;
     recordTransport (kIOReturnIOError, 15);
@@ -155,6 +174,7 @@ static bool hostClearUcd (void)
 static IOReturn hostProtocolError (uint32_t reason)
 {
   gRootDiagnostic.protocol = reason;
+  ufsPoisonNote ("protocol error", reason);
   gHost.ready = false;
   gHost.poisoned = true;
   return recordTransport (kIOReturnIOError, gRootDiagnostic.ocs);
