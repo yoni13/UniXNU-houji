@@ -6,6 +6,7 @@
  * boot CPU with interrupts masked and every other CPU off: no logging, no blocking; results are kept and printed after the wake.
  *   1  all four CPU frequency domains to their lowest row for the sleep (the governor thread is frozen where the sleep caught it)
  *   2  the UFS link into HIBERN8 (houji_ufs_hibernate)
+ *   4  the CPU L3 cache to its lowest row for the sleep
  * Measurement only (never set these in houji_sleep_off for use):
  *   80   the boot CPU spins instead of waiting in WFI: a known extra load, to check that a reading reflects the sleep
  *   100  GPU off and NOT restored: GX and CX-GMU clock branches off, then both power domains collapsed (GPUCC). The GPU is dead
@@ -15,6 +16,7 @@
  *   pw census            which clocks, root generators, PLLs and power domains of GCC, GPUCC and DISPCC are on (reads only)
  *   pw rpmh              the commands held in every TCS of the apps RSC (DRV 2), with the resource names from the command database,
  *                        and the CPU L3 vote (reads only)
+ *   pw l3 N              the CPU L3 cache to row N of its table (0: 364 MHz; the boot firmware leaves row 12, 1555 MHz)
  *   pw vote NAME HEX     one active-only RPMh write of HEX to resource NAME's address (+0) through active TCS 2, waited for
  *   pw off MASK          the hooks for every later sleep (hex)
  *   pw sleep N [MASK]    sleep now with these hooks (default: the current mask) and wake fully, without a key press (the display
@@ -25,8 +27,17 @@
 extern "C" int houji_ufs_hibernate(int enter, uint64_t *status);
 extern "C" void houji_sleep_now(void);
 namespace HoujiPower {
-enum {kDvfsLowest = 1, kUfsHibernate = 2, kSpin = 0x80, kGpuKill = 0x100, kMdssKill = 0x200};
-static volatile uint32_t *gpucc, *dispcc;
+enum {kDvfsLowest = 1, kUfsHibernate = 2, kL3Lowest = 4, kSpin = 0x80, kGpuKill = 0x100, kMdssKill = 0x200};
+static volatile uint32_t *gpucc, *dispcc, *l3vote;
+static uint32_t l3Saved;
+static bool mapL3(void) {
+  if (l3vote) return true;
+  IODeviceMemory *d = IODeviceMemory::withRange(0x17d90000ULL, 0x1000);
+  IOMemoryMap *k = d ? d->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;   // kept for good
+  if (d) d->release();
+  l3vote = k ? (volatile uint32_t *)k->getVirtualAddress() : nullptr;
+  return l3vote != nullptr;
+}
 static uint32_t killSeen[4];
 static void dsbDelay(unsigned us) {__asm__ volatile("dsb sy" ::: "memory"); IODelay(us);}
 // from a thread, before the sleep: the windows the kill switches write
@@ -37,6 +48,7 @@ static void mapKill(uint32_t m) {
     if (d) d->release();
     return k ? (volatile uint32_t *)k->getVirtualAddress() : nullptr;   // kept for good
   };
+  if (m & kL3Lowest) mapL3();
   if ((m & kGpuKill) && !gpucc) gpucc = map(0x3d90000ULL, 0xa000);
   if ((m & kMdssKill) && !dispcc) dispcc = map(0xaf00000ULL, 0x20000);
 }
@@ -68,6 +80,11 @@ static void enter(void) {
     if (!ufsEnter) applied |= kUfsHibernate;
   }
   if (m & kSpin) applied |= kSpin;
+  if ((m & kL3Lowest) && l3vote) {
+    l3Saved = l3vote[0x90 / 4];
+    l3vote[0x90 / 4] = 0; __asm__ volatile("dsb sy" ::: "memory");
+    applied |= kL3Lowest;
+  }
   if ((m & kGpuKill) && gpucc && !(applied & kGpuKill)) {
     gpucc[0x90a8 / 4] &= ~1u; gpucc[0x913c / 4] &= ~1u; dsbDelay(200);   // gx_gfx3d, cx_gmu branches
     gpucc[0x905c / 4] |= 1u; dsbDelay(500);                                 // GX: SW_COLLAPSE
@@ -82,6 +99,7 @@ static void enter(void) {
   }
 }
 static void leave(void) {
+  if (applied & kL3Lowest) {l3vote[0x90 / 4] = l3Saved; __asm__ volatile("dsb sy" ::: "memory");}
   if (applied & kUfsHibernate) ufsExit = houji_ufs_hibernate(0, &ufsExitStatus);
   // the governor continues from the row it had chosen
   if (mask() & kDvfsLowest) {
@@ -283,6 +301,13 @@ extern "C" void houji_power_command(const char *what) {
     __atomic_store_n(&labUntil, __builtin_arm_rsr64("CNTVCT_EL0") + ticks, __ATOMIC_RELEASE);
     IOLog("HOUJI POWER: sleep until %u s from now with hooks %x\n", seconds, mask());
     houji_sleep_now();
+  } else if (!strncmp(what, "l3 ", 3)) {
+    uint32_t row = 0;
+    if (number(what + 3, &row, 10) && row < 18 && mapL3()) {
+      l3vote[0x90 / 4] = row; __asm__ volatile("dsb sy" ::: "memory");
+      IODelay(200);
+      IOLog("HOUJI POWER: L3 vote %u, state %u MHz\n", l3vote[0x90 / 4], (l3vote[0x20 / 4] & 255) * 192 / 10);
+    } else IOLog("HOUJI POWER: pw l3 N (0..17)\n");
   } else if (!strcmp(what, "rpmh")) {
     thread_t t;
     if (kernel_thread_start(rpmhThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
