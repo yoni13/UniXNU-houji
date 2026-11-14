@@ -1,0 +1,86 @@
+schema_version = 2
+
+[board]
+name = "houji"
+soc = "SM8650"
+soc_source = "sm8550"
+description = "Xiaomi 14 23127PN0CC (houji)"
+kit = "houji"
+os_profile = "ios-27.2.1-24B156"
+
+[components]
+include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
+
+[kernel]
+defconfig = "houji_ios27_defconfig"
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "component:ArmDTPlatform",
+  "component:ArmCpu",
+  "build-libpthread-kernel.py",
+  "build-fileset-release-reference.py --tree . --lto",
+]
+config_fragments = ["arch:configs/common.config", "os:configs/ios.config"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu-12377/series", "os:patches/xnu/series", "device:patches/xnu/series"]
+
+[device_tree]
+source = "device:dts/houji.dts"
+include_dirs = ["soc:dts"]
+
+[firmware]
+config = "houji"
+dsc = "Platforms/Xiaomi/houjiPkg/houji.dsc"
+fd = "Build/houjiPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+
+[firmware.defines]
+DEVICE_MODEL = "0"
+ENABLE_SECUREBOOT = "0"
+FD_BASE = "0xA7100000"
+FD_SIZE = "0x300000"
+FD_BLOCKS = "0x300"
+
+[package]
+unixnu = "../UniXNU"
+
+[package.defconfig]
+"ios-27.2.1-24B156" = "houji_ios27_defconfig"
+
+[adt.product]
+[adt.product.string]
+model = "xiaomi,houji"
+[adt.product.u32]
+thin-bezel = 1
+
+[adt.defaults]
+[adt.defaults.u32]
+sleep-disabled = 1
+# No Apple PMGR or SEP: report a virtual platform, so AMFI does not wait for an ApplePMGRNub (as on sheng).
+vmm-present = 1
+
+[adt.chosen.u32]
+# SM8650 has no CTRR: kernel text stays writable by hardware.
+kernel-ctrr-to-be-enabled = 0
+
+# Stage 0: everything runs from RAM, nothing is written to UFS.
+[payload]
+volume = "HOUJIPAY"
+size_mib = 96
+loader = "firmware"
+title = "houji iOS 27.2.1"
+# Equals the DTS memory node: the contiguous range at 0x8C0000000 of the firmware's high RAM.
+dram_size = "0x80000000"
+panic_screen = false
+kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120"]
+
+[payload.adt]
+# T8140, the chip of iPhone17,1.
+chip_id = "8140"
+owned_memory_size = "0x80000000"
+packed_data_ramdisk = false
+persistent_data = false
+
+[bootimg.image]
+header_version = 4
+os_version = "16.0.0"
+os_patch_level = "2026-08"

@@ -1,0 +1,10 @@
+# Stage 0 (iOS 27.2.1): arm64e kernel, UEFI -> UniXNU -> payload -> DarwinBoot -> verbose kernel from RAM.
+# Storage, display and GPU stay off until each earlier stage shows its documented output.
+CONFIG_XNU_BUILD_ARCHIVES=y
+CONFIG_XNU_CRYPTO_BOOTSTRAP="source"
+CONFIG_XNU_DT_PANIC_REGION=y
+CONFIG_XNU_ARMVIRT_PLATFORM=n
+CONFIG_XNU_KERNEL_CHAINED_FIXUPS=y
+# CONFIG_XNU_NATIVE_UFS is not set
+# CONFIG_XNU_NATIVE_ADRENO is not set
+# CONFIG_XNU_NATIVE_LEGACY_DISPLAY is not set

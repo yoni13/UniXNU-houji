@@ -1,0 +1,7 @@
+[[source]]
+name = "sm8550"
+kind = "soc"
+git = "https://github.com/UniXNU/UniXNU-sm8550-common"
+# No UniXNU-sm8650-common exists (checked 2026-11-15). The SM8550 source supplies the XNU patches for PSCI secondaries and
+# MPIDR numbering, which SM8650 shares; houji's DTS describes its own SoC resources and does not include sm8550.dtsi.
+commit = "a9f45dc60c035084b95463781538380f4c3606c9"
