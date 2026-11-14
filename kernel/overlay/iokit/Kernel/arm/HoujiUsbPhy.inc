@@ -211,17 +211,40 @@ void houji_usb_phy_cold(void) {
 // reset that follows stops in fastboot. With this system installed in boot_a that is the way back to a PC-driven start: OrangeFox
 // has no kernel of its own (it starts with boot_a's). Returns 0 when the cell was written and verified.
 extern "C" int houji_reboot_reason_bootloader(void);
-int houji_reboot_reason_bootloader(void) {
+extern "C" int houji_reboot_reason_prepare(int always);
+extern "C" void houji_reboot_reason_at_reset(void);
+namespace HoujiUsbPhy {
+static volatile uint32_t *reasonChn;
+static int reasonApid = -1, reasonOwner = -1;
+static bool reasonAlways;
+}
+// Maps what the write needs (thread context). always: boot argument houji_reboot_bootloader=1, every restart goes to the bootloader.
+int houji_reboot_reason_prepare(int always) {
   using namespace HoujiUsbPhy;
+  if (always) reasonAlways = true;
+  if (reasonApid >= 0) return 0;
   if (!openAll()) return 10;
   br_found f;
-  int rc = br_find(&arb, &f);
+  const int rc = br_find(&arb, &f);
   if (rc) return rc;
   if (!spmiObs) spmiObs = mapIo(0xc440000, ((uint64_t)BR_OBS_APID_STRIDE * f.apids + 0xfff) & ~0xfffull);
   volatile uint32_t *chn = mapIo(0xc500000 + (uint64_t)BR_CHNL_APID_STRIDE * (uint32_t)f.apid, 0x1000);
   if (!spmiObs || !chn) return 11;
+  reasonChn = chn - (BR_CHNL_APID_STRIDE * (uint32_t)f.apid) / 4; reasonOwner = f.owner; reasonApid = f.apid;
+  return 0;
+}
+int houji_reboot_reason_bootloader(void) {
+  using namespace HoujiUsbPhy;
+  int rc = houji_reboot_reason_prepare(0);
+  if (rc) return rc;
   uint8_t before = 0, after = 0;
-  rc = br_set_bootloader(spmiObs, chn - (BR_CHNL_APID_STRIDE * (uint32_t)f.apid) / 4, &arb, f.apid, &before, &after);
-  IOLog("HOUJI REBOOT: reason cell apid=%d owner=%d %02x -> %02x rc=%d\n", f.apid, f.owner, before, after, rc);
+  rc = br_set_bootloader(spmiObs, reasonChn, &arb, reasonApid, &before, &after);
+  IOLog("HOUJI REBOOT: reason cell apid=%d owner=%d %02x -> %02x rc=%d\n", reasonApid, reasonOwner, before, after, rc);
   return rc;
+}
+// From halt_all_cpus, also in a panic: register access only.
+void houji_reboot_reason_at_reset(void) {
+  using namespace HoujiUsbPhy;
+  uint8_t before = 0, after = 0;
+  if (reasonAlways && reasonApid >= 0) (void)br_set_bootloader(spmiObs, reasonChn, &arb, reasonApid, &before, &after);
 }

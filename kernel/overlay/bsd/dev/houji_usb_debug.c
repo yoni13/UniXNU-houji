@@ -684,6 +684,13 @@ void houji_usb_debug_start(void)
 {
     static bool attempted;
     { extern void houji_power_start(void); static bool power; if (!power) { power=true; houji_power_start(); } }
+    {
+        /* houji_reboot_bootloader=1: every restart (console, iOS, panic) stops in the bootloader instead of starting boot_a again. */
+        static bool reason;int always=0;extern int houji_reboot_reason_prepare(int);
+        if (!reason && PE_parse_boot_argn("houji_reboot_bootloader",&always,sizeof(always)) && always==1) {
+            reason=true;printf("HOUJI REBOOT: houji_reboot_bootloader=1, prepared %d\n",houji_reboot_reason_prepare(1));
+        }
+    }
     int enabled=0;PE_parse_boot_argn("houji_usb",&enabled,sizeof(enabled));
     if ((enabled!=1 && enabled!=2) || attempted) return;
     PE_parse_boot_argn("houji_usb_fail_panic",&fail_panic,sizeof(fail_panic));
