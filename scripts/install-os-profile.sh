@@ -32,3 +32,8 @@ for source in "${profiles[@]}"; do
   cp -R "$source" "$ROOT/profiles/os/$name"
   echo "installed profiles/os/$name -> $ROOT"
 done
+# The reviewed prelink identities of this kernelcache (ported with scripts/port-kc-fixture.py) live beside XnuPrelink's own.
+for fixture in "$DEVICE"/patches/xnuprelink/fileset-*-symbols.json; do
+  cp "$fixture" "$ROOT/kits/XnuPrelink/fixtures/"
+  echo "installed $(basename "$fixture") -> $ROOT/kits/XnuPrelink/fixtures"
+done
