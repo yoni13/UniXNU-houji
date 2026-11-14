@@ -147,16 +147,16 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
 - Also seen in that run: iOS's idle sleep at 102 s was cancelled (`PM notification cancel (pid 18, powerd)`, `idle revert`) a few
   seconds after the input was suspended, and iOS did not ask again in the following hour with the display off. That the power
   source change caused the cancel is likely but not shown.
-- **Fixed 2026-11-14: sleep now saves power: UFS link in HIBERN8 and the panel asleep.** Measured in sleep from the battery current
+- **2026-11-14: UFS link in HIBERN8 halves sleep power, but is opt-in again (`houji_sleep_off=2`) after a storage failure.** Measured in sleep from the battery current
   that a read cycle started at the wake returns (`HOUJI BATT WAKE`, 25-45 ms after it; the fuel gauge keeps measuring while the SoC
   sleeps), 3-5 sleeps of 20 s per step, one boot per row group, charger input suspended (`perf-test/sleep-sample.py`):
 
   | Sleep configuration | Power |
   |---|---|
   | as before (panel blanked, nothing powered down) | 2.35 W (2.27-2.39) |
-  | panel asleep (DCS 0x10; now the default with `houji_sleep=1`) | 2.07-2.13 W |
-  | + **UFS link in HIBERN8** (now the default sleep hook with `houji_sleep=1`) | **1.00 W** (1.00-1.02) |
-  | default build (`houji_sleep=1`, no other argument), 5 sleeps of 60 s; same boot without hooks: 1.81, 2.11 W | **0.99 W** (all 5) |
+  | **panel asleep** (DCS 0x10; the default with `houji_sleep=1`) | **2.07-2.13 W** |
+  | + **UFS link in HIBERN8** (`houji_sleep_off=2`) | **1.00 W** (1.00-1.02) |
+  | same, 5 sleeps of 60 s; same boot without it: 1.81, 2.11 W | **0.99 W** (all 5) |
   | panel asleep + GPU power domains collapsed (GX/CX GDSC, measurement only, not restored) | 2.09 W |
   | + display controller domains collapsed (measurement only) | 2.09 W |
   | panel asleep, CPU frequency domains lowest / L3 1555 -> 364 MHz / LLCC, MM, SNoC, PCIe NoC votes low | 2.08-2.13 W |
@@ -165,8 +165,14 @@ XNU's own IOCPUSleepKernel path with PSCI and the GIC.
 
   HIBERN8: `houji_ufs_hibernate` (HoujiUfsRead.cpp) sends DME_HIBERNATE_ENTER (0x17) from bootSleep with interrupts masked, only
   when no transfer or task is outstanding and the host lock is free (it is then held to the exit, 0x18, retried once; a failed exit
-  poisons the transport). Entry completes in one 100 us poll, exit in about 6. Verified: applied on iOS's own idle sleeps, 13+ sleeps with
-  HIBERN8 in one boot without UFS or journal errors, the system answering 21 min later. The first version never entered: it read 0x70
+  poisons the transport). Entry completes in one 100 us poll, exit in about 6. Applied on iOS's own idle sleeps too. **Incident:** in
+  a boot with 8 HIBERN8 sleeps (exits all reported success), the UFS transport failed 77 min after the last one, at a power key
+  wake: every read returned EIO (backboardd's shader cache "Input/output error"), SpringBoard, backboardd and others died with
+  SIGBUS in a loop, the display stayed dark. The volume headers were intact afterwards. The driver did not log why it poisoned the
+  transport; it now does (`HOUJI UFS POISON`, controller and UIC error registers, time since the last HIBERN8 exit), and
+  `pw ufs N` checks the link with N real reads. Whether HIBERN8 caused it is not known: afterwards 30 cycles of a 20 s
+  HIBERN8 sleep each followed by 20 reads all passed (`perf-test/ufs-stress.py`); the failing boot also had long sleeps, 5-min
+  `houji_sleep_max_s` wakes, and a last sleep without HIBERN8. The first version never entered: it read 0x70
   (UTMRLBA, never zero) as the task doorbell instead of 0x78 (UTMRLDBR). Comparison: the Linux recovery kernel on the same phone,
   display off, USB connected, input suspended, idles awake at 212 mA, 0.85 W (no system suspend, only WFI and a cluster state).
   Remaining open: what the rest of the 1.0 W is (the SoC never enters a deep idle state; Wi-Fi stays associated), auto-hibernate
