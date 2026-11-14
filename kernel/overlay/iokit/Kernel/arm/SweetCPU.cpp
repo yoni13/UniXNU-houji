@@ -77,6 +77,16 @@ static IOReturn wakeSetting(OSObject *, const OSSymbol *type, OSObject *val, uin
         seconds < 0 ? 0LL : (long long)seconds);
   return kIOReturnSuccess;
 }
+// houji_sleep=1: every 30 s with the display off, let the root domain re-arm iOS's idle sleep timer if a cancelled idle sleep left
+// none (IOPMrootDomain::houjiIdleRetry: only with nothing preventing sleep; a normal idle sleep follows, assertions still apply).
+extern "C" bool houji_pm_idle_retry(void);
+extern "C" int houji_screen_is_on(void);
+static void idleRetryThread(void *, wait_result_t) {
+  for (;;) {
+    IOSleep(30000);
+    if (!houji_screen_is_on()) houji_pm_idle_retry();
+  }
+}
 static void wakeSettingsThread(void *, wait_result_t) {
   IOPMrootDomain *root = NULL;
   for (unsigned i = 0; i < 600 && !(root = IOService::getPMRootDomain()); i++) IOSleep(100);
@@ -255,6 +265,9 @@ void SweetCPU::finishStartup(void) {
   if (!id) {
     thread_t wakeThread;
     if (kernel_thread_start(wakeSettingsThread, NULL, &wakeThread) == KERN_SUCCESS) thread_deallocate(wakeThread);
+    unsigned sleepOn = 0; PE_parse_boot_argn("houji_sleep", &sleepOn, sizeof sleepOn);
+    thread_t retryThread;
+    if (sleepOn && kernel_thread_start(idleRetryThread, NULL, &retryThread) == KERN_SUCCESS) thread_deallocate(retryThread);
   }
   unsigned done = __atomic_add_fetch(&completedCPUs, 1U, __ATOMIC_ACQ_REL);
   IOLog("HOUJI SMP: CPU%u online; completed=%u/%u\n", id, done, topology->num_cpus);

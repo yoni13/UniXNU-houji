@@ -1848,15 +1848,16 @@ index 9432f34..95550c9 100644
  _port_name_to_thread
  _post_sys_powersource
 diff --git a/iokit/IOKit/pwr_mgt/RootDomain.h b/iokit/IOKit/pwr_mgt/RootDomain.h
-index 1b28efa..ce35f01 100644
+index 1b28efa..6d3521f 100644
 --- a/iokit/IOKit/pwr_mgt/RootDomain.h
 +++ b/iokit/IOKit/pwr_mgt/RootDomain.h
-@@ -272,6 +272,9 @@ public:
+@@ -272,6 +272,10 @@ public:
  	void                wakeFromDoze( void );
  
  	void                requestUserActive(IOService *driver, const char *reason);
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +	void                houjiReportPolicy(void);
++	IOReturn            houjiIdleRetry(void);
 +#endif
  
  // KEXT driver announces support of power management feature
@@ -1907,7 +1908,7 @@ index 4d96763..0b9e90b 100644
  #endif /* DEBUG || DEVELOPMENT */
  
 diff --git a/iokit/Kernel/IOPMrootDomain.cpp b/iokit/Kernel/IOPMrootDomain.cpp
-index 4a06407..be94b42 100644
+index 4a06407..b2bb1cd 100644
 --- a/iokit/Kernel/IOPMrootDomain.cpp
 +++ b/iokit/Kernel/IOPMrootDomain.cpp
 @@ -111,12 +111,22 @@ __END_DECLS
@@ -1933,7 +1934,7 @@ index 4a06407..be94b42 100644
  
  #define DMSG(x...)  do { \
      if (kIOLogPMRootDomain & gIOKitDebug) { \
-@@ -492,6 +502,77 @@ getSystemSleepPreventerString( uint32_t preventer )
+@@ -492,6 +502,105 @@ getSystemSleepPreventerString( uint32_t preventer )
  	return IOFindNameForValue(preventer, systemSleepPreventers);
  }
  
@@ -1986,6 +1987,34 @@ index 4a06407..be94b42 100644
 +	}
 +	rd->houjiReportPolicy();
 +}
++/*
++ * Called every 30 s by the board while the display is off (houji_sleep=1). An idle sleep that powerd cancelled (a scheduled wake
++ * seconds away, a power source change) left the system awake with no idle timer pending and nothing preventing sleep, and iOS
++ * never asked again: the phone stayed awake with the display off for hours. Re-arm the idle timer in that state only; the attempt
++ * is a normal idle sleep (assertions and powerd's veto still apply). Returns whether it re-armed.
++ */
++extern "C" bool
++houji_pm_idle_retry(void)
++{
++	IOPMrootDomain *rd = IOService::getPMRootDomain();
++	return rd != NULL && HOUJI_IOS_IDLE_SLEEP && rd->houjiIdleRetry() == kIOReturnSuccess;
++}
++IOReturn
++IOPMrootDomain::houjiIdleRetry(void)
++{
++	if (!gIOPMWorkLoop->inGate()) {
++		return gIOPMWorkLoop->runAction(
++			OSMemberFunctionCast(IOWorkLoop::Action, this, &IOPMrootDomain::houjiIdleRetry), this);
++	}
++	if (!idleSleepEnabled || idleSleepTimerPending || systemBooting || getPowerState() != ON_STATE ||
++	    idleSleepPreventersCount() || (preventSystemSleepList && preventSystemSleepList->getCount()) ||
++	    !checkSystemSleepEnabled()) {
++		return kIOReturnNotReady;
++	}
++	printf("HOUJI PM: display off, awake, nothing prevents idle sleep and no idle timer: re-arming it (%u ms)\n", idleMilliSeconds);
++	startIdleSleepTimer(idleMilliSeconds);
++	return kIOReturnSuccess;
++}
 +void
 +IOPMrootDomain::houjiReportPolicy(void)
 +{
@@ -2011,7 +2040,7 @@ index 4a06407..be94b42 100644
  // gDarkWakeFlags
  enum {
  	kDarkWakeFlagPromotionNone       = 0x0000,
-@@ -3107,6 +3188,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
+@@ -3107,6 +3216,14 @@ IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
  		timeSinceReset = ml_get_time_since_reset();
  		kdebugTrace(kPMLogSystemWake, 0, (uintptr_t)(timeSinceReset >> 32), (uintptr_t) timeSinceReset);
  
@@ -2026,7 +2055,7 @@ index 4a06407..be94b42 100644
  		if ((gDarkWakeFlags & kDarkWakeFlagPromotionMask) == kDarkWakeFlagPromotionEarly) {
  			wranglerTickled = true;
  			fullWakeReason = kFullWakeReasonLocalUser;
-@@ -3605,7 +3694,7 @@ IOPMrootDomain::systemDidNotSleep( void )
+@@ -3605,7 +3722,7 @@ IOPMrootDomain::systemDidNotSleep( void )
  	if (idleSleepEnabled) {
  		if (!wrangler) {
  #if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
@@ -2035,7 +2064,7 @@ index 4a06407..be94b42 100644
  #else
  			startIdleSleepTimer(idleMilliSeconds);
  #endif
-@@ -8597,8 +8686,8 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8597,8 +8714,8 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  			flags.bit.idleSleepDisabled = true;
  			idleSleepEnabled = false;
  		}
@@ -2046,7 +2075,7 @@ index 4a06407..be94b42 100644
  			minutesToIdleSleep = idleMilliSeconds / 1000;
  		}
  #endif /* !defined(XNU_TARGET_OS_OSX) */
-@@ -8788,7 +8877,12 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8788,7 +8905,12 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  		DLOG("idle sleep timer enabled\n");
  		if (!wrangler) {
  #if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
@@ -2060,7 +2089,7 @@ index 4a06407..be94b42 100644
  #else
  			changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonIdleSleepEnabled);
  			startIdleSleepTimer( idleMilliSeconds );
-@@ -8819,8 +8913,13 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
+@@ -8819,8 +8941,13 @@ IOPMrootDomain::evaluatePolicy( int stimulus, uint32_t arg )
  				changePowerStateWithTagToPriv(getRUN_STATE(), kCPSReasonEvaluatePolicy);
  				if (idleSleepEnabled) {
  #if defined(XNU_TARGET_OS_OSX) && !DISPLAY_WRANGLER_PRESENT
