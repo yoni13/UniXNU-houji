@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile the houji board package (kits/houji) against this source kernel's own compile commands into one archive."""
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -46,4 +47,18 @@ for name in SOURCES:
 archive = OUT / 'libHoujiKit.a'
 archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), *objects], check=True, timeout=30)
+if os.environ.get('UNIXNU_HOUJI_STORAGE_LINK') == '1':
+    # Explicit CI/local experiment only; does not enable native-source-storage at boot.
+    device = Path(os.environ['UNIXNU_DEVICE']).resolve()
+    framework = Path(os.environ['UNIXNU_HOUJI_FRAMEWORK']).resolve()
+    subprocess.run(['python3', str(device / 'scripts/compile-houji-ufs.py'), '--archive',
+                    '--framework', str(framework), '--tree', str(ROOT),
+                    '--ufs', os.environ['UNIXNU_HOUJI_UFS_SOURCE'],
+                    '--storage-source', os.environ['UNIXNU_HOUJI_STORAGE_SOURCE']], check=True, timeout=600)
+    storage = ROOT / 'build/houji-ufs-compile/libHoujiSourceStorage.a'
+    combined = OUT / 'libHoujiKit-storage.a'
+    subprocess.run(['xcrun', 'libtool', '-static', '-o', str(combined), str(archive), str(storage)],
+                   check=True, timeout=60)
+    combined.replace(archive)
+    print('PASS: storage runtime included in force-loaded houji kit; boot activation remains opt-in')
 print(f'PASS: houji kit, {len(objects)} objects')

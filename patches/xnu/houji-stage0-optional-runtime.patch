@@ -12,7 +12,7 @@ index 589c138..7885284 100644
 + * refers to both as optional; a static kernel link still needs the names. Remove with the first board archive that defines them.
 + */
 +volatile uint32_t boot_log_rounds = 1;
-+void native_source_storage_start(void);
++void native_source_storage_start(void) __attribute__((weak));
 +void
 +native_source_storage_start(void)
 +{
