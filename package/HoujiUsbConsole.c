@@ -753,6 +753,8 @@ static bool usb_events(void)
 }
 /* Restart after a panic (halt_all_cpus; interrupts off, the other CPUs stopped, the poll thread will never run again): send what
  * the RAM log still holds, the panic text included, for up to two seconds or until the host has read all of it. */
+int houji_usb_connected(void);
+int houji_usb_connected(void) { return usb_started && u.configured && u.dtr && !u.failed; }
 void houji_usb_panic_drain(void);
 void houji_usb_panic_drain(void)
 {

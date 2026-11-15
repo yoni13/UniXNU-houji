@@ -2,6 +2,7 @@
 // Late registration below the retained storage family. Default-off.
 #include <IOKit/IOService.h>
 #include <IOKit/IOPlatformExpert.h>
+#include <IOKit/IOLib.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <libkern/OSKextLib.h>
 #include <mach/kmod.h>
@@ -13,6 +14,7 @@ extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs
 extern "C" IOService *native_ufs_source_create(void);
 extern "C" bool native_source_root_policies_load(void);
 extern "C" void native_source_storage_start(void);
+extern "C" int houji_usb_connected(void);
 extern "C" const OSMetaClass *native_source_storage_parent(void);
 // Passive diagnostic hook; houji uses its USB RAM log, never sheng disk logging.
 extern "C" void boot_progress_poll(void) {}
@@ -30,6 +32,9 @@ extern "C" void native_source_storage_start(void)
     unsigned enabled = 0;
     if (!PE_parse_boot_argn("native-source-storage", &enabled, sizeof(enabled)) || enabled != 1 || attempted) return;
     attempted = true;
+    // The storage probes end in a panic that carries their result: give the PC up to 30 s to open the console first.
+    for (unsigned i = 0; i < 300 && !houji_usb_connected(); ++i) IOSleep(100);
+    printf("HoujiStorage: start (console %s)\n", houji_usb_connected() ? "connected" : "absent");
     OSReturn status = OSKextLoadKextWithIdentifier("com.apple.iokit.IOStorageFamily");
     if (status != kOSReturnSuccess) panic("HoujiStorage: family load %x", status);
     const OSSymbol *name = OSSymbol::withCString("IOBlockStorageDevice");
