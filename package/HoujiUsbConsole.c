@@ -24,6 +24,19 @@
 #include <sys/reboot.h>
 #include <kern/cpu_number.h>
 extern int reboot_kernel(int, char *);
+/* Restart. reboot_kernel() shuts the BSD processes down first and panics without an init process (proc_shutdown -> proc_rele of
+ * a null proc, seen 2026-11-15 on a kernel that had no root volume): before launchd exists the platform restart is called directly. */
+#include <pexpert/pexpert.h>
+static int houji_restart(char *message)
+{
+    extern struct proc *initproc;
+    if (initproc) return reboot_kernel(RB_AUTOBOOT,message);
+    printf("HOUJI RESTART: %s (no init process: platform restart)\n",message);
+    extern void native_houji_reset_hook(void);
+    native_houji_reset_hook();
+    (void)PEHaltRestart(kPERestartCPU);
+    return 0;
+}
 
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 extern ppnum_t pmap_find_phys(pmap_t, addr64_t);
@@ -368,7 +381,7 @@ static void reboot_thread(void *arg,wait_result_t result __unused)
     extern int houji_ufs_arm_recovery_bcb(void);
     if (arg) printf("HOUJI DEBUG: reboot to the bootloader requested over USB; syncing filesystems\n");
     else printf("HOUJI DEBUG: reboot requested over USB; recovery request %d; syncing filesystems\n",houji_ufs_arm_recovery_bcb());
-    reboot_kernel(RB_AUTOBOOT,(char *)"houji usb debug reboot");
+    houji_restart((char *)"houji usb debug reboot");
     printf("HOUJI DEBUG: reboot_kernel returned\n");
     thread_terminate(current_thread());
 }
@@ -818,7 +831,7 @@ static void watchdog_thread(void *arg,wait_result_t result __unused)
     houji_usb_report();
     gesture_sleep_ms(25000);   /* one more saved checkpoint */
     { extern int houji_reboot_reason_bootloader(void); printf("HOUJI USB: watchdog: bootloader reason %d\n",houji_reboot_reason_bootloader()); }
-    reboot_kernel(RB_AUTOBOOT,(char *)"houji usb watchdog");
+    houji_restart((char *)"houji usb watchdog");
     thread_terminate(current_thread());
 }
 /* houji_reset_after_s=N: N seconds after start the phone restarts into the bootloader (fastboot), whatever state the system is
@@ -829,7 +842,7 @@ static void reset_after_thread(void *arg,wait_result_t result __unused)
     gesture_sleep_ms(1000u*(unsigned)(uintptr_t)arg);
     printf("HOUJI RESET: houji_reset_after_s elapsed; bootloader reason %d\n",houji_reboot_reason_bootloader());
     gesture_sleep_ms(500);
-    reboot_kernel(RB_AUTOBOOT,(char *)"houji_reset_after_s");
+    houji_restart((char *)"houji_reset_after_s");
     thread_terminate(current_thread());
 }
 void houji_usb_debug_start(void)
