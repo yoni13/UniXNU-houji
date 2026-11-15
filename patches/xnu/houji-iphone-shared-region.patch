@@ -1,0 +1,14 @@
+diff --git a/osfmk/mach/shared_region.h b/osfmk/mach/shared_region.h
+--- a/osfmk/mach/shared_region.h
++++ b/osfmk/mach/shared_region.h
+@@ -88,7 +88,9 @@
+ /* ARM64_TODO: move to higher memory */
+ #endif
+ #define SHARED_REGION_BASE_ARM64                0x180000000ULL
+-#define SHARED_REGION_SIZE_ARM64                0x180000000ULL
++/* houji: the iPhone17,1 24B156 dyld cache asks for 0x18ffb8000 bytes (header sharedRegionSize) and a slide of up to
++ * 0x20000000; the 6 GiB region of this source kernel cannot hold it, so dyld cannot map the cache and launchd dies. */
++#define SHARED_REGION_SIZE_ARM64                0x1C0000000ULL
+ #define SHARED_REGION_NESTING_BASE_ARM64        SHARED_REGION_BASE_ARM64
+ #define SHARED_REGION_NESTING_SIZE_ARM64        SHARED_REGION_SIZE_ARM64
+ #define SHARED_REGION_NESTING_MIN_ARM64         ?

@@ -11,3 +11,4 @@ sheng/zzzzzzzzzz-sheng-sigp-reinit-assert.patch
 sheng/zzzzzzzzzzz-sheng-edge-matrix.patch
 houji-stage0-optional-runtime.patch
 houji-debug-console.patch
+houji-iphone-shared-region.patch
