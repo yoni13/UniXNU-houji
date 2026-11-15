@@ -764,8 +764,13 @@ void houji_usb_panic_drain(void)
     extern void houji_debug_panic_mode(void);
     extern unsigned panic_active(void);
     static bool once;
-    if (once || !usb_started || u.failed || !panic_active()) return;
+    if (once || !usb_started || u.failed) return;
+    /* An orderly restart (reboot(2) from launchd or a daemon) comes here too, without a panic: its last log lines would be lost
+     * with the USB thread, so they are sent the same way. */
+    const bool panicking=panic_active()!=0;
     once=true;houji_debug_panic_mode();
+    if (!panicking) printf("HOUJI RESET: restart without a panic; sending the rest of the log\n");
+    else printf("HOUJI RESET: restart after a panic\n");
     /* An early panic can come before the host has enumerated the console: wait up to 20 s for a reader. */
     for (unsigned i=0;i<40000 && !u.failed && !(u.configured && u.dtr);i++) {
         if (!usb_events()) break;

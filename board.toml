@@ -55,11 +55,40 @@ unixnu = "../UniXNU"
 [package.defconfig]
 "ios-27.2.1-24B156" = "houji_ios27_defconfig"
 
+# The identity and layout of the target product (iPhone17,1 D93AP DeviceTree of 24B156, /product), which MobileGestalt reads
+# for the UI: the artwork subtype selects the iPhone 16 Pro screen class and assets, the island location the status bar. Only
+# descriptive properties: none that claims hardware houji lacks (exclaves, LPM, camera button, Pearl, baseband, NFC, GPU class).
 [adt.product]
 [adt.product.string]
 model = "xiaomi,houji"
+product-name = "iPhone 16 Pro"
+product-description = "iPhone 16 Pro"
+unique-model = "D93AP"
+sub-product-type = "iPhone17,1"
+compatible-device-fallback = "iPhone16,1"
+artwork-device-idiom = "phone"
+artwork-display-gamut = "P3"
+app-macho-architecture = "arm64e"
+partition-style = "iOS"
 [adt.product.u32]
 thin-bezel = 1
+artwork-device-subtype = 2622
+artwork-scale-factor = 3
+artwork-dynamic-displaymode = 0
+island-notch-location = 144
+oled-display = 1
+large-format-phone = 0
+ui-reachability = 1
+[adt.product.bytes]
+# D93AP: two u32, 62 and 1.
+display-corner-radius = "3e00000001000000"
+
+# No Home button: SpringBoard's lock screen, home and switcher are the gesture ones (D93AP /buttons home-button-type = 2).
+# Descriptive only, no compatible or button functions, so no button driver matches it.
+[adt.buttons]
+[adt.buttons.u32]
+home-button-type = 2
+opposed-power-vol-buttons = 1
 
 [adt.defaults]
 [adt.defaults.u32]
