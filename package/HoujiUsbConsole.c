@@ -48,6 +48,12 @@ static void note_add(const char *line,int n)
 extern int houji_usb_phy_start(void);
 extern void houji_usb_phy_state(const char *);
 extern void houji_usb_phy_cold(void);
+/* For houji_usb_require=1 (HoujiKernelHooks.c): did the controller start, and what the driver noted on the way. */
+static bool usb_started;
+int houji_usb_started(void);
+const char *houji_usb_notes_tail(unsigned bytes);
+int houji_usb_started(void) { return usb_started; }
+const char *houji_usb_notes_tail(unsigned bytes) { return usb_notes+(usb_notes_n>bytes?usb_notes_n-bytes:0); }
 void houji_usb_note(const char *line);
 void houji_usb_note(const char *line) { unote("%s",line); }
 
@@ -985,6 +991,7 @@ void houji_usb_debug_start(void)
     if (kernel_thread_start(usb_thread,NULL,&thread)!=KERN_SUCCESS) { fail("poll thread creation");wr(DEVTEN,0);dctl_write(rd(DCTL)&~RUN);return; }
     thread_deallocate(thread);
     unote("HOUJI USB: owned RAM base=%lx bytes=%lx; mode=%d\n",gPhysBase,gPhysSize,enabled);
+    usb_started=true;
     unote("HOUJI USB: running; DMA=%llx; CDC serial HOUJIDBG001; awaiting enumeration\n",u.pa);
     int hold=0;
     PE_parse_boot_argn("houji_usb_hold",&hold,sizeof(hold));
