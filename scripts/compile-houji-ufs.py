@@ -59,7 +59,9 @@ OSDefineAbstractStructors(IOBlockStorageDevice, IOService)
 OSDefineOperatorMethods(IOBlockStorageDevice)
 '''))
         package = Path(__file__).resolve().parents[1] / 'package'
-        sources = [base, ufs / 'NativeUfs.cpp', framework / 'drivers/RamBlock/NativeRamBlock.cpp']
+        # Read-only UFS bring-up does not need the persistent Data RAM disk.
+        # Its newer mfree/persistence interfaces need separate adaptation.
+        sources = [base, ufs / 'NativeUfs.cpp']
         sources += [package / name for name in ('SourceStorage.cpp', 'SourceRootPolicies.cpp', 'SourceRootBinding.cpp')]
         sources += [framework / 'kits/VerifiedRoot/src/verified_root.c', framework / 'kits/VerifiedRoot/adapters/xnu_crypto.c']
         policies = Path(__file__).resolve().parent / 'policies/ios-27.2.1-24B156'

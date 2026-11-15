@@ -10,7 +10,6 @@
 extern kmod_info_t g_kernel_kmod_info;
 extern "C" void source_storage_base_init(void) __asm__("__GLOBAL__sub_I_IOBlockStorageDevice.cpp");
 extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs.cpp");
-extern "C" void source_storage_ram_init(void) __asm__("__GLOBAL__sub_I_NativeRamBlock.cpp");
 extern "C" IOService *native_ufs_source_create(void);
 extern "C" bool native_source_root_policies_load(void);
 extern "C" void native_source_storage_start(void);
@@ -46,7 +45,6 @@ extern "C" void native_source_storage_start(void)
     if (!handle) panic("HoujiStorage: preModLoad failed");
     source_storage_base_init();
     source_storage_ufs_init();
-    source_storage_ram_init();
     status = OSMetaClass::postModLoad(handle);
     if (status != kOSReturnSuccess) panic("HoujiStorage: class registration %x", status);
     OSDictionary *matching = IOService::serviceMatching("IOPlatformExpertDevice");
