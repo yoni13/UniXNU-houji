@@ -72,9 +72,12 @@ loader = "firmware"
 title = "houji iOS 27.2.1"
 # Equals the DTS memory node: the contiguous range at 0x8C0000000 of the firmware's high RAM.
 dram_size = "0x80000000"
-panic_screen = false
+# Panics are drawn on the screen (the patcher leaves out the stage 2 bar so the renderer fits this kernel's padding).
+panic_screen = true
 # houji_usb=1: the USB debug console. houji_reboot_bootloader=1: every restart, also after a panic, stops in fastboot.
-kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "houji_usb=1", "houji_reboot_bootloader=1"]
+# use_contiguous_hint=0: without it machine_lockdown panics (arm_vm_init.c:1107, the contiguous hint of the bootstrap mapping
+# differs from the page-granular remap), photographed on this phone 2026-11-15. -no_slto_panic as on sheng.
+kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_panic", "use_contiguous_hint=0", "houji_usb=1", "houji_reboot_bootloader=1"]
 
 [payload.adt]
 # T8140, the chip of iPhone17,1.
