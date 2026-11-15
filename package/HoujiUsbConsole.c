@@ -34,7 +34,8 @@ static int houji_restart(char *message)
     printf("HOUJI RESTART: %s (no init process: platform restart)\n",message);
     extern void native_houji_reset_hook(void);
     native_houji_reset_hook();
-    (void)PEHaltRestart(kPERestartCPU);
+    extern int PEHaltRestart(unsigned int type);   /* pexpert.h declares it for the kernel proper only */
+    (void)PEHaltRestart(1 /* kPERestartCPU */);
     return 0;
 }
 
