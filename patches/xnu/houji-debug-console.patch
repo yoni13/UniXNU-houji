@@ -1,6 +1,6 @@
 diff -ruN a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 --- a/bsd/kern/bsd_init.c	2026-11-15 12:13:15.975415488 +0800
-+++ b/bsd/kern/bsd_init.c	2026-11-15 12:13:15.997789461 +0800
++++ b/bsd/kern/bsd_init.c	2026-11-15 15:26:36.497758181 +0800
 @@ -778,6 +778,12 @@
  	bsd_init_kprintf("calling bsd_bufferinit\n");
  	bsd_bufferinit();
@@ -16,7 +16,7 @@ diff -ruN a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
  	boot_progress_stage("original PMGR nub start");
 diff -ruN a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
 --- a/osfmk/arm64/machine_routines.c	2026-11-15 12:13:15.985731654 +0800
-+++ b/osfmk/arm64/machine_routines.c	2026-11-15 12:13:15.998562718 +0800
++++ b/osfmk/arm64/machine_routines.c	2026-11-15 15:26:36.499976823 +0800
 @@ -913,6 +913,11 @@
  {
  	if (reboot) {
@@ -31,22 +31,22 @@ diff -ruN a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
  		printf("CPU halted\n");
 diff -ruN a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
 --- a/osfmk/console/serial_console.c	2026-11-15 12:13:15.978785377 +0800
-+++ b/osfmk/console/serial_console.c	2026-11-15 12:13:15.998237375 +0800
-@@ -280,6 +280,11 @@
- static inline void
- _cnputs(char *c, int size, bool poll)
++++ b/osfmk/console/serial_console.c	2026-11-15 15:26:36.494242277 +0800
+@@ -525,6 +525,11 @@
+ void
+ console_write(char *str, int size)
  {
 +	{
-+		/* houji: the debug console's RAM log keeps everything, also what the screen does not show. */
++		/* houji: the debug console's RAM log keeps everything printed, also when no console device shows it. */
 +		extern void native_houji_log_append(const char *, int);
-+		native_houji_log_append(c, size);
++		native_houji_log_append(str, size);
 +	}
  	if (disableConsoleOutput) {
  		return;
  	}
 diff -ruN a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
 --- a/pexpert/arm/pe_kprintf.c	2026-11-15 12:13:15.982144566 +0800
-+++ b/pexpert/arm/pe_kprintf.c	2026-11-15 12:13:15.998427754 +0800
++++ b/pexpert/arm/pe_kprintf.c	2026-11-15 15:26:36.498943995 +0800
 @@ -162,6 +162,10 @@
  static void
  serial_putc_crlf(char c)
