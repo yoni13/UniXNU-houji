@@ -61,7 +61,8 @@ OSDefineOperatorMethods(IOBlockStorageDevice)
         package = Path(__file__).resolve().parents[1] / 'package'
         # The Data RAM disk; its two hooks this kernel lacks have weak fallbacks in package/SourceStorage.cpp.
         sources = [base, ufs / 'NativeUfs.cpp', framework / 'drivers/RamBlock/NativeRamBlock.cpp']
-        sources += [package / name for name in ('SourceStorage.cpp', 'SourceRootPolicies.cpp', 'SourceRootBinding.cpp')]
+        sources += [package / name for name in ('SourceStorage.cpp', 'SourceRootPolicies.cpp', 'SourceRootBinding.cpp',
+                                                'BootWatchdogPolicy.c')]
         sources += [framework / 'kits/VerifiedRoot/src/verified_root.c', framework / 'kits/VerifiedRoot/adapters/xnu_crypto.c']
         policies = Path(__file__).resolve().parent / 'policies/ios-27.2.1-24B156'
         key = (policies / 'OS/trusted-key.bin').read_bytes()
@@ -71,9 +72,11 @@ OSDefineOperatorMethods(IOBlockStorageDevice)
         anchor.write_text('#include <stdint.h>\nconst uint8_t verified_root_key[395] = {' + ','.join(map(str, key)) + '};\n')
         sources.append(anchor)
     c_record = json.loads((tree / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json').read_text().strip().rstrip(',')) if args.archive else None
+    # BSD sources (sys/proc.h, the system calls) take kern_exec's flags, as in UniXNU's storage builder.
+    bsd_record = json.loads((tree / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(',')) if args.archive else None
     for source in sources:
         obj = out / (source.stem + '.o')
-        selected = c_record if source.suffix == '.c' else record
+        selected = (bsd_record if source.name == 'BootWatchdogPolicy.c' else c_record) if source.suffix == '.c' else record
         command = build.compile_command(selected, source, obj, includes, flags)
         if source.name == 'IOBlockStorageDevice.cpp':
             command.append('-Wno-error')  # Same public-source compatibility as the archive builder.
