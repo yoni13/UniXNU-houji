@@ -42,6 +42,7 @@ def prepare(source, legacy, output):
     native = replace_once(native, 'smmuReport, phys, 16384);', 'smmuReport, phys, 16384, hc);')
     native = replace_once(native, 'report, gHost.phys, kDmaBytes);', 'report, gHost.phys, kDmaBytes, gHost.hc);')
     # No sheng WiFi/DPU stream programming belongs in houji storage bring-up.
+    native = replace_once(native, '  uint32_t wifi = 0;\n', '')
     native = replace_once(native, 'if (PE_parse_boot_argn ("sheng-wifi", &wifi, sizeof (wifi)) && wifi >= 2) {',
                           'if (false) { /* houji: sheng WiFi mapping disabled */')
     native = replace_once(native, 'extraReport, 0x9c900000ULL, 8ULL << 20);',
