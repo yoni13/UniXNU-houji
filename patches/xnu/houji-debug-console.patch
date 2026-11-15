@@ -44,6 +44,22 @@ diff -ruN a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
  	if (disableConsoleOutput) {
  		return;
  	}
+diff -ruN a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+--- a/osfmk/kern/debug.c	2026-11-15 16:29:42.441484880 +0800
++++ b/osfmk/kern/debug.c	2026-11-15 16:29:42.454043941 +0800
+@@ -1390,6 +1390,12 @@
+ static void
+ kdp_machine_reboot_type(unsigned int type, uint64_t debugger_flags)
+ {
++	{
++		/* houji: the debug console sends the rest of the RAM log (the panic text) and the reboot reason is set, before the
++		 * platform restart, which does not return. */
++		extern void native_houji_reset_hook(void);
++		native_houji_reset_hook();
++	}
+ 	if ((type == kPEPanicRestartCPU) && (debugger_flags & DEBUGGER_OPTION_SKIP_PANICEND_CALLOUTS)) {
+ 		PEHaltRestart(kPEPanicRestartCPUNoCallouts);
+ 	} else {
 diff -ruN a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
 --- a/pexpert/arm/pe_kprintf.c	2026-11-15 12:13:15.982144566 +0800
 +++ b/pexpert/arm/pe_kprintf.c	2026-11-15 15:26:36.498943995 +0800
