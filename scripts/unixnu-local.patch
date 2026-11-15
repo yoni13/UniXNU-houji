@@ -1,0 +1,41 @@
+diff --git a/scripts/build-fileset-release-reference.py b/scripts/build-fileset-release-reference.py
+index 5090d11..9a5db52 100644
+--- a/scripts/build-fileset-release-reference.py
++++ b/scripts/build-fileset-release-reference.py
+@@ -16,6 +16,27 @@ def file_hash(path):
+         return hashlib.file_digest(stream, 'sha256').hexdigest()
+ 
+ 
++def archive_hash(path):
++    """Hash a static archive by its members' names and contents. Apple's archive writers leave uninitialized padding in the
++    __.SYMDEF index (ar and libtool -static -D alike), so identical objects give a different archive every run; the index and
++    the member dates do not reach the link."""
++    data = path.read_bytes()
++    if data[:8] != b'!<arch>\n':
++        return file_hash(path)
++    digest, at = hashlib.sha256(), 8
++    while at + 60 <= len(data):
++        header = data[at:at + 60]
++        name, size = header[:16].decode('ascii', 'replace').rstrip(), int(header[48:58])
++        body = data[at + 60:at + 60 + size]
++        if name.startswith('#1/'):
++            length = int(name[3:])
++            name, body = body[:length].rstrip(b'\0').decode('utf-8', 'replace'), body[length:]
++        if not name.startswith('__.SYMDEF'):
++            digest.update(name.encode() + b'\0' + hashlib.sha256(body).digest())
++        at += 60 + size + (size & 1)
++    return digest.hexdigest()
++
++
+ def tree_hash(path):
+     """Hash inputs by content; follow SDK header-directory links as the compiler does."""
+     if not path.is_dir():
+@@ -73,7 +94,7 @@ def main():
+         'script': file_hash(Path(__file__)),
+         'source': tree_hash(root / '.cache/xnu-work'),
+         'sdk': tree_hash(sdk),
+-        'archives': {str(p.relative_to(root)): file_hash(p) for p in archives + forced},
++        'archives': {str(p.relative_to(root)): archive_hash(p) for p in archives + forced},
+         'versions': {name: os.environ.get(name, default) for name, default in (
+             ('UNIXNU_IOS_VERSION', '26.0'), ('UNIXNU_XNU_DARWIN', '25.5.0'),
+             ('UNIXNU_XNU_VERSION', '12377.121.6'))},
