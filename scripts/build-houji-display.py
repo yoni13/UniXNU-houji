@@ -408,6 +408,15 @@ gop = ROOT / 'build/native-gop-presenter'
 gop_late = gop / 'NativeGOPPresenter.late.o'
 run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--globalize-symbol=__GLOBAL__sub_I_NativeGOPPresenter.cpp',
      gop / 'NativeGOPPresenter.o', gop_late])
+# houji: the prelinked collection leaves native __DATA_CONST no more than its 0x120000 bytes below the retained kexts'
+# constants, and these three objects' constant data (mostly vtables, about 9.6 KB) went 0x138 bytes over. A relocatable link
+# moves their (__DATA, __const) to (__DATA, __data), which has room; the signed vtable relocations are kept as they are (each
+# entry's diversity is in the section content). Cost: these vtables are writable instead of read-only after lockdown.
+def constants_to_data(path):
+    moved = path.with_suffix('.data.o')
+    run(['xcrun', 'ld', '-r', '-arch', 'arm64e', '-rename_section', '__DATA', '__const', '__DATA', '__data', path, '-o', moved])
+    return moved
+late, gop_late, keyevents_late = (constants_to_data(p) for p in (late, gop_late, keyevents_late))
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
 run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', OUT / 'original-addresses.o', OUT / 'LegacyDisplayProbe.o',
