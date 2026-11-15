@@ -599,6 +599,7 @@ static void command_line(void)
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
+    else if (!strcmp(u.command,"pon")) { extern void houji_pon_report(void); houji_pon_report(); }
     else if (!strcmp(u.command,"touch")) { houji_touch_report(); houji_touch_driver_report(); }
     else if (!strcmp(u.command,"key power")) { sweet_hid_key(0,1); delay(120000); sweet_hid_key(0,0); }
     else if (!strncmp(u.command,"prof ",5)) { extern void houji_prof_command(const char *); houji_prof_command(u.command+5); }
@@ -873,6 +874,7 @@ void houji_usb_debug_start(void)
         }
     }
     { extern void houji_power_start(void); static bool power; if (!power) { power=true; houji_power_start(); } }
+    { extern void houji_pon_report(void); static bool pon; if (!pon) { pon=true; houji_pon_report(); } }
     {
         /* houji_reboot_bootloader=1: every restart (console, iOS, panic) stops in the bootloader instead of starting boot_a again. */
         static bool reason;int always=0;extern int houji_reboot_reason_prepare(int);
