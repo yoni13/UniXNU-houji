@@ -3,6 +3,8 @@
 // one of them and says so; it goes when its driver arrives.
 #include <sys/types.h>
 #include <sys/systm.h>
+#include <pexpert/pexpert.h>
+#include <machine/machine_routines.h>
 
 #define ABSENT(name) printf("HOUJI DEBUG: %s is not ported to this kernel yet\n", name)
 int houji_usb_phy_start(void);
@@ -36,9 +38,50 @@ int houji_ufs_arm_recovery_bcb(void) { return -1; }
 void sweet_hid_touch(int a __unused, int b __unused, int c __unused, int d __unused) {}
 void sweet_hid_key(int a __unused, int b __unused) {}
 int sweet_hid_type(const char *s __unused) { return -1; }
-void houji_framebuffer_shot(unsigned a __unused, unsigned b __unused) { ABSENT("shot"); }
-void houji_framebuffer_shot_region(unsigned a __unused, unsigned b __unused, unsigned c __unused, unsigned d __unused, unsigned e __unused,
-    unsigned f __unused) { ABSENT("shotr"); }
+/* Screenshot of the firmware framebuffer the display presents into (PE_current_console): one luminance hex digit per
+ * sample, in the console's SHOT format (perf-test/phone.py shot renders it). Read only; mapped once. */
+void houji_framebuffer_shot_region(unsigned x0, unsigned y0, unsigned w, unsigned h, unsigned cols, unsigned rows)
+{
+	static vm_offset_t pixels;
+	static unsigned width, height, stride;
+	if (!pixels) {
+		PE_Video video = {};
+		if (PE_current_console(&video) || !video.v_baseAddr || video.v_depth != 32 || !video.v_width || !video.v_height ||
+		    video.v_rowBytes < video.v_width * 4) {
+			printf("HOUJI SHOT: unavailable\n");
+			return;
+		}
+		pixels = ml_io_map(video.v_baseAddr, (vm_size_t)video.v_rowBytes * video.v_height);
+		width = (unsigned)video.v_width; height = (unsigned)video.v_height; stride = (unsigned)video.v_rowBytes;
+	}
+	if (!pixels || !cols || !rows || cols > 300 || rows > 700 || !w || !h || x0 + w > width || y0 + h > height) {
+		printf("HOUJI SHOT: unavailable\n");
+		return;
+	}
+	printf("HOUJI SHOT BEGIN %u %u panel=%ux%u region=%u,%u,%u,%u\n", cols, rows, width, height, x0, y0, w, h);
+	char line[320];
+	for (unsigned r = 0; r < rows; r++) {
+		const uint32_t y = y0 + (uint32_t)(((uint64_t)r * h + h / rows / 2) / rows);
+		for (unsigned c = 0; c < cols; c++) {
+			const uint32_t x = x0 + (uint32_t)(((uint64_t)c * w + w / cols / 2) / cols);
+			const volatile uint8_t *p = (const volatile uint8_t *)(pixels + (uint64_t)y * stride + (uint64_t)x * 4);
+			const unsigned l = (p[2] * 3u + p[1] * 6u + p[0]) / 10u;
+			line[c] = "0123456789abcdef"[l >> 4];
+		}
+		line[cols] = 0;
+		printf("SHOT %03u %s\n", r, line);
+	}
+	printf("HOUJI SHOT END\n");
+}
+void houji_framebuffer_shot(unsigned cols, unsigned rows)
+{
+	PE_Video video = {};
+	if (PE_current_console(&video) || !video.v_width || !video.v_height) {
+		printf("HOUJI SHOT: unavailable\n");
+		return;
+	}
+	houji_framebuffer_shot_region(0, 0, (unsigned)video.v_width, (unsigned)video.v_height, cols, rows);
+}
 void houji_prof_command(const char *s __unused) { ABSENT("prof"); }
 void houji_camera_command(const char *s __unused) { ABSENT("camera"); }
 void houji_screen_command(const char *s __unused) { ABSENT("screen"); }
