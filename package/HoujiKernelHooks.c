@@ -26,9 +26,20 @@ void native_houji_console_start(void)
 	}
 }
 void native_houji_log_append(const char *data, int size) { houji_debug_append(data, size); }
+/* PSCI SYSTEM_RESET. The platform expert of this kernel (ArmDTPlatform) has no restart of its own: PEHaltRestart returns. */
+void houji_psci_reset(void);
+void houji_psci_reset(void)
+{
+	register uint64_t x0 __asm__("x0") = 0x84000009u;
+	__asm__ volatile("dsb sy\n\tsmc #0" : "+r"(x0) :: "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
+	    "x15", "x16", "x17", "cc", "memory");
+}
+/* Every restart of this kernel passes here (halt_all_cpus and the panic restart): the console sends what is left of the log
+ * after a panic, the reboot reason is set when asked for, and the phone resets. */
 void native_houji_reset_hook(void)
 {
 	extern void houji_usb_panic_drain(void);
 	houji_usb_panic_drain();
 	houji_reboot_reason_at_reset();
+	houji_psci_reset();
 }

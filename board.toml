@@ -8,6 +8,12 @@ description = "Xiaomi 14 23127PN0CC (houji)"
 kit = "houji"
 os_profile = "ios-27.2.1-24B156"
 
+# The GPT entry "userdata" of this phone (stock OS3.0.303.0 layout): fastboot reports 0x786A1FB000 bytes of 4096-byte blocks.
+[userdata]
+first_lba = 2362880
+last_lba = 128626682
+lba_bytes = 4096
+
 [components]
 include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
 
