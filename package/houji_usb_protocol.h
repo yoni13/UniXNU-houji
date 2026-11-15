@@ -1,9 +1,8 @@
 /* CDC ACM protocol and DMA predicates shared with host corruption tests. */
 #ifndef HOUJI_USB_PROTOCOL_H
 #define HOUJI_USB_PROTOCOL_H
-#ifdef HOUJI_HOST_TEST
 #include <stdint.h>
-#else
+#ifndef HOUJI_HOST_TEST
 #include <sys/types.h>
 #endif
 static const uint8_t vusb_device[18]={

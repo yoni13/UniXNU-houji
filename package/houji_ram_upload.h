@@ -2,9 +2,8 @@
  * or allocation sizes are accepted from the host. Single worker owns this state. */
 #ifndef HOUJI_RAM_UPLOAD_H
 #define HOUJI_RAM_UPLOAD_H
-#ifdef HOUJI_UPLOAD_HOST_TEST
 #include <stdint.h>
-#else
+#ifndef HOUJI_UPLOAD_HOST_TEST
 #include <sys/types.h>
 #endif
 

@@ -1,9 +1,8 @@
 /* Caller supplies a nonblocking lock; no allocations or filesystem I/O. */
 #ifndef HOUJI_LOG_RING_H
 #define HOUJI_LOG_RING_H
-#ifdef HOUJI_HOST_TEST
 #include <stdint.h>
-#else
+#ifndef HOUJI_HOST_TEST
 #include <sys/types.h>
 #endif
 #ifndef VL_RING_SIZE
