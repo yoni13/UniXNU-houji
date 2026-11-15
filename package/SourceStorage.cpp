@@ -3,6 +3,7 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <libkern/OSKextLib.h>
 #include <mach/kmod.h>
@@ -12,6 +13,11 @@ extern kmod_info_t g_kernel_kmod_info;
 extern "C" void source_storage_base_init(void) __asm__("__GLOBAL__sub_I_IOBlockStorageDevice.cpp");
 extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs.cpp");
 extern "C" IOService *native_ufs_source_create(void);
+extern "C" void source_storage_ram_init(void) __asm__("__GLOBAL__sub_I_NativeRamBlock.cpp");
+// The Data RAM disk's optional hooks this kernel does not have: keep the loader's seed pages (no release of loader memory),
+// and no write-back cache path to UFS (storage writes are prohibited in this port). Weak, so a real provider wins.
+extern "C" __attribute__((weak)) bool ml_static_mfree_prepare(vm_offset_t, vm_size_t) { return false; }
+extern "C" __attribute__((weak)) int native_ufs_store_write_cached(uint64_t, uint32_t, const void *) { return -1; }
 extern "C" bool native_source_root_policies_load(void);
 extern "C" void native_source_storage_start(void);
 extern "C" int houji_usb_connected(void);
@@ -55,6 +61,7 @@ extern "C" void native_source_storage_start(void)
     source_storage_base_init();
     step("base class registered");
     source_storage_ufs_init();
+    source_storage_ram_init();
     step("UFS class registered");
     status = OSMetaClass::postModLoad(handle);
     if (status != kOSReturnSuccess) panic("HoujiStorage: class registration %x", status);
@@ -71,4 +78,13 @@ extern "C" void native_source_storage_start(void)
     step("UFS attached; starting (hardware access)");
     if (!driver->start(provider)) panic("HoujiStorage: UFS start failed");
     printf("HoujiStorage: source UFS started (storage writes prohibited)\n");
+    // The Data seed the loader placed in /chosen/memory-map (PackedRAMDisk): a RAM disk below the platform root.
+    IORegistryEntry *map = IORegistryEntry::fromPath("/chosen/memory-map", gIODTPlane);
+    const bool seed = map && (map->getProperty("PackedRAMDisk") || map->getProperty("RAMDisk"));
+    OSSafeReleaseNULL(map);
+    if (seed) {
+        IOService *disk = OSDynamicCast(IOService, OSMetaClass::allocClassWithName("NativeRamBlock"));
+        if (!disk || !disk->init() || !disk->attach(provider) || !disk->start(provider)) panic("HoujiStorage: Data disk start failed");
+        printf("HoujiStorage: Data disk started (RAM only)\n");
+    }
 }
