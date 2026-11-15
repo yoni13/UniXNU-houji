@@ -49,6 +49,27 @@ def prepare(source, legacy, output):
                           'extraReport, 0x9c900000ULL, 8ULL << 20, gHost.hc);')
     native = replace_once(native, 'if (dpu >= 2 || scanout) {',
                           'if (false) { /* houji: sheng display mapping disabled */')
+    # Bring-up checkpoints (thread context only): each stage reaches the USB console before the next hardware step.
+    start = native.index('static bool hostBringUp (const char **why)\n{')
+    end = native.index('\n}\n', start)
+    body = native[start:end]
+    staged = body.count('gRootDiagnostic.stage = "')
+    if staged < 3:
+        raise ValueError('upstream interface changed: hostBringUp stages')
+    body = body.replace('gRootDiagnostic.stage = "', 'houjiStage ("')
+    import re
+    body = re.sub(r'houjiStage \("([^"]*)";', r'houjiStage ("\1");', body)
+    for old, new in (('  if (!hostStopQueue (why)) return false;\n',
+                      '  if (!hostStopQueue (why)) return false;\n  houjiStage ("request queue stopped; SMMU takeover next");\n'),
+                     ('  gHost.smmu = gHost.smmuMap->getVirtualAddress ();\n',
+                      '  gHost.smmu = gHost.smmuMap->getVirtualAddress ();\n  houjiStage ("SMMU stream 0x60 configured");\n'),
+                     ('  if (!hostStartQueue (why)) return false;\n',
+                      '  if (!hostStartQueue (why)) return false;\n  houjiStage ("request queue restarted");\n')):
+        if body.count(old) != 1:
+            raise ValueError(f'upstream interface changed: {old.strip()}')
+        body = body.replace(old, new)
+    native = native[:start] + ('static void houjiStage (const char *stage)\n{\n'
+        '  gRootDiagnostic.stage = stage;\n  IOLog ("HOUJI UFS: %s\\n", stage);\n  IOSleep (300);\n}\n\n') + body + native[end:]
     commands = (source / 'RootCommands.h').read_text()
     commands = replace_once(commands, '  *ocs = 15;\n',
                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
