@@ -125,10 +125,10 @@ windows = [{ name = "OS", component = "OS" }, { name = "SystemOS", component = "
 
 [root]
 # The OS and Cryptex1,SystemOS disk images: APFS volume UUIDs and image digests the root policies sign.
-os_volume_uuid = "2F8E6EED-68D5-4261-B8A3-12571BAA2DD4"
-os_image_sha256 = "8a12cdad43f8f0d33dadcf01a800a560222baf40c05f71374c460ba57ba3a739"
-systemos_volume_uuid = "F914C62A-AD00-47C6-8281-5746291C339A"
-systemos_image_sha256 = "d5b4873d35c85f96eaafaa31c59602b485afe33b5067eff1af67ba31204cdb4a"
+os_volume_uuid = "46F2583C-99AF-4BD2-8205-7309B91F9007"
+os_image_sha256 = "7cb4045466bc14d4c358bd88ce63e5dca80ae12b587b794c750418e3843b454c"
+systemos_volume_uuid = "DAE184BE-D08E-4926-AD45-9E1F0DA5917F"
+systemos_image_sha256 = "6ea9afe81360af0a7bcdf54b634b2fe7e3082b862179af7692706856234a5772"
 
 [payload.adt]
-root_match_volume_uuid = "2F8E6EED-68D5-4261-B8A3-12571BAA2DD4"
+root_match_volume_uuid = "46F2583C-99AF-4BD2-8205-7309B91F9007"

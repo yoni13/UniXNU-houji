@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Prepare a local, read-only houji adaptation of pinned ShengUfs sources.
+
+Does not select a kernel archive or claim storage ABI/runtime qualification.
+The proven houji SMMU planner is supplied from the legacy source checkout.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+
+PIN = '99d8bcd3e43dd24fc3c8437c67b5d4cc71ab94d0'
+
+
+def replace_once(text, old, new):
+    if text.count(old) != 1:
+        raise ValueError(f'upstream interface changed: {old[:80]}')
+    return text.replace(old, new)
+
+
+def prepare(source, legacy, output):
+    revision = subprocess.check_output(['git', '-C', source, 'rev-parse', 'HEAD'], text=True).strip()
+    if revision != PIN:
+        raise ValueError('unexpected ShengUfs source revision')
+    # Reject modified tracked sources, not just a mismatching HEAD.
+    subprocess.run(['git', '-C', source, 'diff', '--exit-code', 'HEAD', '--', '*.h', '*.cpp'], check=True)
+    if (source / 'SmmuTakeover.h').read_bytes() != (legacy / 'SmmuTakeover.h').read_bytes():
+        raise ValueError('legacy and new SMMU planner interfaces differ')
+    native = (source / 'NativeUfs.cpp').read_text()
+    native = replace_once(native, '#include "SmmuTakeover.h"', '#include "GiuliaSmmuTakeover.h"')
+    native = replace_once(native, 'uint64_t dma, uint64_t bytes)\n{\n  uintptr_t smmu',
+                          'uint64_t dma, uint64_t bytes, uintptr_t host)\n{\n'
+                          '  if ((read32(host, 0x60) & 1) || read32(host, 0x58) || read32(host, 0x78))\n'
+                          '    panic("HOUJI UFS: queue not quiescent before SMMU takeover");\n  uintptr_t smmu')
+    native = replace_once(native,
+        'UfsSmmuPlan plan = planUfsSmmu (stream, dma, bytes, [smmu](unsigned offset) { return read32 (smmu, offset); });',
+        'GiuliaSmmuPlan selection = planGiuliaSmmu (stream, dma, bytes, [smmu](unsigned offset) { return read32 (smmu, offset); });\n'
+        '  const UfsSmmuPlan &plan = selection.target;')
+    native = replace_once(native, 'configureUfsSmmu (plan, stream,', 'configureGiuliaSmmu (selection, stream, true,')
+    native = replace_once(native, 'smmuReport, phys, 16384);', 'smmuReport, phys, 16384, hc);')
+    native = replace_once(native, 'report, gHost.phys, kDmaBytes);', 'report, gHost.phys, kDmaBytes, gHost.hc);')
+    # No sheng WiFi/DPU stream programming belongs in houji storage bring-up.
+    native = replace_once(native, 'if (PE_parse_boot_argn ("sheng-wifi", &wifi, sizeof (wifi)) && wifi >= 2) {',
+                          'if (false) { /* houji: sheng WiFi mapping disabled */')
+    native = replace_once(native, 'extraReport, 0x9c900000ULL, 8ULL << 20);',
+                          'extraReport, 0x9c900000ULL, 8ULL << 20, gHost.hc);')
+    native = replace_once(native, 'if (dpu >= 2 || scanout) {',
+                          'if (false) { /* houji: sheng display mapping disabled */')
+    commands = (source / 'RootCommands.h').read_text()
+    commands = replace_once(commands, '  *ocs = 15;\n',
+                            '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
+    # Also reject the public write entry before it copies or modifies DMA data.
+    commands = replace_once(commands,
+        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {',
+        '  return kIOReturnNotPermitted; // houji: persistence is not qualified\n'
+        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {')
+    output.mkdir(parents=True, exist_ok=False)
+    for path in source.glob('*.h'):
+        shutil.copyfile(path, output / path.name)
+    shutil.copyfile(legacy / 'GiuliaSmmuTakeover.h', output / 'GiuliaSmmuTakeover.h')
+    (output / 'NativeUfs.cpp').write_text(native)
+    (output / 'RootCommands.h').write_text(commands)
+    report = dict(upstream_revision=revision, writes_enabled=False, storage_abi_qualified=False,
+                  hardware_tested=False, sources={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                                  for p in sorted(output.iterdir()) if p.is_file()})
+    (output / 'houji-adaptation.json').write_text(json.dumps(report, indent=2) + '\n')
+    print('PASS: pinned ShengUfs adapted with houji quiescent SMMU retargeting')
+    print('PASS: hostWrite4k and hostSubmit(direction=1) reject writes')
+    print('NOT QUALIFIED: arm64e 24B156 ABI, compilation, hardware block reads')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source', type=Path, required=True)
+    parser.add_argument('--legacy', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    prepare(args.source, args.legacy, args.output)
