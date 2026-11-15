@@ -379,7 +379,21 @@ extern "C" int boot_progress_prepare_scanout(void) {return 1;}
 extern "C" void boot_progress_cancel_scanout(void) {}
 extern "C" void boot_progress_stage(const char *) {}
 extern "C" int boot_progress_pulse_anchor(uintptr_t,uint64_t,unsigned,unsigned,unsigned) {return 0;}
-''')
+// houji: no GPU driver yet. No Adreno fences (the display copies on the CPU), GPU frame tracing off.
+extern "C" bool native_adreno_fences(uint32_t *,uint32_t *) {return false;}
+extern "C" bool native_adreno_fences_detail(uint32_t *,uint32_t *,uint32_t *) {return false;}
+extern "C" int native_gpu_trace_enabled(void) {return 0;}
+extern "C" void native_gpu_trace_record(uint32_t,uint32_t,const uint64_t *,uint32_t) {}
+// The kernel-thread report of sheng's boot UI trace (BootUiTraceProbe.c) is not built: the IOConfig busy report finds no thread.
+extern "C" int boot_kthread_report_nth(const char *,unsigned,char *name,unsigned,char *out,unsigned) {
+    if(name)name[0]=0;
+    if(out)out[0]=0;
+    return 0;
+}
+// The swap request fields validateSwap reads in this family build (the request offsets of the 24B156 fixture), for the
+// rejection report of the board probe. NativeLegacyDisplay.cpp defines this table only for macOS.
+extern "C" const unsigned native_legacy_request_layout[6]={REQUEST_LAYOUT};
+'''.replace('REQUEST_LAYOUT', ','.join(str(R[k]) for k in ('rect0', 'rect1', 'masks', 'options', 'dims', 'surfaces'))))
 compile_cpp(support, OUT / 'LegacyDisplaySupport27.o')
 # The keystore state service (AppleKeyStoreState) and its probe, unchanged from iPadOS 17.
 keystore_source = ROOT / 'kits/houji/KeyStoreProbe.cpp'
