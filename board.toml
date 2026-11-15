@@ -15,7 +15,7 @@ last_lba = 128626682
 lba_bytes = 4096
 
 [components]
-include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
+include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot", "GopFramebuffer", "AppleKeyStoreState"]
 
 [kernel]
 defconfig = "houji_ios27_defconfig"
@@ -26,6 +26,7 @@ archives = [
   "component:ArmCpu",
   "build-libpthread-kernel.py",
   "build-houji-kit.py",
+  "component:AppleKeyStoreState",
   "build-houji-display.py",
   "build-fileset-release-reference.py --tree . --lto",
 ]
