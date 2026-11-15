@@ -759,8 +759,14 @@ void houji_usb_panic_drain(void)
     extern void houji_debug_panic_mode(void);
     extern unsigned panic_active(void);
     static bool once;
-    if (once || !usb_started || u.failed || !u.configured || !panic_active()) return;
+    if (once || !usb_started || u.failed || !panic_active()) return;
     once=true;houji_debug_panic_mode();
+    /* An early panic can come before the host has enumerated the console: wait up to 20 s for a reader. */
+    for (unsigned i=0;i<40000 && !u.failed && !(u.configured && u.dtr);i++) {
+        if (!usb_events()) break;
+        delay(500);
+    }
+    if (!u.configured || !u.dtr || u.failed) return;
     for (unsigned i=0;i<4000 && !u.failed;i++) {
         if (!usb_events()) break;
         transmit();

@@ -71,6 +71,7 @@ kernel-ctrr-to-be-enabled = 0
 
 # Stage 0: everything runs from RAM, nothing is written to UFS.
 [payload]
+root_policies = "{out}/root-policies.bin"
 # The firmware RAM disk driver of this phone looks for this FAT label.
 volume = "HOUJIESP"
 size_mib = 128
