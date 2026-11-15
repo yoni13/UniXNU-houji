@@ -7,8 +7,8 @@ diff -ruN a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
  
 +	{
 +		/* houji: the USB debug console (boot argument houji_usb=1) and the timed restart (houji_reset_after_s). */
-+		extern void houji_usb_debug_start(void);
-+		houji_usb_debug_start();
++		extern void native_houji_console_start(void);
++		native_houji_console_start();
 +	}
 +
  #if defined(XNU_SHENG_PMGR) && XNU_SHENG_PMGR
@@ -23,8 +23,8 @@ diff -ruN a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
  		printf("MACH Reboot\n");
 +		{
 +			/* houji_reboot_bootloader=1: every restart stops in the bootloader (fastboot). Registers mapped at boot; MMIO only. */
-+			extern void houji_reboot_reason_at_reset(void);
-+			houji_reboot_reason_at_reset();
++			extern void native_houji_reset_hook(void);
++			native_houji_reset_hook();
 +		}
  		PEHaltRestart(kPERestartCPU);
  	} else {
@@ -38,8 +38,8 @@ diff -ruN a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
  {
 +	{
 +		/* houji: the debug console's RAM log keeps everything, also what the screen does not show. */
-+		extern void houji_debug_append(const char *, int);
-+		houji_debug_append(c, size);
++		extern void native_houji_log_append(const char *, int);
++		native_houji_log_append(c, size);
 +	}
  	if (disableConsoleOutput) {
  		return;
@@ -52,8 +52,8 @@ diff -ruN a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
  serial_putc_crlf(char c)
  {
 +	{
-+		extern void houji_debug_append(const char *, int);
-+		houji_debug_append(&c, 1);
++		extern void native_houji_log_append(const char *, int);
++		native_houji_log_append(&c, 1);
 +	}
  	if (c == '\n') {
  		uart_putc('\r');
