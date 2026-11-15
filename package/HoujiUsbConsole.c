@@ -15,6 +15,7 @@
 #include <arm/caches_internal.h>
 #include <vm/pmap.h>
 #include <vm/vm_kern.h>
+#include <vm/vm_kern_xnu.h>
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
 #include "houji_usb_protocol.h"
