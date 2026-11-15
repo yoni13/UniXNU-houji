@@ -5,6 +5,8 @@
 #include <sys/systm.h>
 #include <pexpert/pexpert.h>
 #include <machine/machine_routines.h>
+/* osfmk/arm/machine_routines.h declares it only for Mach-private sources; this file has the BSD flags. */
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 #define ABSENT(name) printf("HOUJI DEBUG: %s is not ported to this kernel yet\n", name)
 int houji_usb_phy_start(void);
