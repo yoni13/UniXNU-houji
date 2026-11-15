@@ -36,7 +36,8 @@ static inline int huc_dma(uint64_t pa, unsigned size, unsigned bits,
                           uint64_t base, uint64_t bytes)
 {
     uint64_t max=~(uint64_t)0;
-    if (size!=0x20000 || (pa&0x3fff) || bits<36 || bits>64 ||
+    /* Page alignment of the smallest kernel page size in use (4 KiB on the iOS 27 kernel, 16 KiB on iOS 16). */
+    if (size!=0x20000 || (pa&0xfff) || bits<36 || bits>64 ||
         !bytes || bytes-1>max-base || pa<base || bytes<size ||
         pa-base>bytes-size || size-1>max-pa) return 0;
     return bits==64 || pa+size-1<(1ULL<<bits);

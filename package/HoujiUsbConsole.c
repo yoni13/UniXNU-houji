@@ -895,7 +895,7 @@ void houji_usb_debug_start(void)
     ppnum_t pn=pmap_find_phys(kernel_pmap,(addr64_t)u.dma);
     if (!pn) return;
     u.pa=ptoa_64(pn);
-    if (!vusb_dma_allowed(u.pa,DMA_SIZE,width)) { unote("HOUJI USB: owned DMA width/range guard refused\n");return; }
+    if (!vusb_dma_allowed(u.pa,DMA_SIZE,width)) { unote("HOUJI USB: owned DMA width/range guard refused pa=%llx width=%u base=%lx size=%lx\n",u.pa,width,gPhysBase,gPhysSize);return; }
     for (unsigned off=0;off<DMA_SIZE;off+=PAGE_SIZE) {
         ppnum_t page=pmap_find_phys(kernel_pmap,(addr64_t)(u.dma+off));
         if (!page || ptoa_64(page)!=u.pa+off) return;
