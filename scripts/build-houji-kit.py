@@ -31,7 +31,9 @@ def command(record, source, obj):
         i += 1
     # The kernel's C++ headers need the kernel's own warning set; only the C sources are held to -Wall -Werror.
     strict = ['-Wall', '-Werror', '-Wno-unused-function'] if source.suffix == '.c' else ['-Wno-c99-designator', '-Wno-reorder-init-list']
-    return out + ['-I', str(KIT)] + strict
+    # The prelinked collection leaves about 220 KiB for native __DATA growth: the RAM log ring is 64 KiB instead of the 1 MiB of
+    # the iOS 16 port until it moves to memory allocated at boot.
+    return out + ['-I', str(KIT), '-DVL_RING_SIZE=0x10000u'] + strict
 
 
 objects = []
