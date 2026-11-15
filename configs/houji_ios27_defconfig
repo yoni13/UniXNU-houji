@@ -22,6 +22,8 @@ CONFIG_XNU_NATIVE_RAM_BLOCK=y
 CONFIG_XNU_OWNER_DATA_MOUNT=y
 CONFIG_XNU_OWNER_DATA_VOLUME_UUID="8EACEB6E-F499-416E-9DD8-24D2194F9487"
 # CONFIG_XNU_NATIVE_ADRENO is not set
-# CONFIG_XNU_NATIVE_LEGACY_DISPLAY is not set
+# Display: UniXNU GopFramebuffer presents the firmware framebuffer as the original IOMobileFramebufferLegacy of 24B156
+# (scripts/build-houji-display.py, scripts/legacy-display-24B156.json). It starts only with the offline-legacy-* arguments.
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 # The board package: debug console, SMMU route for its controller, reboot reason.
 CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/houji-kit/libHoujiKit.a"

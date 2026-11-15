@@ -26,6 +26,7 @@ archives = [
   "component:ArmCpu",
   "build-libpthread-kernel.py",
   "build-houji-kit.py",
+  "build-houji-display.py",
   "build-fileset-release-reference.py --tree . --lto",
 ]
 config_fragments = ["arch:configs/common.config", "os:configs/ios.config"]
