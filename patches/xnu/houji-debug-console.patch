@@ -31,7 +31,7 @@ diff -ruN a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
  		printf("CPU halted\n");
 diff -ruN a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
 --- a/osfmk/console/serial_console.c	2026-11-15 12:13:15.978785377 +0800
-+++ b/osfmk/console/serial_console.c	2026-11-15 17:19:15.780326628 +0800
++++ b/osfmk/console/serial_console.c	2026-11-15 17:41:58.435017955 +0800
 @@ -525,6 +525,11 @@
  void
  console_write(char *str, int size)
@@ -49,9 +49,9 @@ diff -ruN a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
  console_write_unbuffered(char c)
  {
 +	{
-+		/* houji: panic text takes this path. */
-+		extern void native_houji_log_append(const char *, int);
-+		native_houji_log_append(&c, 1);
++		/* houji: panic text takes this path (and then the serial path, which must not log it twice). */
++		extern void native_houji_log_unbuffered(char);
++		native_houji_log_unbuffered(c);
 +	}
  	if (disableConsoleOutput) {
  		return;

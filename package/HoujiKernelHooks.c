@@ -25,7 +25,18 @@ void native_houji_console_start(void)
 		panic("HOUJI USB did not start: %s", houji_usb_notes_tail(600));
 	}
 }
-void native_houji_log_append(const char *data, int size) { houji_debug_append(data, size); }
+/* consdebug_putc_unbuffered() writes each character to the console and then to the serial port; both are tapped, so the
+ * serial copy of a character that just came through the unbuffered console is dropped. */
+static char unbuffered_last;
+static int unbuffered_pending;
+void native_houji_log_unbuffered(char c);
+void native_houji_log_unbuffered(char c) { houji_debug_append(&c, 1); unbuffered_last = c; unbuffered_pending = 1; }
+void native_houji_log_append(const char *data, int size)
+{
+	if (size == 1 && unbuffered_pending && *data == unbuffered_last) { unbuffered_pending = 0; return; }
+	unbuffered_pending = 0;
+	houji_debug_append(data, size);
+}
 /* PSCI SYSTEM_RESET. The platform expert of this kernel (ArmDTPlatform) has no restart of its own: PEHaltRestart returns. */
 void houji_psci_reset(void);
 void houji_psci_reset(void)
