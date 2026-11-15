@@ -16,6 +16,11 @@ CONFIG_XNU_OWNER_CACHE_MOUNT=y
 CONFIG_XNU_OWNER_CACHE_STARTUP=y
 CONFIG_XNU_OWNER_BOOT_MANIFEST=y
 CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
+# Writable Data: the packed seed (scripts/make-data-seed-linux.py; local installation state, never committed) as a RAM disk,
+# mounted at /private/var before launchd. RAM only: changes are lost at restart (storage writes are prohibited in this port).
+CONFIG_XNU_NATIVE_RAM_BLOCK=y
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="53BA9EBA-6597-40F7-926E-55E4D8966101"
 # CONFIG_XNU_NATIVE_ADRENO is not set
 # CONFIG_XNU_NATIVE_LEGACY_DISPLAY is not set
 # The board package: debug console, SMMU route for its controller, reboot reason.

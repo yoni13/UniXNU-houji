@@ -92,7 +92,7 @@ kernel_args = ["-v", "serial=3", "debug=0x10014e", "kt_fixed_zones=120", "-no_sl
 # T8140, the chip of iPhone17,1.
 chip_id = "8140"
 owned_memory_size = "0x80000000"
-packed_data_ramdisk = false
+packed_data_ramdisk = true
 persistent_data = false
 
 [bootimg.image]

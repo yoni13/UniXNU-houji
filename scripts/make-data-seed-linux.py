@@ -5,7 +5,7 @@
 
 The OS image is the raw OS window (a bare APFS container). The new volume is formatted on the host with apfsprogs mkfs.apfs;
 copying the OS's /private/var into it keeps file owners, so that part runs as root in one privileged container that loop-mounts
-both images (linux-apfs-rw module on the host). Then the image is packed and grown with UniXNU's own tools. The seed is
+both images (linux-apfs-rw module on the host). The container is formatted at its final size (sparse), so it is only packed (UniXNU packed_ramdisk), not grown. The seed is
 installation state: keep it, and never commit it (it holds files of the OS image).
 """
 import argparse
@@ -21,6 +21,10 @@ INNER = r'''
 import os, plistlib, shutil, stat, subprocess, sys
 from pathlib import Path
 os_image, seed, build, skip = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == '1'
+# The container sees only the loop nodes that existed on the host when it started.
+for index in range(8):
+    if not os.path.exists(f'/dev/loop{index}'):
+        os.mknod(f'/dev/loop{index}', 0o660 | stat.S_IFBLK, os.makedev(7, index))
 def loop(path, ro):
     return subprocess.check_output(['losetup', '--find', '--show'] + (['--read-only'] if ro else []) + [path], text=True).strip()
 src_loop, dst_loop = loop(os_image, True), loop(seed, False)
@@ -49,7 +53,19 @@ try:
                 if name in dirs:
                     dirs.remove(name)
             elif src.is_file():
-                shutil.copy2(src, dst)
+                # The module returns compressed files already decompressed: their compression attributes are not data to
+                # copy (and are too large to set). Everything else (contents, mode, times, other attributes) is kept.
+                shutil.copyfile(src, dst)
+                info = src.lstat()
+                os.chmod(dst, stat.S_IMODE(info.st_mode))
+                os.utime(dst, ns=(info.st_atime_ns, info.st_mtime_ns))
+                for key in os.listxattr(src):
+                    if key in ('com.apple.decmpfs', 'com.apple.ResourceFork') or key.endswith('.com.apple.decmpfs') or key.endswith('.com.apple.ResourceFork'):
+                        continue
+                    try:
+                        os.setxattr(dst, key, os.getxattr(src, key))
+                    except OSError as error:
+                        print(f'xattr {key} not kept on {dst}: {error}')
                 os.chown(dst, src.lstat().st_uid, src.lstat().st_gid)
     for name in ('keybags', 'mobile/tmp', 'tmp', 'run', 'containers/Bundle',
                  'containers/Data/System', 'containers/Shared/SystemGroup', 'containers/Temp'):
@@ -112,18 +128,16 @@ def main():
         work = Path(td)
         raw = work / 'seed.raw'
         with raw.open('wb') as f:
-            f.truncate(32 << 20)
+            f.truncate(args.gib << 30)   # sparse: the container is formatted at its final size, nothing to grow
         subprocess.run(['mkfs.apfs', '-L', 'Data', '-u', volume, str(raw)], check=True, timeout=60)
         (work / 'inner.py').write_text(INNER)
         subprocess.run(['docker', 'run', '--rm', '--privileged', '-v', f'{work}:/w',
                         '-v', f'{args.os_image.resolve()}:/os.img:ro', args.image,
                         'python3', '/w/inner.py', '/os.img', '/w/seed.raw', args.build, '1' if args.skip_setup else '0'],
                        check=True, timeout=900)
-        base = work / 'base.dbr'
-        packed_ramdisk.pack(raw, base)
+        # seed-data-grow.py resizes the container with macOS diskutil; here it already has its final size.
         candidate = work / 'data.dbr'
-        subprocess.run([sys.executable, str(args.unixnu / 'scripts/seed-data-grow.py'), '--gib', str(args.gib),
-                        str(base), str(candidate)], check=True, timeout=600)
+        packed_ramdisk.pack(raw, candidate)
         candidate.replace(args.output)
     print(json.dumps(dict(output=str(args.output), volume_uuid=volume, first_install=True,
                           preserve_for_future_builds=True, hardware_tested=False)))
