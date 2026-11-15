@@ -389,6 +389,8 @@ static void reboot_thread(void *arg,wait_result_t result __unused)
 /* Synthetic input for unattended UI tests over this console: the same HID entry points the touch and button drivers use.
  * tap X Y | swipe X1 Y1 X2 Y2 MS | home. Panel pixels (0..1199, 0..2669). One gesture at a time, on its own thread. */
 extern void sweet_hid_touch(int, int, int, int);
+extern void houji_touch_report(void);
+extern void houji_touch_driver_report(void);
 extern void sweet_hid_key(int, int);
 static struct { int kind, x1, y1, x2, y2, ms; } gesture;
 static int _Atomic gesture_busy;
@@ -597,6 +599,7 @@ static void command_line(void)
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
+    else if (!strcmp(u.command,"touch")) { houji_touch_report(); houji_touch_driver_report(); }
     else if (!strcmp(u.command,"key power")) { sweet_hid_key(0,1); delay(120000); sweet_hid_key(0,0); }
     else if (!strncmp(u.command,"prof ",5)) { extern void houji_prof_command(const char *); houji_prof_command(u.command+5); }
     else if (!strncmp(u.command,"camera ",7)) { extern void houji_camera_command(const char *); houji_camera_command(u.command+7); }
