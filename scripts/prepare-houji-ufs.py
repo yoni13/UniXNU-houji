@@ -70,6 +70,20 @@ def prepare(source, legacy, output):
         body = body.replace(old, new)
     native = native[:start] + ('static void houjiStage (const char *stage)\n{\n'
         '  gRootDiagnostic.stage = stage;\n  IOLog ("HOUJI UFS: %s\\n", stage);\n  IOSleep (300);\n}\n\n') + body + native[end:]
+    # The read-only probes report by panic. Print the same text first and give the console time to send it, so the
+    # result does not depend on the panic-time drain.
+    for probe in ('10', '11'):
+        start = native.index(f'  if (probe == {probe}) {{\n')
+        end = native.index('\n  }\n', start)
+        block = native[start:end]
+        if 'panic (' not in block:
+            raise ValueError(f'upstream interface changed: probe {probe}')
+        block = block.replace('panic (', 'houjiReport (')
+        block = block.replace('    RootLayout *layout', '    houjiStage ("reading GPT and the userdata manifest");\n    RootLayout *layout', 1)
+        native = native[:start] + block + native[end:]
+    native = native.replace('static void houjiStage (const char *stage)\n',
+        '#define houjiReport(...) do { IOLog (__VA_ARGS__); IOLog ("\\n"); IOSleep (2000); panic (__VA_ARGS__); } while (0)\n'
+        'static void houjiStage (const char *stage)\n', 1)
     commands = (source / 'RootCommands.h').read_text()
     commands = replace_once(commands, '  *ocs = 15;\n',
                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
