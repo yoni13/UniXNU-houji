@@ -37,8 +37,6 @@ int houji_usb_phy_start(void) { return -1; }
 void houji_usb_phy_state(const char *when __unused) {}
 void houji_usb_phy_cold(void) {}
 int houji_ufs_arm_recovery_bcb(void) { return -1; }
-void sweet_hid_touch(int a __unused, int b __unused, int c __unused, int d __unused) {}
-void sweet_hid_key(int a __unused, int b __unused) {}
 int sweet_hid_type(const char *s __unused) { return -1; }
 /* Screenshot of the firmware framebuffer the display presents into (PE_current_console): one luminance hex digit per
  * sample, in the console's SHOT format (perf-test/phone.py shot renders it). Read only; mapped once. */

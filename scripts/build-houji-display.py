@@ -408,6 +408,125 @@ gop = ROOT / 'build/native-gop-presenter'
 gop_late = gop / 'NativeGOPPresenter.late.o'
 run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--globalize-symbol=__GLOBAL__sub_I_NativeGOPPresenter.cpp',
      gop / 'NativeGOPPresenter.o', gop_late])
+# HID input (UniXNU ShengHidInput, NativeHidInput.cpp at its pinned revision, UNIXNU_HOUJI_HID_SOURCE): an IOHIDDevice subclass
+# compiled with the public IOHIDFamily headers of the profile's pin, so every IOHIDDevice virtual signs with its original
+# discriminator, then bound to the original IOHIDDevice of this collection (hid-device-24B156.json, ported from sheng's 24A446
+# fixture). As sheng's builder does, without its keyboard cover and Novatek touch objects; HoujiTouchHid.c feeds it.
+import importlib.util
+
+
+def load_helper(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+HID_OUT = OUT / 'hid'
+HID_OUT.mkdir(exist_ok=True)
+HID_SOURCE = Path(os.environ['UNIXNU_HOUJI_HID_SOURCE']).resolve() / 'NativeHidInput.cpp'
+source_drivers = load_helper('houji_source_drivers', ROOT / 'scripts/build-sheng-source-drivers.py')
+hid_family = ROOT / 'refer/IOHIDFamily'
+require(not run(['git', '-C', hid_family, 'status', '--porcelain', '--untracked-files=all'], text=True), 'unmodified IOHIDFamily pin')
+macos_sdk = Path(run(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip())
+if (HID_OUT / 'headers').exists():
+    shutil.rmtree(HID_OUT / 'headers')
+(HID_OUT / 'headers/include').mkdir(parents=True)
+shutil.copyfile(macos_sdk / 'usr/include/TargetConditionals.h', HID_OUT / 'headers/include/TargetConditionals.h')
+header_report = {'sdk': str(macos_sdk)}
+for source_dir, relative in ((hid_family / 'IOHIDFamily', 'IOKit/hid'), (hid_family / 'IOHIDSystem/IOKit/hidsystem', 'IOKit/hidsystem')):
+    destination = HID_OUT / 'headers/include' / relative
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source_dir.glob('*.h')):
+        shutil.copyfile(path, destination / path.name)
+sdk_kernel = Path(header_report['sdk']) / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers'
+hid_object = HID_OUT / 'NativeHidInput.o'
+hid_command = source_drivers.compile_command(r, HID_SOURCE, hid_object,
+    ['-I', str(HID_OUT / 'headers/include'), '-idirafter', str(sdk_kernel)],
+    ['-I', str(ROOT / '.cache/xnu-work/osfmk'), '-DNATIVE_HID_SOURCE_API=1'])
+(HID_OUT / 'NativeHidInput.command.json').write_text(json.dumps(hid_command, indent=2) + '\n')
+run(hid_command, cwd=r['directory'])
+hid_abi = json.loads(Path(__file__).resolve().with_name(f'hid-device-{BUILD}.json').read_text())
+require(hid_abi['kernelcache_sha256'] == abi['kernelcache_sha256'], 'HID fixture of the same collection')
+hid_slots = [(int(t, 16), int(d, 16)) for t, d in hid_abi['slots']]
+hid_pure = {i for i, (t, _) in enumerate(hid_slots) if t == PURE_TARGET}
+
+
+def object_symbols(data):
+    commands = macho(data)['commands']
+    st = next(p for c, p, _ in commands if c == 2)
+    sy, count, strings, _ = struct.unpack_from('<4I', data, st + 8)
+    found = []
+    for i in range(count):
+        ix, kind, _, _, va = struct.unpack_from('<IBBHQ', data, sy + i * 16)
+        found.append((data[strings + ix:data.index(b'\0', strings + ix)].decode(), va, kind))
+    return found
+
+
+def object_vtable(data, found, name, count):
+    """[(symbol, signed word)] of the first count entries of vtable name (authenticated pointer relocations)."""
+    va = next(v for n, v, _ in found if n == name)
+    entries = {}
+    for segment in macho(data)['segments']:
+        for sec in segment['sections']:
+            if sec['va'] <= va < sec['va'] + sec['size']:
+                ro, rc = struct.unpack_from('<2I', data, sec['command_offset'] + 56)
+                for i in range(rc):
+                    offset, bits = struct.unpack_from('<2I', data, ro + i * 8)
+                    if bits >> 27 & 1 and bits >> 25 & 3 == 3 and bits >> 28 == 11:
+                        entries[sec['va'] + offset] = (found[bits & 0xffffff][0],
+                                                       struct.unpack_from('<Q', data, sec['fileoff'] + offset)[0])
+    return [entries.get(va + 16 + i * 8) for i in range(count)]
+
+
+hid_bindings = {n: int(v, 16) + slide for n, v in hid_abi['bindings'].items()}
+by_diversity = {}
+for i, (_, d) in enumerate(hid_slots):
+    by_diversity.setdefault(d, []).append(i)
+hid_raw = hid_object.read_bytes()
+hid_found = object_symbols(hid_raw)
+hid_vtables = [n for n, _, k in hid_found if n.startswith('__ZTV') and k != 1 and '9MetaClassE' not in n]
+slot_of = {}
+for vt_name in hid_vtables:
+    for i, entry in enumerate(object_vtable(hid_raw, hid_found, vt_name, len(hid_slots))):
+        if entry and '11IOHIDDevice' in entry[0]:
+            require(slot_of.setdefault(entry[0], i) == i, f'{entry[0]}: one slot in every owned vtable')
+for name in sorted({n for n, _, k in hid_found if k == 1 and '11IOHIDDevice' in n} - set(hid_bindings)):
+    if name in slot_of:
+        slot = slot_of[name]
+    else:
+        matches = by_diversity.get(discriminator(name[1:]), [])
+        require(len(matches) == 1, f'{name}: one original IOHIDDevice slot with its discriminator')
+        slot = matches[0]
+    require(slot not in hid_pure, f'{name}: not an abstract original slot')
+    hid_bindings[name] = hid_slots[slot][0] + slide
+for vt_name in hid_vtables:
+    entries = object_vtable(hid_raw, hid_found, vt_name, len(hid_slots))
+    require(all(entries), f'{vt_name}: at least the {len(hid_slots)} IOHIDDevice entries')
+    for i, (name, word) in enumerate(entries):
+        require(word >> 63 and word >> 48 & 1 and word >> 49 & 3 == 0 and (word >> 32) & 0xffff == hid_slots[i][1],
+                f'{vt_name} slot {i} ({name}) signed with the original diversity {hid_slots[i][1]:#x}')
+        if '11IOHIDDevice' in name:
+            require(hid_bindings.get(name) == hid_slots[i][0] + slide, f'{vt_name} slot {i} ({name}) is the original entry')
+HID_DATA = {'__ZN11IOHIDDevice10gMetaClassE', '__ZTV11IOHIDDevice'}
+hid_text, hid_addresses = '.text\n.p2align 2\n', ''
+for name, va in sorted(hid_bindings.items()):
+    if name in HID_DATA:
+        hid_addresses += f'.globl {name}\n.set {name}, {va:#x}\n'
+    else:
+        hid_addresses += f'.globl {name}.original\n.set {name}.original, {va:#x}\n'
+        hid_text += f'.globl {name}\n{name}:\n bti c\n b {name}.original\n'
+(HID_OUT / 'hid-bindings.S').write_text(hid_text)
+(HID_OUT / 'hid-addresses.S').write_text(hid_addresses)
+for stem in ('hid-bindings', 'hid-addresses'):
+    run(['xcrun', 'clang', '-target', TRIPLE, '-isysroot', sdk, '-c', HID_OUT / (stem + '.S'), '-o', HID_OUT / (stem + '.o')])
+hid_late = HID_OUT / 'NativeHidInput.late.o'
+run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--globalize-symbol=__GLOBAL__sub_I_NativeHidInput.cpp',
+     hid_object, hid_late])
+hid_probe = ROOT / 'kits/houji/HidInputProbe.cpp'
+compile_cpp(hid_probe, HID_OUT / 'HidInputProbe.o')
+print(f'HID: {len(hid_bindings)} original IOHIDDevice bindings, vtables {hid_vtables} match the original diversities')
+
 # houji: the prelinked collection leaves native __DATA_CONST no more than its 0x120000 bytes below the retained kexts'
 # constants, and these three objects' constant data (mostly vtables, about 9.6 KB) went 0x138 bytes over. A relocatable link
 # moves their (__DATA, __const) to (__DATA, __data), which has room; the signed vtable relocations are kept as they are (each
@@ -416,15 +535,17 @@ def constants_to_data(path):
     moved = path.with_suffix('.data.o')
     run(['xcrun', 'ld', '-r', '-arch', 'arm64e', '-rename_section', '__DATA', '__const', '__DATA', '__data', path, '-o', moved])
     return moved
-late, gop_late, keyevents_late = (constants_to_data(p) for p in (late, gop_late, keyevents_late))
+late, gop_late, keyevents_late, hid_late = (constants_to_data(p) for p in (late, gop_late, keyevents_late, hid_late))
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
 run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', OUT / 'original-addresses.o', OUT / 'LegacyDisplayProbe.o',
-     OUT / 'LegacyDisplaySupport27.o', gop_late, OUT / 'KeyStoreProbe.o', keyevents_late])
+     OUT / 'LegacyDisplaySupport27.o', gop_late, OUT / 'KeyStoreProbe.o', keyevents_late,
+     hid_late, HID_OUT / 'hid-bindings.o', HID_OUT / 'hid-addresses.o', HID_OUT / 'HidInputProbe.o'])
 sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp', ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',
            ROOT / 'drivers/GopFramebuffer/NativeGOPPresenter.cpp', ROOT / 'drivers/GopFramebuffer/NativeGOPWire.h',
            ROOT / 'drivers/GopFramebuffer/NativeHalfCodes.h', source,
-           ROOT / 'scripts' / ABI_PATH.name, keystore_source, ROOT / 'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp']
+           ROOT / 'scripts' / ABI_PATH.name, keystore_source, ROOT / 'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp',
+           HID_SOURCE, hid_probe, Path(__file__).resolve().with_name(f'hid-device-{BUILD}.json')]
 
 def source_name(path):
     try:

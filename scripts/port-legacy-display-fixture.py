@@ -18,7 +18,7 @@ import struct
 import sys
 from pathlib import Path
 
-FAMILY = 'com.apple.iokit.IOMobileGraphicsFamily'
+FAMILY = 'com.apple.iokit.IOMobileGraphicsFamily'   # --family selects another kext (IOHIDFamily for hid-device)
 
 
 def masked(code):
@@ -65,6 +65,7 @@ class Collection:
 
 
 def main():
+    global FAMILY
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('prelink', type=Path)
     p.add_argument('source', type=Path)
@@ -72,7 +73,9 @@ def main():
     p.add_argument('target', type=Path)
     p.add_argument('output', type=Path)
     p.add_argument('--slide', default='0x0', help='collection slide of the target prelink (kernel.json collection_slide)')
+    p.add_argument('--family', default=FAMILY, help='fileset entry of the class (default: the display family)')
     a = p.parse_args()
+    FAMILY = a.family
     sys.path.insert(0, str(a.prelink))
     from kc_image import Image
     fx = json.loads(a.fixture.read_text())
@@ -233,12 +236,15 @@ def main():
     require(B.fix.get(vt_b + 8 * len(fx['slots'])) is None or len(slots) == len(fx['slots']),
             'the target vtable is longer than the source')
     out['slots'] = slots
-    pure_a = int(fx['pure_target'], 16) if 'pure_target' in fx else int(fx['slots'][214][0], 16)
-    pure_b = int(slots[214][0], 16) if len(slots) > 214 else 0
-    out['pure_target'] = hex(pure_b)
-    require(all((int(s[0], 16) == pure_b) == (int(fx['slots'][i][0], 16) == pure_a) for i, s in enumerate(slots)),
-            'pure-virtual slots differ between the collections')
-    out['family_text'] = [hex(tb[0]), hex(tb[1])]
+    if 'pure_target' in fx or len(slots) > 214:
+        pure_a = int(fx['pure_target'], 16) if 'pure_target' in fx else int(fx['slots'][214][0], 16)
+        pure_b = int(slots[214][0], 16) if 'pure_target' not in fx else \
+            next(int(s[0], 16) for i, s in enumerate(slots) if int(fx['slots'][i][0], 16) == pure_a)
+        out['pure_target'] = hex(pure_b)
+        require(all((int(s[0], 16) == pure_b) == (int(fx['slots'][i][0], 16) == pure_a) for i, s in enumerate(slots)),
+                'pure-virtual slots differ between the collections')
+    if FAMILY == 'com.apple.iokit.IOMobileGraphicsFamily' or 'family_text' in fx:
+        out['family_text'] = [hex(tb[0]), hex(tb[1])]
     bindings, how = {}, {}
     for name, va in fx['bindings'].items():
         if name.startswith('__ZTV') and int(va, 16) == vt_a - 16:
@@ -251,7 +257,7 @@ def main():
             require(False, f'binding {name}: {error}')
     out['bindings'] = bindings
     checks = []
-    for va, hexbytes in fx['checks']:
+    for va, hexbytes in fx.get('checks', []):
         want = bytes.fromhex(hexbytes)
         try:
             vb, _ = port(int(va, 16))
@@ -261,7 +267,8 @@ def main():
         got = B.read(vb, len(want))
         require(got == want, f'check {va} -> {vb:#x}: bytes {got.hex()} differ from {hexbytes}')
         checks.append([hex(vb), hexbytes])
-    out['checks'] = checks
+    if 'checks' in fx:
+        out['checks'] = checks
     if problems:
         sys.exit('NOT PORTED:\n' + '\n'.join(problems))
     out['instance_size'] = fx['instance_size']   # same family build: the constructor and size are byte-identical
