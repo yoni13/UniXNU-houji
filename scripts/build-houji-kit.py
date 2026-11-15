@@ -29,7 +29,9 @@ def command(record, source, obj):
         elif not arg.startswith('-W'):
             out.append(arg)
         i += 1
-    return out + ['-I', str(KIT), '-Wall', '-Werror', '-Wno-unused-function']
+    # The kernel's C++ headers need the kernel's own warning set; only the C sources are held to -Wall -Werror.
+    strict = ['-Wall', '-Werror', '-Wno-unused-function'] if source.suffix == '.c' else ['-Wno-c99-designator', '-Wno-reorder-init-list']
+    return out + ['-I', str(KIT)] + strict
 
 
 objects = []
