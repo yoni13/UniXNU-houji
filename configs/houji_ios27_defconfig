@@ -8,3 +8,5 @@ CONFIG_XNU_KERNEL_CHAINED_FIXUPS=y
 # CONFIG_XNU_NATIVE_UFS is not set
 # CONFIG_XNU_NATIVE_ADRENO is not set
 # CONFIG_XNU_NATIVE_LEGACY_DISPLAY is not set
+# The board package: debug console, SMMU route for its controller, reboot reason.
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/houji-kit/libHoujiKit.a"

@@ -1,0 +1,60 @@
+diff -ruN a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c	2026-11-15 12:13:15.975415488 +0800
++++ b/bsd/kern/bsd_init.c	2026-11-15 12:13:15.997789461 +0800
+@@ -778,6 +778,12 @@
+ 	bsd_init_kprintf("calling bsd_bufferinit\n");
+ 	bsd_bufferinit();
+ 
++	{
++		/* houji: the USB debug console (boot argument houji_usb=1) and the timed restart (houji_reset_after_s). */
++		extern void houji_usb_debug_start(void);
++		houji_usb_debug_start();
++	}
++
+ #if defined(XNU_SHENG_PMGR) && XNU_SHENG_PMGR
+ 	extern void sheng_pmgr_run(void);
+ 	boot_progress_stage("original PMGR nub start");
+diff -ruN a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+--- a/osfmk/arm64/machine_routines.c	2026-11-15 12:13:15.985731654 +0800
++++ b/osfmk/arm64/machine_routines.c	2026-11-15 12:13:15.998562718 +0800
+@@ -913,6 +913,11 @@
+ {
+ 	if (reboot) {
+ 		printf("MACH Reboot\n");
++		{
++			/* houji_reboot_bootloader=1: every restart stops in the bootloader (fastboot). Registers mapped at boot; MMIO only. */
++			extern void houji_reboot_reason_at_reset(void);
++			houji_reboot_reason_at_reset();
++		}
+ 		PEHaltRestart(kPERestartCPU);
+ 	} else {
+ 		printf("CPU halted\n");
+diff -ruN a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+--- a/osfmk/console/serial_console.c	2026-11-15 12:13:15.978785377 +0800
++++ b/osfmk/console/serial_console.c	2026-11-15 12:13:15.998237375 +0800
+@@ -280,6 +280,11 @@
+ static inline void
+ _cnputs(char *c, int size, bool poll)
+ {
++	{
++		/* houji: the debug console's RAM log keeps everything, also what the screen does not show. */
++		extern void houji_debug_append(const char *, int);
++		houji_debug_append(c, size);
++	}
+ 	if (disableConsoleOutput) {
+ 		return;
+ 	}
+diff -ruN a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
+--- a/pexpert/arm/pe_kprintf.c	2026-11-15 12:13:15.982144566 +0800
++++ b/pexpert/arm/pe_kprintf.c	2026-11-15 12:13:15.998427754 +0800
+@@ -162,6 +162,10 @@
+ static void
+ serial_putc_crlf(char c)
+ {
++	{
++		extern void houji_debug_append(const char *, int);
++		houji_debug_append(&c, 1);
++	}
+ 	if (c == '\n') {
+ 		uart_putc('\r');
+ 	}
