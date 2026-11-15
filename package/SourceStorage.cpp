@@ -15,9 +15,10 @@ extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs
 extern "C" IOService *native_ufs_source_create(void);
 extern "C" void source_storage_ram_init(void) __asm__("__GLOBAL__sub_I_NativeRamBlock.cpp");
 // The Data RAM disk's optional hooks this kernel does not have: keep the loader's seed pages (no release of loader memory),
-// and no write-back cache path to UFS (storage writes are prohibited in this port). Weak, so a real provider wins.
-extern "C" __attribute__((weak)) bool ml_static_mfree_prepare(vm_offset_t, vm_size_t) { return false; }
-extern "C" __attribute__((weak)) int native_ufs_store_write_cached(uint64_t, uint32_t, const void *) { return -1; }
+// and no write-back cache path to UFS (storage writes are prohibited in this port). Ordinary definitions: neither exists
+// elsewhere in this kernel, and a weak definition would leave a weak binding that the prelink cannot resolve.
+extern "C" bool ml_static_mfree_prepare(vm_offset_t, vm_size_t) { return false; }
+extern "C" int native_ufs_store_write_cached(uint64_t, uint32_t, const void *) { return -1; }
 extern "C" bool native_source_root_policies_load(void);
 extern "C" void native_source_storage_start(void);
 extern "C" int houji_usb_connected(void);
