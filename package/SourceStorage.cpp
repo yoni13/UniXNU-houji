@@ -20,6 +20,8 @@ extern "C" const OSMetaClass *native_source_storage_parent(void);
 extern "C" void boot_progress_poll(void) {}
 static const OSMetaClass *storageParent;
 static bool attempted;
+// Each checkpoint gives the console thread time to send it before the next, riskier step.
+static void step(const char *what) { printf("HoujiStorage: %s\n", what); IOSleep(300); }
 
 extern "C" const OSMetaClass *native_source_storage_parent(void)
 {
@@ -46,17 +48,27 @@ extern "C" void native_source_storage_start(void)
     if (!native_source_root_policies_load()) panic("HoujiStorage: policy authentication failed");
     status = OSKextLoadKextWithIdentifier("com.apple.filesystems.apfs");
     if (status != kOSReturnSuccess) panic("HoujiStorage: APFS load %x", status);
+    step("policies authenticated, APFS loaded");
     void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
     if (!handle) panic("HoujiStorage: preModLoad failed");
+    step("class registration begins");
     source_storage_base_init();
+    step("base class registered");
     source_storage_ufs_init();
+    step("UFS class registered");
     status = OSMetaClass::postModLoad(handle);
     if (status != kOSReturnSuccess) panic("HoujiStorage: class registration %x", status);
+    step("classes published");
     OSDictionary *matching = IOService::serviceMatching("IOPlatformExpertDevice");
     IOService *provider = matching ? IOService::waitForMatchingService(matching, 5000000000ULL) : nullptr;
     if (!provider) panic("HoujiStorage: platform root missing");
     IOService *driver = native_ufs_source_create();
-    if (!driver || !driver->init() || !driver->attach(provider) || !driver->start(provider))
-        panic("HoujiStorage: UFS start failed");
+    if (!driver) panic("HoujiStorage: UFS allocation failed");
+    step("UFS allocated");
+    if (!driver->init()) panic("HoujiStorage: UFS init failed");
+    step("UFS initialised");
+    if (!driver->attach(provider)) panic("HoujiStorage: UFS attach failed");
+    step("UFS attached; starting (hardware access)");
+    if (!driver->start(provider)) panic("HoujiStorage: UFS start failed");
     printf("HoujiStorage: source UFS started (storage writes prohibited)\n");
 }
