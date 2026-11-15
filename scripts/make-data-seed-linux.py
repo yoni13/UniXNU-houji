@@ -118,8 +118,9 @@ def main():
     args = parser.parse_args()
     if args.output.exists():
         parser.error('refuse to overwrite an existing installation seed')
-    if not 3 <= args.gib <= 1024:
-        parser.error('--gib must be in 3..1024')
+    # Up to 2 GiB NativeRamBlock keeps a volatile sparse RAM disk; a larger seed takes writes only through a persistent UFS store.
+    if not 1 <= args.gib <= 1024:
+        parser.error('--gib must be in 1..1024')
     sys.path.insert(0, str(args.unixnu / 'drivers/DarwinBoot/Test'))
     import packed_ramdisk
     volume = str(uuid.uuid4()).upper()
