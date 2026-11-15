@@ -26,4 +26,9 @@ void native_houji_console_start(void)
 	}
 }
 void native_houji_log_append(const char *data, int size) { houji_debug_append(data, size); }
-void native_houji_reset_hook(void) { houji_reboot_reason_at_reset(); }
+void native_houji_reset_hook(void)
+{
+	extern void houji_usb_panic_drain(void);
+	houji_usb_panic_drain();
+	houji_reboot_reason_at_reset();
+}

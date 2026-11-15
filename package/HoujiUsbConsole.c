@@ -721,20 +721,43 @@ static void event(uint32_t e)
         u.phase=STATUS_PHASE;transfer(ep,DATA,0,kind);
     }
 }
+/* One round of controller events. */
+static bool usb_events(void)
+{
+    unsigned count=rd(GEVNTCOUNT)&0xffff;
+    if (count>EVENT_SIZE || (count&3)) { fail("event ring size/alignment");return false; }
+    if (count) {
+        sync_dma(EVENTS,EVENT_SIZE);
+        for (unsigned i=0;i<count && !u.failed;i+=4) {
+            uint32_t e=*(volatile uint32_t *)(u.dma+u.pos);
+            u.pos=(u.pos+4)%EVENT_SIZE;u.events++;
+            event(e);
+        }
+        wr(GEVNTCOUNT,count);
+    }
+    return true;
+}
+/* Restart after a panic (halt_all_cpus; interrupts off, the other CPUs stopped, the poll thread will never run again): send what
+ * the RAM log still holds, the panic text included, for up to two seconds or until the host has read all of it. */
+void houji_usb_panic_drain(void);
+void houji_usb_panic_drain(void)
+{
+    extern void houji_debug_panic_mode(void);
+    extern unsigned panic_active(void);
+    static bool once;
+    if (once || !usb_started || u.failed || !u.configured || !panic_active()) return;
+    once=true;houji_debug_panic_mode();
+    for (unsigned i=0;i<4000 && !u.failed;i++) {
+        if (!usb_events()) break;
+        transmit();
+        if (!u.busy[3] && u.cursor>=houji_debug_total() && i>20) break;
+        delay(500);
+    }
+}
 static void usb_thread(void *arg __unused,wait_result_t result __unused)
 {
     while (!u.failed) {
-        unsigned count=rd(GEVNTCOUNT)&0xffff;
-        if (count>EVENT_SIZE || (count&3)) { fail("event ring size/alignment");break; }
-        if (count) {
-            sync_dma(EVENTS,EVENT_SIZE);
-            for (unsigned i=0;i<count && !u.failed;i+=4) {
-                uint32_t e=*(volatile uint32_t *)(u.dma+u.pos);
-                u.pos=(u.pos+4)%EVENT_SIZE;u.events++;
-                event(e);
-            }
-            wr(GEVNTCOUNT,count);
-        }
+        if (!usb_events()) break;
         if (upload_mode && upload.phase!=HRU_COMPLETE && upload.phase!=HRU_FAILED) {
             if (mach_absolute_time()>upload_deadline) {
                 hru_abort(&upload,HRU_E_TRANSPORT);

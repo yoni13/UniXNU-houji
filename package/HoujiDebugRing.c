@@ -19,8 +19,13 @@ void houji_debug_append(const char *data, int size)
     vl_append(&log_ring,data,(unsigned)size);
     os_atomic_store(&log_lock,0U,release);
 }
+/* Panic (other CPUs stopped, one of them may hold the lock): readers stop taking it. */
+static int log_panic;
+void houji_debug_panic_mode(void);
+void houji_debug_panic_mode(void) { log_panic=1; }
 unsigned houji_debug_copy(uint64_t *pos, char *out, unsigned max)
 {
+    if (log_panic) return vl_copy(&log_ring,pos,out,max);
     if (!os_atomic_cmpxchg(&log_lock,0,1,acquire)) return 0;
     unsigned n=vl_copy(&log_ring,pos,out,max);
     os_atomic_store(&log_lock,0U,release);
