@@ -30,6 +30,8 @@ archives = [
   "build-houji-adreno.py inputs",
   "component:Adreno740",
   "build-houji-adreno.py kits",
+  # The staged AGXAccelerator on the original IOAcceleratorES of 24B156 (Metal device; published only with gpu-metal=1).
+  "build-houji-accelerator.py",
   # Wi-Fi: the Ath12kWifi driver compiled for this kernel, not linked yet (docs/wifi.md).
   "build-ath12k-wifi.py drivers/Ath12kWifi build/ath12k-wifi",
   "build-houji-kit.py",

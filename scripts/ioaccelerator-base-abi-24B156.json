@@ -1,0 +1,25 @@
+{
+  "kernelcache_sha256": "d73e369103f6baba75d3d2d1dcf38d8d88133f4f447be3fc055d35a5dc37e7bf",
+  "collection_slide": "0x0",
+  "metaclass": "0xfffffff00b99f428",
+  "instance_bytes": 136,
+  "virtual_entries": 168,
+  "operational_overrides": [],
+  "metadata_overrides": [
+    0,
+    1,
+    7
+  ],
+  "protected_compatible_constructor_aliases": [
+    "0xfffffff00a095138",
+    "0xfffffff00a095170"
+  ],
+  "nondeleting_destructor": "0xfffffff00a0951a8",
+  "get_meta_class": "0xfffffff00a095218",
+  "evidence": "IOGPUFamily static initializer at 0xfffffe000a14da80 constructs IOAcceleratorES::gMetaClass with size 0x88. vtable 0xfffffe000832f2e8 (+0x10 address point) has 168 IOService entries; only slots 0, 1 (destructors 0xfffffe000a14da08, 0xfffffe000a14da10) and 7 (getMetaClass) differ from IOService's. Both constructors call IOService::IOService(const OSMetaClass *) and store the signed vtable (DA, 0xcda1); the nondeleting destructor tail-calls IOService::~IOService.",
+  "ported_from": {
+    "kernelcache_sha256": "38e6d9fa5f789b8228f4617ef4c6d2a3fd8ab564abdc9b62920f1db53fc1780a",
+    "fixture": "ioaccelerator-base-abi-24A446.json",
+    "method": "IOGPUFamily functions paired by the XnuPrelink matcher with identical masked code; the metaclass is the one address every paired reference agrees on and the target getMetaClass loads; instance size, vtable entry count and overrides carried from the reviewed source fixture"
+  }
+}

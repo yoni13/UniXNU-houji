@@ -537,7 +537,8 @@ GPU_INCLUDES = tuple(x for d in ('drivers/Adreno740', 'kits/ArmSmmu4K', 'kits/Ad
                                  'build/sheng-gmu', 'build/sheng-gpu-smmu', 'build/adreno740/include') for x in ('-I', str(ROOT / d)))
 gpu_objects = []
 for stem in ('GpuPowerProbe', 'GpuMemoryPool', 'HoujiGpuGlue'):
-    compile_cpp(ROOT / 'kits/houji' / (stem + '.cpp'), OUT / (stem + '.o'), GPU_INCLUDES)
+    # GpuPowerProbe: sheng's publishMetal with the staged accelerator of build-houji-accelerator.py (runtime: gpu-metal=1).
+    compile_cpp(ROOT / 'kits/houji' / (stem + '.cpp'), OUT / (stem + '.o'), GPU_INCLUDES + ('-DHOUJI_GPU_METAL=1',))
     gpu_objects.append(OUT / (stem + '.o'))
 # Wi-Fi (docs/wifi.md): sheng's WifiProbe/WifiNet board layer with the SM8650 values, the MHI boot and firmware reader, and the Ath12kWifi
 # objects of build-ath12k-wifi.py. Started from LegacyDisplayProbe.cpp only with wifi=<1..5>.
