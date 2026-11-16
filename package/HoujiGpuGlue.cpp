@@ -14,9 +14,11 @@ __attribute__((weak)) char boot_progress_ext_wide[2][112];
 
 // Kernel hooks of sheng's XNU patches that Adreno740 and GpuMemoryPool.cpp test for before use. houji's kernel has none of them;
 // each stub answers as the missing hook does (no close notification, no log export, no memory outside the kernel's map).
+// The two functions are strong: a weak definition reached through a signed pointer becomes a weak-lookup import, which the
+// kernel collection cannot carry (XnuPrelink: chained fixup imports are not supported).
 #include <IOKit/IOMemoryDescriptor.h>
 extern "C" {
-__attribute__((weak)) kern_return_t iokit_physical_descriptor_close_notify(IOMemoryDescriptor *, void (*)(void *), void *) {return KERN_FAILURE;}
-__attribute__((weak)) int boot_log_export_put(uint32_t, uint32_t, uint32_t, const void *, uint32_t) {return -1;}
+kern_return_t iokit_physical_descriptor_close_notify(IOMemoryDescriptor *, void (*)(void *), void *) {return KERN_FAILURE;}
+int boot_log_export_put(uint32_t, uint32_t, uint32_t, const void *, uint32_t) {return -1;}
 __attribute__((weak)) uint32_t ml_outside_memory_pages;
 }
