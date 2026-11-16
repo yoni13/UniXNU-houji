@@ -379,11 +379,7 @@ extern "C" int boot_progress_prepare_scanout(void) {return 1;}
 extern "C" void boot_progress_cancel_scanout(void) {}
 extern "C" void boot_progress_stage(const char *) {}
 extern "C" int boot_progress_pulse_anchor(uintptr_t,uint64_t,unsigned,unsigned,unsigned) {return 0;}
-// houji: no GPU driver yet. No Adreno fences (the display copies on the CPU), GPU frame tracing off.
-extern "C" bool native_adreno_fences(uint32_t *,uint32_t *) {return false;}
-extern "C" bool native_adreno_fences_detail(uint32_t *,uint32_t *,uint32_t *) {return false;}
-extern "C" int native_gpu_trace_enabled(void) {return 0;}
-extern "C" void native_gpu_trace_record(uint32_t,uint32_t,const uint64_t *,uint32_t) {}
+// houji: the Adreno fences and GPU frame trace hooks come from Adreno740 (libAdreno740.a, CONFIG_XNU_NATIVE_ADRENO).
 // The kernel-thread report of sheng's boot UI trace (BootUiTraceProbe.c) is not built: the IOConfig busy report finds no thread.
 extern "C" int boot_kthread_report_nth(const char *,unsigned,char *name,unsigned,char *out,unsigned) {
     if(name)name[0]=0;
