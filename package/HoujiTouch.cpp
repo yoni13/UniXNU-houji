@@ -244,6 +244,54 @@ static void htThread(void *,wait_result_t) {
   htRestore();IOLog("HOUJI TOUCH: worker stopped result=%d; GUI continues\n",err);
   thread_terminate(current_thread());
 }
+// The controller's supplies, which the iOS 16 UEFI handoff voted through RPMh: AVDD ldob9 3.0 V and IOVDD ldob12 1.8 V, both in high
+// power mode (the SteamOS houji DT has the same two regulators, enabled in this order). houji_touch_power=1 makes the same active-only
+// votes from the kernel, as the iOS 16 kernel's Wi-Fi driver does for its rails (HoujiWifi.cpp powerRails): the VRM addresses from the
+// AOP command database, mode at +8 (7), millivolts at +0, enable at +4, through TCS 0 of the application processor's RSC DRV 2.
+#include "QcomRpmh.h"
+static int touchPowerVote(void) {
+  int enabled=0;PE_parse_boot_argn("houji_touch_power",&enabled,sizeof(enabled));
+  if(enabled!=1)return 0;
+  const uint64_t kRscDrv=0x17a20000,kRscTcs=0xd00,kCmdDb=0x81c60000,kCmdDbSize=0x20000;
+  uint8_t *db=static_cast<uint8_t *>(IOMallocData(kCmdDbSize));
+  if(!db)return -1;
+  OSSharedPtr<IOMemoryMap> dbMap,rscMap;
+  uintptr_t dbVa=mapPhys(kCmdDb,kCmdDbSize,dbMap);
+  if(!dbVa){IOFreeData(db,kCmdDbSize);IOLog("HOUJI TOUCH POWER: cmd-db not mapped\n");return -2;}
+  for(uint64_t i=0;i<kCmdDbSize;i+=4){const uint32_t w=*(volatile uint32_t *)(dbVa+i);memcpy(db+i,&w,4);}
+  dbMap.reset();
+  uintptr_t rscVa=mapPhys(kRscDrv,0x10000,rscMap);
+  if(!rscVa){IOFreeData(db,kCmdDbSize);IOLog("HOUJI TOUCH POWER: RSC not mapped\n");return -3;}
+  volatile uint32_t *r=(volatile uint32_t *)rscVa;
+  const QcomRscLayout layout=qcom_rsc_layout(r[0]);
+  const unsigned tcs=0;
+  auto send=[&](uint32_t address,uint32_t value){
+    QcomRpmhWrite writes[16];
+    const unsigned n=qcom_rpmh_active_request(&layout,tcs,&address,&value,1,writes,16);
+    for(unsigned i=0;i<n;++i)r[(kRscTcs+writes[i].offset)/4]=writes[i].value;
+    __asm__ volatile("dsb sy" ::: "memory");
+    IOSleep(2);
+    const unsigned m=qcom_rpmh_finish(&layout,tcs,writes,16);
+    for(unsigned i=0;i<m;++i)r[(kRscTcs+writes[i].offset)/4]=writes[i].value;
+  };
+  static const struct {const char *name;uint32_t millivolts;} rails[]={{"ldob9",3000},{"ldob12",1800}};
+  int result=0;
+  for(const auto &rail:rails){
+    QcomRpmhResource res;
+    const int rc=qcom_cmd_db_find(db,kCmdDbSize,rail.name,&res);
+    IOLog("HOUJI TOUCH POWER: %s cmd-db=%d address=%x (iOS 16 UEFI: ldob9 41500, ldob12 40900)\n",rail.name,rc,rc?0:res.address);
+    if(rc){result=-4;continue;}
+    send(res.address+8,7);
+    send(res.address,rail.millivolts);
+    send(res.address+4,1);
+    IOSleep(5);
+  }
+  IOLog("HOUJI TOUCH POWER: RSC id=%08x; AVDD then IOVDD voted %s\n",r[0],result?"incompletely":"on");
+  IOFreeData(db,kCmdDbSize);
+  IOSleep(50);
+  return result;
+}
+
 // iOS 27 boots without the iOS 16 UEFI handoff (its stock driver chain reset-loops this firmware at DXE time), so the SE4 clock is
 // off. houji_touch_clock=1 votes it on in the kernel: GCC_APCS_CLOCK_BRANCH_ENA_VOTE_1 (0x152008) bit 26, gcc_qupv3_wrap1_s4_clk in
 // Linux gcc-sm8650.c. The wrap1 core and AHB votes (bits 18-21) are already set at handoff (vote=423c0200, read on hardware); the iOS
@@ -266,6 +314,7 @@ static void touchClockVote(void) {
 extern "C" void houji_touch_start(void) {
   int enabled=0;PE_parse_boot_argn("houji_touch",&enabled,sizeof(enabled));
   if(enabled!=1 || ht.started)return;ht.started=true;
+  (void)touchPowerVote();
   touchClockVote();
   touchProbeOnce();
   thread_t thread; kern_return_t kr=kernel_thread_start(htThread,nullptr,&thread);

@@ -12,7 +12,7 @@ KIT = ROOT / 'kits/houji'
 OUT.mkdir(parents=True, exist_ok=True)
 # A BSD-side C file and an IOKit C++ file whose flags the package sources reuse.
 RECORDS = {'.c': OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json', '.cpp': OBJ / 'iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'}
-SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp']
+SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c']
 
 
 def command(record, source, obj):
