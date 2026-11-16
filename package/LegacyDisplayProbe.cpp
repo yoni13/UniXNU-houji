@@ -601,8 +601,19 @@ void busyReport(void *, wait_result_t) {
 }
 }  // namespace
 
+// houji: the scanout report (native_legacy_prepare_report: prepare calls, refresh tick, swap formats accepted/refused, GPU or CPU path)
+// on the console every 10 s for 10 minutes, whenever it changed; sheng reads it through its diagnostic export.
+static void displayReport(void *, wait_result_t) {
+    static char last[400], now[400];
+    for (unsigned t = 0; t < 60; ++t) {
+        IOSleep(10000);
+        native_legacy_prepare_report(now, sizeof now);
+        if (strcmp(now, last)) {strlcpy(last, now, sizeof last); IOLog("HOUJI DISPLAY: %s\n", now);}
+    }
+}
 void native_legacy_display_late_probe(void) {
     {thread_t thread = nullptr; if (kernel_thread_start(busyReport, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);}
+    {thread_t thread = nullptr; if (kernel_thread_start(displayReport, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);}
     // First: AppleImage4's start already waits for an IOAESAccelerator, holding its expert lock (SoftwareAesProbe.cpp).
     native_keystore_probe();
     // houji: the HID input device (NativeHidInput, HidInputProbe.cpp; offline-hid-input=1), fed by HoujiTouchHid.c.
