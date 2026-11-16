@@ -32,6 +32,13 @@ Power sequence on houji: rails, PERST/CLKREQ, WLAN_EN low 150 ms then high 60 ms
 The nine houji ath12k patches (`fork/kernel/ath12k*`): heartbeat HTT stats filter, power save off after authorization, on-demand
 power save, scan policy, hardware mode, dual-MAC (`WMI_PDEV_SET_MAC_CONFIG`).
 
+## Driver revision
+
+houji builds Ath12kWifi at **5f7f5a8a** (sheng's submodule pin at UniXNU-sheng 6880068), not UniXNU's catalog pin 28de7b91: sheng's
+`WifiProbe.cpp` uses the newer board interface (`nw_board.diagnostics`, added in 5f7f5a8 "log receive counters while frames arrive").
+The build Mac keeps that checkout at `UniXNU/drivers/Ath12kWifi`, which UniXNU prefers over the catalog's git source, and `build.sh`
+refuses any other revision.
+
 ## Steps
 
 1. Select the Ath12kWifi component (UniXNU pin, the sheng iOS 27 architecture, not `f6bf561`).
