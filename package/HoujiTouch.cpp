@@ -244,9 +244,29 @@ static void htThread(void *,wait_result_t) {
   htRestore();IOLog("HOUJI TOUCH: worker stopped result=%d; GUI continues\n",err);
   thread_terminate(current_thread());
 }
+// iOS 27 boots without the iOS 16 UEFI handoff (its stock driver chain reset-loops this firmware at DXE time), so the SE4 clock is
+// off. houji_touch_clock=1 votes it on in the kernel: GCC_APCS_CLOCK_BRANCH_ENA_VOTE_1 (0x152008) bit 26, gcc_qupv3_wrap1_s4_clk in
+// Linux gcc-sm8650.c. The wrap1 core and AHB votes (bits 18-21) are already set at handoff (vote=423c0200, read on hardware); the iOS
+// 16 UEFI handoff produced 463c0200, which is this bit added. The root stays at its handoff configuration (XO, 19.2 MHz).
+static void touchClockVote(void) {
+  int enabled=0;PE_parse_boot_argn("houji_touch_clock",&enabled,sizeof(enabled));
+  if(enabled!=1)return;
+  OSSharedPtr<IOMemoryMap> map;
+  uintptr_t gcc=mapPhys(0x100000,0x54000,map);
+  if(!gcc){IOLog("HOUJI TOUCH CLOCK: GCC not mapped\n");return;}
+  volatile uint32_t *vote=(volatile uint32_t *)(gcc+0x52008),*branch=(volatile uint32_t *)(gcc+0x183bc);
+  const uint32_t before=*vote,branchBefore=*branch;
+  *vote=before|(1u<<26);
+  __asm__ volatile("dsb sy" ::: "memory");
+  unsigned waited=0;
+  while((*branch&0x80000000u) && waited<200){IODelay(5);++waited;}
+  IOLog("HOUJI TOUCH CLOCK: vote %08x -> %08x, SE4 branch %08x -> %08x after %u us\n",before,*vote,branchBefore,*branch,waited*5);
+}
+
 extern "C" void houji_touch_start(void) {
   int enabled=0;PE_parse_boot_argn("houji_touch",&enabled,sizeof(enabled));
   if(enabled!=1 || ht.started)return;ht.started=true;
+  touchClockVote();
   touchProbeOnce();
   thread_t thread; kern_return_t kr=kernel_thread_start(htThread,nullptr,&thread);
   if(kr==KERN_SUCCESS)thread_deallocate(thread);else ht.error=unsigned(kr);
