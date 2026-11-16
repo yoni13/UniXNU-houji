@@ -540,6 +540,7 @@ def constants_to_data(path):
     run(['xcrun', 'ld', '-r', '-arch', 'arm64e', '-rename_section', '__DATA', '__const', '__DATA', '__data', path, '-o', moved])
     return moved
 late, gop_late, keyevents_late, hid_late = (constants_to_data(p) for p in (late, gop_late, keyevents_late, hid_late))
+gpu_objects = [constants_to_data(p) for p in gpu_objects]
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
 run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', OUT / 'original-addresses.o', OUT / 'LegacyDisplayProbe.o',

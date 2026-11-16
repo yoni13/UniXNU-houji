@@ -106,6 +106,22 @@ def kits():
     objects.append(OUT / 'firmware.o')
     archive = OUT / 'libAdreno740.a'
     subprocess.run(['xcrun', 'ar', 'rcs', archive, *objects], check=True)
+    # The prelinked collection leaves native __DATA_CONST no more than 0x120000 bytes below the retained kexts' constants
+    # (build-houji-display.py), and the driver's constant data (mostly vtables) went 0x4000 over. As there, a relocatable link
+    # moves every member's (__DATA, __const) to (__DATA, __data); signed vtable entries keep their diversity in the content.
+    # Cost: these vtables are writable instead of read-only after lockdown.
+    members = OUT / 'members'
+    shutil.rmtree(members, ignore_errors=True)
+    members.mkdir()
+    subprocess.run(['xcrun', 'ar', 'x', archive], cwd=members, check=True)
+    moved = []
+    for member in sorted(members.glob('*.o')):
+        target = member.with_suffix('.data.o')
+        subprocess.run(['xcrun', 'ld', '-r', '-arch', 'arm64e', '-rename_section', '__DATA', '__const', '__DATA', '__data',
+                        member, '-o', target], check=True)
+        moved.append(target)
+    archive.unlink()
+    subprocess.run(['xcrun', 'ar', 'rcs', archive, *moved], check=True)
     defined = subprocess.run(['xcrun', 'nm', '-g', archive], capture_output=True, text=True).stdout
     missing = [s for s in ('_ShengGmuColdStart', '_ShengGmuBuildStartup', '_ShengGmuCommandDbInputs', '_AdrenoFirmwarePlanGmu',
                            '_ArmSmmu4KAttachStreams', '_ArmSmmu4KBindMmio', '_AdrenoPM4Type7', '_NativeAdrenoGmuContextBringup')
