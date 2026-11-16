@@ -35,10 +35,13 @@ uint32_t rd(Domain &w, unsigned off) {return *(volatile uint32_t *)(w.va + off);
 
 bool init(unsigned id) {
     Domain &w = d[id];
-    IODeviceMemory *m = IODeviceMemory::withRange(0x17d91000ULL + id * 0x1000, 0x1000);
-    w.map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
-    if (m) m->release();
-    w.va = w.map ? w.map->getVirtualAddress() : 0;
+    if (!w.va) {   // mapped once; a domain whose cluster is still off is validated again later
+        IODeviceMemory *m = IODeviceMemory::withRange(0x17d91000ULL + id * 0x1000, 0x1000);
+        w.map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+        if (m) m->release();
+        w.va = w.map ? w.map->getVirtualAddress() : 0;
+    }
+    w.n = 0;
     if (!w.va) {IOLog("HOUJI CPU DVFS REFUSED: domain=%u not mapped\n", id); return false;}
     if (!(rd(w, 0) & 1)) {IOLog("HOUJI CPU DVFS REFUSED: domain=%u enable %x clear\n", id, rd(w, 0)); return false;}
     uint32_t prev = 0;
@@ -117,6 +120,13 @@ void worker(void *, wait_result_t) {
         const unsigned level = hottest > -1000 ? nextLevel(gLevel, hottest) : (gLevel < 2 ? 2 : gLevel);
         if (level != gLevel) IOLog("HOUJI CPU DVFS: thermal level %u -> %u at %d.%d C\n", gLevel, level, hottest / 10, hottest % 10);
         gLevel = level; gHottest = (unsigned)hottest;
+        // A cluster brought up later (smp=1 starts the secondary cores after this governor) enables its EPSS domain then.
+        if (ticks % 5 == 0) {
+            for (unsigned id = 0; id < kDomains; id++) {
+                if (d[id].ok || !d[id].va || !(rd(d[id], 0) & 1)) continue;
+                if (init(id)) IOLog("HOUJI CPU DVFS: domain=%u validated after its cluster started\n", id);
+            }
+        }
         apply(level);
         if (++ticks % 25 == 0) {   // every 5 s
             uint32_t req[kDomains], state[kDomains];
