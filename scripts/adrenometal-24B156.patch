@@ -1,0 +1,20 @@
+diff --git a/NativeAdrenoMetalPlugin.mm b/NativeAdrenoMetalPlugin.mm
+index ffa797d..0c85012 100644
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -470,7 +470,14 @@ static id deviceForPort(unsigned port) {
+         setenv("CA_ALLOW_EDR_MIRRORING", "0", 1);
+ #if !TARGET_OS_OSX
+         // The stored option values and the framebuffer branch are addresses of iPadOS 27's QuartzCore (24A446).
+-        if (void *start = dlsym(RTLD_DEFAULT, "CARenderServerStart")) {
++        // houji (iOS 27.2.1, 24B156): only on that QuartzCore. Its shared cache is slid by whole pages, so CARenderServerStart keeps the
++        // low 14 bits of its 24A446 address there; anywhere else the addresses below name other data and nothing is written.
++        void *start = dlsym(RTLD_DEFAULT, "CARenderServerStart");
++        if (start && (((uintptr_t)ptrauth_strip(start, ptrauth_key_function_pointer) ^ 0x1846dce88) & 0x3fff)) {
++            gpu->mark(0x6EF0);   // not the 24A446 QuartzCore: the environment settings above only
++            start = nullptr;
++        }
++        if (start) {
+             const uintptr_t slide = (uintptr_t)ptrauth_strip(start, ptrauth_key_function_pointer) - 0x1846dce88;
+             const float one = 1.0f, never = 1e30f;
+             gpu->mark(writeTask(0x1e7021014 + slide, &one, sizeof one) ? 0x6E01 : 0x6EF1);

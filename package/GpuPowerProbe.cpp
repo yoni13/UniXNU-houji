@@ -1376,13 +1376,19 @@ unsigned bootArg(const char *name, unsigned fallback) {
 volatile uint32_t gMetalStage = 0, gMetalRegistered = 0;
 volatile int gMetalKext = -99, gMetalStatus = 0;
 // Stages: 1 kext load attempted, 2 parent metaclass found, 3 own class registered, 4 object created and initialised, 5 published.
-// houji: the Metal accelerator (AdrenoMetal's staged NativeAdrenoAccelerator.cpp) is not built yet, so publication reports
-// unsupported; sheng's body stays below, unused and not emitted, until HOUJI_GPU_METAL selects it.
+// houji: the staged accelerator comes from build-houji-accelerator.py (24B156 bindings) and build-houji-display.py compiles this
+// file with HOUJI_GPU_METAL=1; without it publication reports unsupported and sheng's body below is not emitted.
 #if !HOUJI_GPU_METAL
 void publishMetal() {gMetalStage = 1; gMetalStatus = kIOReturnUnsupported;}
 [[maybe_unused]] void publishMetalAccelerator() {
 #else
+void publishMetalBody();
+// houji: sheng's boot UI showed these words; here the console does. Stage 5 = published on the platform.
 void publishMetal() {
+    publishMetalBody();
+    IOLog("HOUJI GPU: metal stage %u status 0x%x kext 0x%x registered %u\n", gMetalStage, gMetalStatus, gMetalKext, gMetalRegistered);
+}
+void publishMetalBody() {
 #endif
     gMetalStage = 1;
     if (!native_adreno_accelerator_static_init || !native_adreno_accelerator_allocate || !native_adreno_accelerator_instance_size) {
