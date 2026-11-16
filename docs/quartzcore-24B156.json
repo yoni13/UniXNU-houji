@@ -1,0 +1,32 @@
+{
+  "carender_server_start": "0x1845ce544",
+  "debug_values_base": "0x1edf3e420",
+  "edr_headroom": {
+    "index": 21,
+    "address": "0x1edf3e474"
+  },
+  "fp16_min_headroom": {
+    "index": 81,
+    "address": "0x1edf3e564"
+  },
+  "ca_debug_options_base": "0x1edf3e5cc",
+  "allow_edr_mirroring_offset": 159,
+  "force_fp16_offset": 129,
+  "framebuffer_pixel_format": "0x18434cff4",
+  "framebuffer_branch": {
+    "address": "0x18434d078",
+    "original_instruction_hex": "0x37000b48",
+    "explanation": "tbnz w8, #0, 0x18434d1e0 (little-endian bytes 48 0b 00 37). w8 is the result of the EDR-headroom versus CA_FP16_MIN_HEADROOM test combined with the panel-headroom > 8 test. The target returns the already-loaded 'RGhA' pixel format. Replacing this instruction with NOP suppresses that normal headroom-triggered FP16 route, matching the semantics of the 24A446 patch; the separately cleared FORCE_FP16 and ALLOW_EDR_MIRRORING bytes cover the following override routes."
+  },
+  "virtualized_byte": "0x1edf390c1",
+  "evidence": [
+    "Verified: QuartzCore export trie contains _CARenderServerStart at image base 0x1842d4000 + 0x2fa544 = 0x1845ce544.",
+    "Verified: local symbols identify init_debug=0x1843db3f0, debug_values=0x1edf3e420, and _ca_debug_options=0x1edf3e5cc.",
+    "Verified independently: init_debug loops over 96 float-option pointers and stores str s0,[0x1edf3e420,index,lsl#2]; decoded table entries 21 and 81 point to CA_DISPLAY_EDR_HEADROOM and CA_FP16_MIN_HEADROOM respectively.",
+    "Verified independently: framebuffer_pixel_format loads the two float values from 0x1edf3e564 (threshold) and, via Display::edr_headroom, 0x1edf3e474 (override).",
+    "Verified: init_debug loops over 300 bool-option pointers and stores bytes at 0x1edf3e5cc+index; decoded entries 129 and 159 point to CA_FORCE_FP16_FRAMEBUFFER and CA_ALLOW_EDR_MIRRORING.",
+    "Verified independently: framebuffer_pixel_format directly loads _ca_debug_options+0x81 at 0x18434d080 and +0x9f at 0x18434d08c, each followed by a branch to the RGhA return path.",
+    "Verified: local symbol __ZN2CA12WindowServer12IOMFBDisplay24framebuffer_pixel_formatEv is 0x18434cff4; disassembly shows RGhA loaded into w19 and the headroom decision tbnz at 0x18434d078 targeting its return block.",
+    "Verified: local symbol CADeviceIsVirtualized::is_virtualized is 0x1edf390c1; CADeviceIsVirtualized_block_invoke stores its result to that byte, and framebuffer_pixel_format reads it."
+  ]
+}

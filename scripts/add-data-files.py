@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Add files to an existing packed Data seed (make-data-seed-linux.py output) without changing its volume.
 
-  add-data-files.py --unixnu UNIXNU --seed data.dbr --output new.dbr SRC:DEST [SRC:DEST ...]
+  add-data-files.py --unixnu UNIXNU --seed data.dbr --output new.dbr SRC:DEST[:UID] [SRC:DEST[:UID] ...]
 
-DEST is relative to the Data volume (mounted at /private/var). The seed is unpacked to a sparse raw image, mounted read-write in the
+DEST is relative to the Data volume (mounted at /private/var); UID (default 0, root) owns the file and any directory created for it. The seed is unpacked to a sparse raw image, mounted read-write in the
 same privileged container as make-data-seed-linux.py (linux-apfs-rw), the files are copied (owner root, mode 0755 when the source
 is executable and 0644 otherwise, parent directories 0755), and the image is packed again into OUTPUT. The input seed is not modified, so its volume UUID (CONFIG_XNU_OWNER_DATA_VOLUME_UUID)
 stays the same. The output is installation state: keep it local, never commit it.
@@ -31,12 +31,15 @@ try:
         sys.exit('the Data volume did not mount read-write')
     for pair in pairs:
         src, dest = pair.split(':', 1)
+        uid = 0
+        if dest.count(':') == 1:
+            dest, uid = dest.split(':'); uid = int(uid)
         target = mount / dest
         for parent in reversed(target.relative_to(mount).parents[:-1]):
             d = mount / parent
             if not d.exists():
-                d.mkdir(); os.chown(d, 0, 0); d.chmod(0o755)
-        shutil.copyfile(src, target); os.chown(target, 0, 0); target.chmod(0o755 if os.stat(src).st_mode & 0o111 else 0o644)
+                d.mkdir(); os.chown(d, uid, uid); d.chmod(0o755)
+        shutil.copyfile(src, target); os.chown(target, uid, uid); target.chmod(0o755 if os.stat(src).st_mode & 0o111 else 0o644)
         print('ADDED', dest, target.stat().st_size)
 finally:
     subprocess.run(['umount', mount]); subprocess.run(['losetup', '-d', dev])
@@ -60,9 +63,14 @@ def main():
     pairs = []
     for item in args.files:
         src, _, dest = item.partition(':')
+        owner = ''
+        if dest.count(':') == 1:
+            dest, owner = dest.split(':')
+            if not owner.isdigit():
+                parser.error('bad UID in ' + item)
         if not dest or dest.startswith('/') or '..' in Path(dest).parts or not Path(src).is_file():
             parser.error('bad SRC:DEST ' + item)
-        pairs.append((Path(src).resolve(), dest))
+        pairs.append((Path(src).resolve(), dest + (':' + owner if owner else '')))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='add-data-', dir=args.output.parent) as td:
         work = Path(td)
@@ -81,6 +89,7 @@ def main():
         packed_ramdisk.pack(raw, candidate)
         candidate.replace(args.output)
     print(json.dumps(dict(output=str(args.output), added={dest: hashlib.sha256(src.read_bytes()).hexdigest() for src, dest in pairs})))
+    # (DEST keeps its :UID suffix in the report)
 
 
 if __name__ == '__main__':
