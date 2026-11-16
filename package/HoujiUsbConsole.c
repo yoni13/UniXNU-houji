@@ -675,6 +675,18 @@ static void command_line(void)
             printf("HOUJI COMMPAGE +%03x: %s\n",at,line);
         }
     }
+    else if (!strcmp(u.command,"hid")) {
+        /* NativeHidInput's report counters (HidInputProbe.cpp): 0 init 1 attach 2 start 3 timer 4 key-down/buttons 5 key-up 6 touch 7 fail. */
+        extern volatile uint32_t native_hid_input_events[8];
+        extern volatile int native_hid_input_results[8];
+        extern volatile uint32_t native_touch_hid_reports;
+        printf("HOUJI HID: events %u %u %u %u %u %u %u %u results %x %x %x %x %x %x %x %x touch-reports %u\n",
+            native_hid_input_events[0],native_hid_input_events[1],native_hid_input_events[2],native_hid_input_events[3],
+            native_hid_input_events[4],native_hid_input_events[5],native_hid_input_events[6],native_hid_input_events[7],
+            native_hid_input_results[0],native_hid_input_results[1],native_hid_input_results[2],native_hid_input_results[3],
+            native_hid_input_results[4],native_hid_input_results[5],native_hid_input_results[6],native_hid_input_results[7],
+            native_touch_hid_reports);
+    }
     else if (!strcmp(u.command,"buttons")) { extern void houji_buttons_report(void); houji_buttons_report(); }
     else if (!strcmp(u.command,"pon")) { extern void houji_pon_report(void); houji_pon_report(); }
     else if (!strcmp(u.command,"touch")) { houji_touch_report(); houji_touch_driver_report(); }
