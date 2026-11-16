@@ -25,7 +25,7 @@ constexpr unsigned kLevels = sizeof(kTrigger) / sizeof(kTrigger[0]);
 
 struct Domain {
     IOMemoryMap *map; uintptr_t va; uint32_t khz[kRows]; uint8_t index[kRows];
-    unsigned n, cur, changes, initial; bool bad;
+    unsigned n, cur, changes, initial; bool bad, ok;
 };
 Domain d[kDomains];
 unsigned gMaxPct = 70;
@@ -39,20 +39,29 @@ bool init(unsigned id) {
     w.map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
     if (m) m->release();
     w.va = w.map ? w.map->getVirtualAddress() : 0;
-    if (!w.va || !(rd(w, 0) & 1)) return false;
+    if (!w.va) {IOLog("HOUJI CPU DVFS REFUSED: domain=%u not mapped\n", id); return false;}
+    if (!(rd(w, 0) & 1)) {IOLog("HOUJI CPU DVFS REFUSED: domain=%u enable %x clear\n", id, rd(w, 0)); return false;}
     uint32_t prev = 0;
     for (unsigned i = 0; i < kRows; i++) {
         const uint32_t raw = rd(w, 0x100 + i * 4), src = raw >> 30, khz = (raw & 255) * 19200;
-        if (!src || khz < kMinima[id] || khz > 4000000) return false;
+        if (!src || khz < kMinima[id] || khz > 4000000) {
+            IOLog("HOUJI CPU DVFS REFUSED: domain=%u row %u raw %08x (%u kHz, source %u; minimum %u)\n", id, i, raw, khz, src, kMinima[id]);
+            return false;
+        }
         if (i && khz == prev) break;
-        if (i && khz < prev) return false;
+        if (i && khz < prev) {IOLog("HOUJI CPU DVFS REFUSED: domain=%u row %u %u kHz below %u\n", id, i, khz, prev); return false;}
         prev = khz;
         if (khz > kCaps[id]) continue;
         w.khz[w.n] = khz; w.index[w.n++] = (uint8_t)i;
     }
-    if (w.n < 2 || w.khz[0] != kMinima[id] || w.khz[w.n - 1] != kCaps[id]) return false;
+    if (w.n < 2 || w.khz[0] != kMinima[id] || w.khz[w.n - 1] != kCaps[id]) {
+        IOLog("HOUJI CPU DVFS REFUSED: domain=%u %u rows, first %u kHz (want %u), last %u kHz (want cap %u)\n", id, w.n, w.n ? w.khz[0] : 0,
+              kMinima[id], w.n ? w.khz[w.n - 1] : 0, kCaps[id]);
+        return false;
+    }
     w.initial = rd(w, 0x320);
-    if (w.initial >= kRows) return false;
+    if (w.initial >= kRows) {IOLog("HOUJI CPU DVFS REFUSED: domain=%u initial index %u\n", id, w.initial); return false;}
+    w.ok = true;
     w.cur = w.n - 1;
     IOLog("HOUJI CPU DVFS INIT: domain=%u cpus=%u rows=%u cap-kHz=%u initial-index=%u initial-request-kHz=%u control=%x; factory LUT, "
           "EPSS voltage control preserved\n", id, kCounts[id], w.n, kCaps[id], w.initial, (rd(w, 0x100 + w.initial * 4) & 255) * 19200,
@@ -88,7 +97,7 @@ unsigned nextLevel(unsigned cur, int hottest) {
 void apply(unsigned level) {
     for (unsigned id = 0; id < kDomains; id++) {
         Domain &w = d[id];
-        if (w.bad) continue;
+        if (!w.ok || w.bad) continue;
         unsigned pct = id ? kBigPct[level] : kLittlePct[level];
         if (pct > gMaxPct) pct = gMaxPct;
         const unsigned at = capIndex(w, pct);
@@ -110,10 +119,14 @@ void worker(void *, wait_result_t) {
         gLevel = level; gHottest = (unsigned)hottest;
         apply(level);
         if (++ticks % 25 == 0) {   // every 5 s
+            uint32_t req[kDomains], state[kDomains];
+            for (unsigned id = 0; id < kDomains; id++) {
+                req[id] = d[id].ok ? d[id].khz[d[id].cur] : 0;
+                state[id] = d[id].ok ? (rd(d[id], 0x20) & 255) * 19200 : 0;
+            }
             IOLog("HOUJI CPU DVFS: hottest %d.%d C level %u req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
-                  hottest / 10, hottest % 10, level, d[0].khz[d[0].cur], d[1].khz[d[1].cur], d[2].khz[d[2].cur], d[3].khz[d[3].cur],
-                  (rd(d[0], 0x20) & 255) * 19200, (rd(d[1], 0x20) & 255) * 19200, (rd(d[2], 0x20) & 255) * 19200,
-                  (rd(d[3], 0x20) & 255) * 19200, d[0].changes, d[1].changes, d[2].changes, d[3].changes);
+                  hottest / 10, hottest % 10, level, req[0], req[1], req[2], req[3], state[0], state[1], state[2], state[3],
+                  d[0].changes, d[1].changes, d[2].changes, d[3].changes);
         }
         IOSleep(200);
     }
@@ -126,9 +139,12 @@ extern "C" void houji_cpu_dvfs_start(void) {
     gStarted = 1;
     unsigned pct = 0;
     if (PE_parse_boot_argn("houji_cpu_max_pct", &pct, sizeof(pct)) && pct >= 10 && pct <= 100) gMaxPct = pct;
+    unsigned usable = 0;
     for (unsigned id = 0; id < kDomains; id++) {
-        if (!init(id)) {IOLog("HOUJI CPU DVFS: domain=%u factory validation refused; no frequency writes\n", id); return;}
+        if (init(id)) ++usable;
+        else IOLog("HOUJI CPU DVFS: domain=%u factory validation refused; no frequency writes to it\n", id);
     }
+    if (!usable) return;
     gLevel = 2;
     apply(gLevel);
     IOLog("HOUJI CPU DVFS: started, max %u%%, initial level 2\n", gMaxPct);
@@ -138,7 +154,9 @@ extern "C" void houji_cpu_dvfs_start(void) {
 
 extern "C" void houji_cpu_dvfs_report(void) {
     if (!gStarted) {IOLog("HOUJI CPU DVFS: not started (houji_dvfs=1)\n"); return;}
-    for (unsigned id = 0; id < kDomains; id++)
+    for (unsigned id = 0; id < kDomains; id++) {
+        if (!d[id].ok) {IOLog("HOUJI CPU DVFS: d=%u not in use (validation refused)\n", id); continue;}
         IOLog("HOUJI CPU DVFS: d=%u req-kHz=%u state-kHz=%u changes=%u bad=%u\n", id, d[id].khz[d[id].cur],
               (rd(d[id], 0x20) & 255) * 19200, d[id].changes, d[id].bad);
+    }
 }
