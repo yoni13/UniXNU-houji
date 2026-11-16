@@ -15,7 +15,17 @@ out.mkdir(parents=True, exist_ok=True)
 (out / 'build-report.json').unlink(missing_ok=True)
 raw = out / 'raw'
 raw.mkdir(exist_ok=True)
-subprocess.run(['bash', str(module / 'tools/fetch-sources.sh')], check=True, stdout=subprocess.DEVNULL)
+# houji: the module clones with --sparse (cone mode on this Mac's Apple git 2.39), then adds leading-slash patterns, which git accepts
+# only in non-cone mode ("specify directories rather than patterns"). Each failed run can clone one more source, so convert every checkout
+# and retry until the fetch passes (two sources: linux, freebsd).
+for attempt in range(4):
+    if not subprocess.run(['bash', str(module / 'tools/fetch-sources.sh')], stdout=subprocess.DEVNULL).returncode:
+        break
+    for checkout in sorted((module / 'deps').glob('*')):
+        if (checkout / '.git').exists():
+            subprocess.run(['git', '-C', str(checkout), 'sparse-checkout', 'init', '--no-cone'], check=True)
+else:
+    sys.exit('Ath12kWifi tools/fetch-sources.sh failed')
 subprocess.run(['bash', str(module / 'tools/prepare.sh')], check=True, stdout=subprocess.DEVNULL)
 clang = subprocess.run(['xcrun', '-f', 'clang'], check=True, capture_output=True, text=True).stdout.strip()
 resource = subprocess.run([clang, '-print-resource-dir'], check=True, capture_output=True, text=True).stdout.strip() + '/include'

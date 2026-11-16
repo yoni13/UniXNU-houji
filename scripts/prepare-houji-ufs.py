@@ -41,10 +41,12 @@ def prepare(source, legacy, output):
     native = replace_once(native, 'configureUfsSmmu (plan, stream,', 'configureGiuliaSmmu (selection, stream, true,')
     native = replace_once(native, 'smmuReport, phys, 16384);', 'smmuReport, phys, 16384, hc);')
     native = replace_once(native, 'report, gHost.phys, kDmaBytes);', 'report, gHost.phys, kDmaBytes, gHost.hc);')
-    # No sheng WiFi/DPU stream programming belongs in houji storage bring-up.
-    native = replace_once(native, '  uint32_t wifi = 0;\n', '')
+    # The Wi-Fi endpoint's pass-through stream 0x1401 and its 32-bit DMA window (native_ufs_extra_*, read by WifiProbe.cpp), set up here as
+    # on sheng because the stream matching registers are only safe at this moment; houji's boot argument is WifiProbe's own (wifi>=2).
     native = replace_once(native, 'if (PE_parse_boot_argn ("sheng-wifi", &wifi, sizeof (wifi)) && wifi >= 2) {',
-                          'if (false) { /* houji: sheng WiFi mapping disabled */')
+                          'if (PE_parse_boot_argn ("wifi", &wifi, sizeof (wifi)) && wifi >= 2) { /* houji: wifi>=2 */')
+    native = replace_once(native, 'PE_parse_boot_argn ("sheng-wifi-attr", &attr, sizeof (attr));',
+                          'PE_parse_boot_argn ("wifi-attr", &attr, sizeof (attr));')
     native = replace_once(native, 'extraReport, 0x9c900000ULL, 8ULL << 20);',
                           'extraReport, 0x9c900000ULL, 8ULL << 20, gHost.hc);')
     native = replace_once(native, 'if (dpu >= 2 || scanout) {',
