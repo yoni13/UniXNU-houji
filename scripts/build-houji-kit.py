@@ -12,6 +12,8 @@ KIT = ROOT / 'kits/houji'
 OUT.mkdir(parents=True, exist_ok=True)
 # A BSD-side C file and an IOKit C++ file whose flags the package sources reuse.
 RECORDS = {'.c': OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json', '.cpp': OBJ / 'iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'}
+# Sources that need osfmk's Mach-private view (struct processor, recount) compile with osfmk/kern/processor.c's own command.
+RECORD_OVERRIDES = {'HoujiCpuIdle.c': OBJ / 'osfmk/DEVELOPMENT/processor.o.json'}
 SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c']
 
 
@@ -40,7 +42,7 @@ def command(record, source, obj):
 objects = []
 for name in SOURCES:
     source = KIT / name
-    record = json.loads(RECORDS[source.suffix].read_text().strip().rstrip(','))
+    record = json.loads(RECORD_OVERRIDES.get(name, RECORDS[source.suffix]).read_text().strip().rstrip(','))
     obj = OUT / (source.stem + '.o')
     subprocess.run(command(record, source, obj), cwd=record['directory'], check=True, timeout=180)
     objects.append(str(obj))

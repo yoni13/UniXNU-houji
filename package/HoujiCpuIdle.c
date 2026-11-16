@@ -2,10 +2,7 @@
 // Per-CPU idle time for the houji CPU frequency governor (HoujiCpuDvfs.cpp), the load input the iOS 16 governor took from
 // houji_cpu_idle_mach(): the processor's accumulated idle time in mach ticks, read as XNU's own processor CPU-load info does
 // (osfmk/kern/processor.c, recount_processor_usage on pr_recount). 0 for a CPU that is not started.
-/* The Mach-private view osfmk's own files compile with: struct processor and the recount interface. */
-#ifndef MACH_KERNEL_PRIVATE
-#define MACH_KERNEL_PRIVATE 1
-#endif
+/* Compiled with osfmk/kern/processor.c's command (build-houji-kit.py RECORD_OVERRIDES): the Mach-private view of struct processor. */
 #include <kern/processor.h>
 #include <kern/recount.h>
 
