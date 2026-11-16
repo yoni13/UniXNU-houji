@@ -303,7 +303,9 @@ volatile uint32_t *mapWords(uint64_t phys, uint64_t len, OSSharedPtr<IOMemoryMap
 // Mode 7. Windows in ShengGmu order (core, rscc, pdc, gpu, cx_misc): the pinned DT gmu reg-names gmu/rscc/gmu_pdc, gpu
 // reg 0x3d00000 size 0x40000 and its cx_mem 0x3d9e000; ShengGmuBindMmio refuses any other address or size.
 constexpr uint64_t kColdPhys[5] = {0x03d6a000, 0x03d50000, 0x0b280000, 0x03d00000, 0x03d9e000};
-constexpr uint64_t kColdLen[5] = {0x35000, 0x10000, 0x10000, 0x40000, 0x1000};
+// houji: cx_mem is 0x2000 in this phone's DT (sheng: 0x1000). ShengGmuBindMmio refuses any window that differs from the generated
+// sheng_gmu_window_physical/bytes (ShengGmuSource.h, prepare-houji-gmu.py); these must equal them.
+constexpr uint64_t kColdLen[5] = {0x35000, 0x10000, 0x10000, 0x40000, 0x2000};
 constexpr uint32_t kAoIrqClr = 0x23b04 * 4 - 0x6a000, kAoIrqMask = 0x23b06 * 4 - 0x6a000;   // a6xx_gmu.xml
 constexpr uint32_t kAoFatal = (1u << 0) | (1u << 3) | (1u << 5);   // A6XX_GMU_IRQ_MASK: WDOG_BITE, FENCE_ERR, AHB_BUS_ERROR
 OSSharedPtr<IOMemoryMap> gColdMaps[5], gPayloadMaps[5];
