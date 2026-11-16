@@ -1,21 +1,24 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // houji CPU frequency for iOS 27: the iOS 16 kernel's SM8650 EPSS governor (fork/kernel/overlay/iokit/Kernel/arm/HoujiCpuDvfs.inc;
 // register facts from MiCode qcom-cpufreq-hw, policy from UniXNU-sheng CpuFreqProbe). The factory LUT validation (init) and the
-// request/readback vote are unchanged; no raw voltage or PLL writes, EPSS keeps voltage control. This first iOS 27 version has no load
-// input yet (the iOS 27 kernel does not publish per-core idle time): every 200 ms each domain is set to the lower of its thermal cap
+// request/readback vote are unchanged; no raw voltage or PLL writes, EPSS keeps voltage control. Every 200 ms each domain gets the
+// lowest row that keeps its busiest core near 75 % (per-core idle time from HoujiCpuIdle.c), never above its thermal cap
 // (the iOS 16 levels: triggers 70/75/80/85/90 C, big 100/70/50/30/10/0 %, little 100/90/70/50/25/0 %, 3 C hysteresis) and
 // houji_cpu_max_pct (default 70); triggers from houji_thermal_trigger_c (default 55 C). Opt-in: houji_dvfs=1. Domains and caps are this phone's FDT and recovery cpufreq inventory.
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
 #include <kern/thread.h>
+#include <kern/clock.h>
 #include <pexpert/pexpert.h>
 
 extern "C" int houji_thermal_hottest(void);   // HoujiThermal.cpp: deci-C, -1000 without a reading
+extern "C" uint64_t houji_cpu_idle_mach(int cpu);   // HoujiCpuIdle.c: accumulated idle time, 0 for a CPU not started
 
 namespace {
 constexpr unsigned kDomains = 4, kRows = 40;
 constexpr unsigned kCounts[kDomains] = {2, 2, 1, 3};
+constexpr unsigned kCpuDomain[8] = {0, 0, 3, 3, 3, 1, 1, 2};   // the iOS 16 governor's map (this phone's FDT clusters)
 constexpr uint32_t kCaps[kDomains] = {2265600, 2956800, 3052800, 3148800};
 constexpr uint32_t kMinima[kDomains] = {364800, 499200, 480000, 499200};
 // Level triggers in deci-C: level n starts at first + 50 * (n - 1). The iOS 16 governor began at 70 C with a load-driven floor;
@@ -31,6 +34,8 @@ struct Domain {
 };
 Domain d[kDomains];
 unsigned gMaxPct = 70;
+uint64_t gLastIdle[8], gLastTime;
+unsigned gLoad[kDomains];   // permille: the busiest started core of the domain over the last period
 volatile unsigned gLevel, gHottest, gStarted;
 
 uint32_t rd(Domain &w, unsigned off) {return *(volatile uint32_t *)(w.va + off);}
@@ -105,7 +110,14 @@ void apply(unsigned level) {
         if (!w.ok || w.bad) continue;
         unsigned pct = id ? kBigPct[level] : kLittlePct[level];
         if (pct > gMaxPct) pct = gMaxPct;
-        const unsigned at = capIndex(w, pct);
+        const unsigned cap = capIndex(w, pct);
+        // Load: above 90 % straight to the cap; otherwise the lowest row that keeps the busiest core near 75 % at the current speed.
+        unsigned at = cap;
+        if (gLoad[id] < 900) {
+            const uint64_t want = (uint64_t)w.khz[w.cur] * gLoad[id] / 750;
+            at = 0;
+            while (at < cap && w.khz[at] < want) ++at;
+        }
         if (at != w.cur && !vote(id, at)) {
             w.bad = true;
             IOLog("HOUJI CPU DVFS FAIL: domain=%u request/readback mismatch; domain writes disabled\n", id);
@@ -122,6 +134,27 @@ void worker(void *, wait_result_t) {
         const unsigned level = hottest > -1000 ? nextLevel(gLevel, hottest) : (gLevel < 2 ? 2 : gLevel);
         if (level != gLevel) IOLog("HOUJI CPU DVFS: thermal level %u -> %u at %d.%d C\n", gLevel, level, hottest / 10, hottest % 10);
         gLevel = level; gHottest = (unsigned)hottest;
+        {
+            const uint64_t now = mach_absolute_time();
+            unsigned load[kDomains] = {};
+            if (gLastTime) {
+                const uint64_t span = now - gLastTime;
+                for (int cpu = 0; cpu < 8; cpu++) {
+                    const uint64_t idle = houji_cpu_idle_mach(cpu);
+                    if (idle && gLastIdle[cpu] && span) {
+                        const uint64_t idleSpan = idle > gLastIdle[cpu] ? idle - gLastIdle[cpu] : 0;
+                        const unsigned busy = idleSpan >= span ? 0 : (unsigned)(1000 - idleSpan * 1000 / span);
+                        if (busy > load[kCpuDomain[cpu]]) load[kCpuDomain[cpu]] = busy;
+                    }
+                    gLastIdle[cpu] = idle;
+                }
+                for (unsigned id = 0; id < kDomains; id++) gLoad[id] = load[id];
+            } else {
+                for (int cpu = 0; cpu < 8; cpu++) gLastIdle[cpu] = houji_cpu_idle_mach(cpu);
+                for (unsigned id = 0; id < kDomains; id++) gLoad[id] = 1000;   // no measurement yet: the cap
+            }
+            gLastTime = now;
+        }
         // A cluster brought up later (smp=1 starts the secondary cores after this governor) enables its EPSS domain then.
         if (ticks % 5 == 0) {
             for (unsigned id = 0; id < kDomains; id++) {
@@ -136,9 +169,9 @@ void worker(void *, wait_result_t) {
                 req[id] = d[id].ok ? d[id].khz[d[id].cur] : 0;
                 state[id] = d[id].ok ? (rd(d[id], 0x20) & 255) * 19200 : 0;
             }
-            IOLog("HOUJI CPU DVFS: hottest %d.%d C level %u req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
-                  hottest / 10, hottest % 10, level, req[0], req[1], req[2], req[3], state[0], state[1], state[2], state[3],
-                  d[0].changes, d[1].changes, d[2].changes, d[3].changes);
+            IOLog("HOUJI CPU DVFS: hottest %d.%d C level %u load %u,%u,%u,%u req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
+                  hottest / 10, hottest % 10, level, gLoad[0], gLoad[1], gLoad[2], gLoad[3], req[0], req[1], req[2], req[3],
+                  state[0], state[1], state[2], state[3], d[0].changes, d[1].changes, d[2].changes, d[3].changes);
         }
         IOSleep(200);
     }
