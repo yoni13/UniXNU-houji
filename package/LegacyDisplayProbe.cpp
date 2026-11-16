@@ -611,7 +611,9 @@ void native_legacy_display_late_probe(void) {
     houji_buttons_start(); // HoujiButtons.cpp: power and volume keys (houji_buttons=1)
     // The Adreno 750 (GpuPowerProbe.cpp, sheng's staged bring-up with the houji board deltas): only with gpu-power=<1..9>.
     {unsigned gpu = 0; if (PE_parse_boot_argn("gpu-power", &gpu, sizeof gpu) && gpu) {sheng_gpu_pool_probe(); sheng_gpu_power_probe();}}
+#if HOUJI_WIFI_LINK
     sheng_wifi_probe();   // WifiProbe.cpp: the WCN7850 on PCIe0, staged by wifi=<1..5>; returns at once without it
+#endif
     IOService *display=pendingLegacyDisplay;if(!display){native_legacy_display_checkpoint();return;}pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
     // The IOSurface root service: iOS and iPadOS name it IOCoreSurfaceRoot; macOS leaves it unnamed, so its name is its class,
