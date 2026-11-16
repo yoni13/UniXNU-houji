@@ -1560,7 +1560,10 @@ void bringUp(Window &gcc, Window &tlmm) {
     for (unsigned i = 0; i < sizeof kBranches / sizeof kBranches[0]; ++i)
         if (g[kBranches[i] / 4] & (1u << 31)) off |= 1u << i;
     native_wifi_stats[11] = power | off << 8;
-    if (off & ~(1u << 4)) {native_wifi_stats[0] = -12; return;}   // the pipe branch runs only once the PHY drives it
+    // houji (the iOS 16 port's check, fork houji-wifi/HoujiWifi.cpp): the pipe branch runs only once the PHY drives it, and on SM8650 the
+    // NoC branches (cnoc_sf voted, aggre_noc and ddrss_sf halt-skip in gcc-sm8650.c) read off here, as Linux never checks them; only the
+    // controller's own branches must run before its registers are read (sheng's "all but the pipe" stopped root58 at -12).
+    if (off & kNeeded) {native_wifi_stats[0] = -12; return;}
     pulseReset(g, kPcieBcr);
     pulseReset(g, kPhyBcr);
     native_wifi_stats[0] = 12;
@@ -1712,14 +1715,14 @@ extern "C" int sheng_wifi_file(const char *name, const uint8_t **data, size_t *s
 
 // houji: the stage word and the words the survey, power and link stages fill, logged whenever they change (every 2 s for 10 minutes).
 static void stageWatch(void *, wait_result_t) {
-    uint32_t last[8] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
-    static const unsigned words[8] = {0, 5, 6, 8, 12, 15, 16, 17};
+    uint32_t last[9] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+    static const unsigned words[9] = {0, 5, 6, 8, 12, 15, 16, 17, 11};
     for (unsigned t = 0; t < 300; ++t) {
-        uint32_t now[8]; bool changed = false;
-        for (unsigned i = 0; i < 8; ++i) {now[i] = native_wifi_stats[words[i]]; changed |= now[i] != last[i];}
+        uint32_t now[9]; bool changed = false;
+        for (unsigned i = 0; i < 9; ++i) {now[i] = native_wifi_stats[words[i]]; changed |= now[i] != last[i];}
         if (changed) {
-            IOLog("HOUJI WIFI STATS: t=%us stage %d pins %08x ltssm %08x link %08x phy %08x ep %08x ms %u rails %08x\n", 2 * t,
-                  int32_t(now[0]), now[1], now[2], now[3], now[4], now[5], now[6], now[7]);
+            IOLog("HOUJI WIFI STATS: t=%us stage %d pins %08x ltssm %08x link %08x phy %08x ep %08x ms %u rails %08x gdsc/off %08x\n", 2 * t,
+                  int32_t(now[0]), now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8]);
             memcpy(last, now, sizeof last);
         }
         IOSleep(2000);
