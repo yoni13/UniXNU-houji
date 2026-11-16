@@ -675,6 +675,7 @@ static void command_line(void)
             printf("HOUJI COMMPAGE +%03x: %s\n",at,line);
         }
     }
+    else if (!strcmp(u.command,"temp")) { extern void houji_thermal_report(void); houji_thermal_report(); }
     else if (!strcmp(u.command,"hid")) {
         /* NativeHidInput's report counters (HidInputProbe.cpp): 0 init 1 attach 2 start 3 timer 4 key-down/buttons 5 key-up 6 touch 7 fail. */
         extern volatile uint32_t native_hid_input_events[8];
@@ -964,6 +965,7 @@ void houji_usb_debug_start(void)
     }
     { extern void houji_power_start(void); static bool power; if (!power) { power=true; houji_power_start(); } }
     { extern void houji_pon_report(void); static bool pon; if (!pon) { pon=true; houji_pon_report(); } }
+    { extern void houji_thermal_start(void); houji_thermal_start(); }
     {
         static bool hb;unsigned ms=0;thread_t th;
         if (!hb && PE_parse_boot_argn("houji_heartbeat_ms",&ms,sizeof(ms)) && ms>=10 && ms<=1000) {
