@@ -525,6 +525,14 @@ run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--global
      hid_object, hid_late])
 hid_probe = ROOT / 'kits/houji/HidInputProbe.cpp'
 compile_cpp(hid_probe, HID_OUT / 'HidInputProbe.o')
+# The Adreno 750 board probe (sheng's GpuPowerProbe.cpp and GpuMemoryPool.cpp with the houji deltas), as sheng's builder compiles
+# them; started from LegacyDisplayProbe.cpp only with gpu-power=<n>.
+GPU_INCLUDES = tuple(x for d in ('drivers/Adreno740', 'kits/ArmSmmu4K', 'kits/AdrenoFirmware', 'kits/AdrenoPM4', 'kits/Sm8550Platform',
+                                 'build/sheng-gmu', 'build/sheng-gpu-smmu', 'build/adreno740/include') for x in ('-I', str(ROOT / d)))
+gpu_objects = []
+for stem in ('GpuPowerProbe', 'GpuMemoryPool', 'HoujiGpuGlue'):
+    compile_cpp(ROOT / 'kits/houji' / (stem + '.cpp'), OUT / (stem + '.o'), GPU_INCLUDES)
+    gpu_objects.append(OUT / (stem + '.o'))
 print(f'HID: {len(hid_bindings)} original IOHIDDevice bindings, vtables {hid_vtables} match the original diversities')
 
 # houji: the prelinked collection leaves native __DATA_CONST no more than its 0x120000 bytes below the retained kexts'
@@ -540,7 +548,7 @@ archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
 run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', OUT / 'original-addresses.o', OUT / 'LegacyDisplayProbe.o',
      OUT / 'LegacyDisplaySupport27.o', gop_late, OUT / 'KeyStoreProbe.o', keyevents_late,
-     hid_late, HID_OUT / 'hid-bindings.o', HID_OUT / 'hid-addresses.o', HID_OUT / 'HidInputProbe.o'])
+     hid_late, HID_OUT / 'hid-bindings.o', HID_OUT / 'hid-addresses.o', HID_OUT / 'HidInputProbe.o', *gpu_objects])
 sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp', ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',
            ROOT / 'drivers/GopFramebuffer/NativeGOPPresenter.cpp', ROOT / 'drivers/GopFramebuffer/NativeGOPWire.h',
            ROOT / 'drivers/GopFramebuffer/NativeHalfCodes.h', source,

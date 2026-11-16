@@ -21,7 +21,9 @@ CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
 CONFIG_XNU_NATIVE_RAM_BLOCK=y
 CONFIG_XNU_OWNER_DATA_MOUNT=y
 CONFIG_XNU_OWNER_DATA_VOLUME_UUID="8EACEB6E-F499-416E-9DD8-24D2194F9487"
-# CONFIG_XNU_NATIVE_ADRENO is not set
+# Adreno 750 (UniXNU Adreno740 with the houji inputs, scripts/build-houji-adreno.py). No personality matches (the ADT has no
+# qcom,adreno node); GpuPowerProbe.cpp drives it, only with gpu-power=<n>.
+CONFIG_XNU_NATIVE_ADRENO=y
 # Display: UniXNU GopFramebuffer presents the firmware framebuffer as the original IOMobileFramebufferLegacy of 24B156
 # (scripts/build-houji-display.py, scripts/legacy-display-24B156.json). It starts only with the offline-legacy-* arguments.
 CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y

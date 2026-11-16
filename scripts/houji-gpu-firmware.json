@@ -1,0 +1,20 @@
+{
+  "source": "this phone's vendor and odm partitions (local copies only; the bytes are never committed)",
+  "files": {
+    "gmu_gen70900.bin": {
+      "partition_path": "vendor/firmware/gmu_gen70900.bin",
+      "bytes": 78588,
+      "sha256": "9685f62c42543befcaee68d25355e16bf55cdb0d573bddcc9f6633f59eec3f72"
+    },
+    "gen70900_sqe.fw": {
+      "partition_path": "vendor/firmware/gen70900_sqe.fw",
+      "bytes": 85300,
+      "sha256": "8e2c5ce74140de7e161f14654b44de999855bce01b690fdd18c3358a73498cd1"
+    },
+    "gen70900_zap.mbn": {
+      "partition_path": "odm/firmware/gen70900_zap.mbn",
+      "bytes": 12088,
+      "sha256": "53597ba96c8eb2725c71db5b3ebe4ee3d5b46499f72f4246dd0f55c1a79a0f80"
+    }
+  }
+}

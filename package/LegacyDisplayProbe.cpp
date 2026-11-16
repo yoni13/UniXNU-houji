@@ -525,6 +525,8 @@ extern void native_keystore_probe(void);
 extern void native_hid_input_probe(void);
 extern void houji_touch_start(void);
 extern void houji_buttons_start(void);
+extern "C" void sheng_gpu_pool_probe(void);
+extern "C" void sheng_gpu_power_probe(void);
 // IOKit's busy services while the registry is not quiet: the network configuration names interfaces only once IOKit is quiet (or after its
 // 240 s limit), and the TimeSync clock manager waits for quiet too, so a service whose matching never ends holds up the network, TimeSync
 // and everything waiting on them (macOS run28: en0 named after 240 s, WindowServer waiting on clocksyncd). Every 10 s for 10 minutes, while
@@ -606,6 +608,8 @@ void native_legacy_display_late_probe(void) {
     native_hid_input_probe();
     houji_touch_start();   // HoujiTouch.cpp: the S3910 touch screen (houji_touch=1)
     houji_buttons_start(); // HoujiButtons.cpp: power and volume keys (houji_buttons=1)
+    // The Adreno 750 (GpuPowerProbe.cpp, sheng's staged bring-up with the houji board deltas): only with gpu-power=<1..9>.
+    {unsigned gpu = 0; if (PE_parse_boot_argn("gpu-power", &gpu, sizeof gpu) && gpu) {sheng_gpu_pool_probe(); sheng_gpu_power_probe();}}
     IOService *display=pendingLegacyDisplay;if(!display){native_legacy_display_checkpoint();return;}pendingLegacyDisplay=nullptr;
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
     // The IOSurface root service: iOS and iPadOS name it IOCoreSurfaceRoot; macOS leaves it unnamed, so its name is its class,

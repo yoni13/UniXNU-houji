@@ -33,7 +33,9 @@ Compared with sheng's `package/GpuPowerBoard.h` (SM8550):
 | GCC `gpu_memnoc_gfx_clk` | 0x71010 | 0x71010 |
 | GCC `gpu_snoc_dvm_gfx_clk` | 0x71018 | 0x71018 |
 | GCC `gpu_gpll0_clk_src` / `_div` | vote 0x52000 bits 15 / 16 | same |
-| GCC `gpu_cfg_ahb_clk` | not a separate clock (always on) | 0x71004 |
+| GCC `gpu_cfg_ahb_clk` | 0x71004, a critical CBCR enabled at probe | 0x71004, enabled at probe |
+| `gpu_cc_pll0` L / alpha | **0x20 / 0x4aaa** | 0x1e / 0xbaaa |
+| `gpu_cc_pll1` L / alpha | **0x1b / 0x1555** (520 MHz; GMU 260 MHz = PLL1 / 2) | 0x16 / 0xeaaa (440 MHz; GMU 220 MHz) |
 
 ## Firmware (this phone's vendor and odm partitions; local only, never committed)
 
@@ -44,8 +46,9 @@ Compared with sheng's `package/GpuPowerBoard.h` (SM8550):
 | `vendor/firmware/gmu_gen70900.bin` | 78588 | 9685f62c42543bef |
 | `odm/firmware/gen70900_zap.mbn` | 12088 | 53597ba96c8eb272 |
 
-Adreno740 takes the GMU and SQE images as embedded archive symbols (`native_adreno_firmware_image`, `native_adreno_sqe_firmware_image`;
-weak empty defaults refuse to run). The A750 also has the AQE microcode, which the A740 driver has no slot for yet.
+Adreno740 takes the GMU, SQE and ZAP images as embedded archive symbols (`native_adreno_firmware_image`, `native_adreno_sqe_firmware_image`,
+`native_adreno_zap_image`; weak empty defaults refuse to run). Linux's A750 entry loads only SQE and GMU (plus the ZAP shader); the AQE
+file is not used. Pins (sizes and hashes only): `scripts/houji-gpu-firmware.json`.
 
 ## GMU vote inputs (scripts/prepare-houji-gmu-votes.py)
 
@@ -61,6 +64,16 @@ ADRENO_7XX_GEN3, gmu_chipid 0x7090100, gmem 3 MiB). The packed iOS 27 DTB is the
 | Bandwidths | 7 steps, 2136718 ... 14398437 kBps |
 | BCM policy | SH0 buswidth 16, MC0 buswidth 4, ACV fixed perfmode BIT(2) 10687500 kBps |
 | Command DB | 0x81c60000 + 131072 (`qcom,cmd-db`) |
+
+## Build
+
+- `ios27/gpu-inputs.sh` (local) runs the three generators and copies the headers and the pinned firmware to the build Mac's
+  `~/b/houji-gpu` (`UNIXNU_HOUJI_GPU_INPUTS`). Nothing from there enters Git.
+- `board.toml` archives: `build-houji-adreno.py inputs` (headers into `build/sheng-gmu`, `build/sheng-gpu-smmu`), `component:Adreno740`,
+  `build-houji-adreno.py kits` (GMU/HFI/SMMU/PM4 kits and firmware into `libAdreno740.a`). `CONFIG_XNU_NATIVE_ADRENO=y` links it.
+- `package/GpuPowerProbe.cpp`, `GpuPowerBoard.h`, `GpuMemoryPool.cpp`, `ShengGmuVotes.c`: sheng 6880068 with the A750 chip id and the
+  SM8650 clock deltas; built by `build-houji-display.py` and started from `LegacyDisplayProbe.cpp` only with `gpu-power=<1..9>`.
+  Each result row is also logged as `HOUJI GPU: <row> <text>`.
 
 ## Prior work on this phone
 
