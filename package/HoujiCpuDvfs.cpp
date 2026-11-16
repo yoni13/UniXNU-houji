@@ -4,7 +4,7 @@
 // request/readback vote are unchanged; no raw voltage or PLL writes, EPSS keeps voltage control. This first iOS 27 version has no load
 // input yet (the iOS 27 kernel does not publish per-core idle time): every 200 ms each domain is set to the lower of its thermal cap
 // (the iOS 16 levels: triggers 70/75/80/85/90 C, big 100/70/50/30/10/0 %, little 100/90/70/50/25/0 %, 3 C hysteresis) and
-// houji_cpu_max_pct (default 70). Opt-in: houji_dvfs=1. Domains and caps are this phone's FDT and recovery cpufreq inventory.
+// houji_cpu_max_pct (default 70); triggers from houji_thermal_trigger_c (default 55 C). Opt-in: houji_dvfs=1. Domains and caps are this phone's FDT and recovery cpufreq inventory.
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
@@ -18,7 +18,9 @@ constexpr unsigned kDomains = 4, kRows = 40;
 constexpr unsigned kCounts[kDomains] = {2, 2, 1, 3};
 constexpr uint32_t kCaps[kDomains] = {2265600, 2956800, 3052800, 3148800};
 constexpr uint32_t kMinima[kDomains] = {364800, 499200, 480000, 499200};
-constexpr int kTrigger[] = {0, 700, 750, 800, 850, 900};
+// Level triggers in deci-C: level n starts at first + 50 * (n - 1). The iOS 16 governor began at 70 C with a load-driven floor;
+// without load input yet the iOS 27 one begins at houji_thermal_trigger_c (default 55 C), so all-core boot load is throttled early.
+int kTrigger[] = {0, 550, 600, 650, 700, 750};
 constexpr unsigned kBigPct[] = {100, 70, 50, 30, 10, 0};
 constexpr unsigned kLittlePct[] = {100, 90, 70, 50, 25, 0};
 constexpr unsigned kLevels = sizeof(kTrigger) / sizeof(kTrigger[0]);
@@ -149,6 +151,10 @@ extern "C" void houji_cpu_dvfs_start(void) {
     gStarted = 1;
     unsigned pct = 0;
     if (PE_parse_boot_argn("houji_cpu_max_pct", &pct, sizeof(pct)) && pct >= 10 && pct <= 100) gMaxPct = pct;
+    unsigned first = 0;
+    if (PE_parse_boot_argn("houji_thermal_trigger_c", &first, sizeof(first)) && first >= 40 && first <= 80)
+        for (unsigned n = 1; n < kLevels; n++) kTrigger[n] = (int)(first * 10 + 50 * (n - 1));
+    IOLog("HOUJI CPU DVFS: thermal triggers %d %d %d %d %d deci-C\n", kTrigger[1], kTrigger[2], kTrigger[3], kTrigger[4], kTrigger[5]);
     unsigned usable = 0;
     for (unsigned id = 0; id < kDomains; id++) {
         if (init(id)) ++usable;
