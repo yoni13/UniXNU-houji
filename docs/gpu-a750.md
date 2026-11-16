@@ -86,6 +86,8 @@ ADRENO_7XX_GEN3, gmu_chipid 0x7090100, gmem 3 MiB). The packed iOS 27 DTB is the
 | root45 | defaults + `gpu-power=9` | Secure init accepted (`SEC init a0=0`); GMU running again; GX power request acknowledged (`X ... H8 P1/1`); GPU SMMU context ready; then `C2 no sqe image`: the 85300-byte A750 SQE does not fit the A740's 0x13000 SQE buffer. Panic at 140 s: `ArmCpu: unexpected architectural IRQ 11`, an SGI from sheng's IPI self-test (now `gpu-ipi-test=1` only) |
 | root46 | defaults + `gpu-power=9`, SQE buffer 0x15000 | **GPU executes commands**: A750 global clock-gating load done; `CP_ME_INIT` sent; scratch write with fence `C10ok ... r1c/1c`; ZAP shader through TrustZone; heartbeat `r d0/d0 f9 q6 F0 G0`: ring drained, 9 fenced submissions retired, 6 GPU interrupts handled, no CP or SMMU fault |
 | root47 | defaults + `gpu-power=9`, IPI self-test off | **Stable for the full 200 s, no panic**: `C10ok`; ZAP `Z9 i0 m0 a0 s0` (TrustZone init, mem_setup and auth return 0, the secure-mode exit fence completes; `f` is the free-page change, not an error); GPU service published; last heartbeat `H178 rd0/d0 f9 F0 G0` at 199.8 s; 54 C |
+| root50 | defaults + `gpu-power=9 gpu-metal=1`, staged AGXAccelerator (24B156 IOAcceleratorES fixture, `scripts/port-accelerator-fixture.py`) | 200 s, no panic, GPU as root47 |
+| root51 | as root50 with the publication line | **Metal device published**: `metal stage 5 status 0x0 kext 0x0 registered 1` at 21.9 s: IOGPUFamily loaded, the 24B156 IOAcceleratorES parent (136 bytes) found, the staged class registered, the accelerator attached to the platform |
 
 ## Mode 9 (GPU hardware init) deltas still to port
 

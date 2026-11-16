@@ -114,7 +114,8 @@ kernel-ctrr-to-be-enabled = 0
 root_policies = "{out}/root-policies.bin"
 # The firmware RAM disk driver of this phone looks for this FAT label.
 volume = "HOUJIESP"
-size_mib = 128
+# 192: the GPU Data seed (Metal plugin and Turnip, 69 MB packed) takes the payload to 156 MiB; sheng uses 208.
+size_mib = 192
 loader = "firmware"
 title = "houji iOS 27.2.1"
 # Equals the DTS memory node: the contiguous range at 0x8C0000000 of the firmware's high RAM.
