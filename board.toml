@@ -15,7 +15,7 @@ last_lba = 128626682
 lba_bytes = 4096
 
 [components]
-include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot", "GopFramebuffer", "AppleKeyStoreState", "Adreno740"]
+include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot", "GopFramebuffer", "AppleKeyStoreState", "Adreno740", "Ath12kWifi"]
 
 [kernel]
 defconfig = "houji_ios27_defconfig"
@@ -30,6 +30,8 @@ archives = [
   "build-houji-adreno.py inputs",
   "component:Adreno740",
   "build-houji-adreno.py kits",
+  # Wi-Fi: the Ath12kWifi driver compiled for this kernel, not linked yet (docs/wifi.md).
+  "build-ath12k-wifi.py drivers/Ath12kWifi build/ath12k-wifi",
   "build-houji-kit.py",
   "component:AppleKeyStoreState",
   "build-houji-display.py",

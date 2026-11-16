@@ -2113,7 +2113,10 @@ void heartbeat() {
         metalRows();
         registerExecObserver();
         if (!(gxOn() && gpuRd(A740_CP_RB_RPTR) != gpuRd(A740_CP_RB_WPTR))) gicRow();
-        if (t == 4 || t == 40 || t == 120) ipiSelfTest();
+        // houji: sheng's IPI self-test injects SGIs; with armcpu-spi-ipi=1 houji's ArmCpu panics on a stray SGI ("unexpected
+        // architectural IRQ 11", root45 at 140 s, the third round). A diagnostic only, so off unless gpu-ipi-test=1.
+        {static unsigned ipiTest = ~0u; if (ipiTest == ~0u) {ipiTest = 0; PE_parse_boot_argn("gpu-ipi-test", &ipiTest, sizeof ipiTest);}
+         if (ipiTest == 1 && (t == 4 || t == 40 || t == 120)) ipiSelfTest();}
         IOSleep(2000);
     }
 }
