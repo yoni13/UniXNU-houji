@@ -1641,7 +1641,10 @@ void gpuHwInit() {
     gpuWr(A740_CP_APRIV_CNTL, 0x6f);
     gpuWr(A740_CP_BV_APRIV_CNTL, 0x0f);
     gpuWr(A740_CP_LPAC_APRIV_CNTL, 0x0f);
-    gpuWr(A740_RB_CMP_DBG_ECO_CNTL, gpuRd(A740_RB_CMP_DBG_ECO_CNTL) | (1u << 11));
+    // houji: a6xx_hw_init's A750 branch: disable the UBWC merged UFC request (bit 19) and set the TP flag hint and performance
+    // settings (TPL1_DBG_ECO_CNTL1 0xb602, a6xx.xml); the A740's bit 11 is the other A7xx branch.
+    gpuWr(A740_RB_CMP_DBG_ECO_CNTL, gpuRd(A740_RB_CMP_DBG_ECO_CNTL) | (1u << 19));
+    gpuWr(0xb602, 0xc0700);
     // a6xx_set_ubwc_config, sm8550_data: UBWC 4.0 encoder, swizzle levels 2+3, highest bank bit 16 (hbb_lo 3, hbb_hi 0),
     // AMSBC on (>= 3.0), rgb565 predicator on (>= 4.0), min_acc_len_64b off, ubwc_mode off, uavflagprd_inv 2,
     // macrotile mode on.
@@ -2213,6 +2216,17 @@ void gmuColdStart(const gpb_result &r) {
     gColdConfig.firmware = native_adreno_firmware_image;
     gColdConfig.firmware_bytes = static_cast<size_t>(native_adreno_firmware_image_size);
     gColdConfig.poll_budget = 200;   // ShengGmu also stops each poll at 10 ms, as gmu_poll_timeout(.., 100, 10000)
+    // houji: a6xx_gmu_secure_init, which a6xx_gmu_resume runs on the A750 after the GMU clocks and before the interrupt setup:
+    // qcom_scm_gpu_init_regs(QCOM_SCM_GPU_ALWAYS_EN_REQ BIT(0) | QCOM_SCM_GPU_TSENSE_EN_REQ BIT(3)), SIP service 0x28 command 0x01
+    // (qcom_scm.c, qcom_scm.h). Linux stops the resume on failure; here it is logged and the cold start continues so its own
+    // result stays visible. gpu-secure-init=0 skips the call.
+    {unsigned secure = 1; PE_parse_boot_argn("gpu-secure-init", &secure, sizeof secure);
+     if (secure) {
+         const ScmRes s = scmCall(0x42000000u | (0x28u << 8) | 0x01u, 1, (1u << 0) | (1u << 3), 0, 0);
+         snprintf(row, sizeof row, "SEC init a0=%lld a1=%llx %ums r%u", static_cast<long long>(s.a0),
+                  static_cast<unsigned long long>(s.a1), s.ms, s.resumes);
+     } else snprintf(row, sizeof row, "SEC init skipped");
+     setRow(3, row);}
     // a6xx_gmu_resume, before a6xx_gmu_fw_start: clear every AO interrupt and unmask only the fatal ones.
     d.io.write32(d.io.cookie, ShengGmuCore, kAoIrqClr, ~0u);
     d.io.write32(d.io.cookie, ShengGmuCore, kAoIrqMask, ~kAoFatal);

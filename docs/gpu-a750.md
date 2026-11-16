@@ -93,6 +93,11 @@ From Linux `a6xx_gpu.c` `a6xx_set_hwcg` and the A750 catalog entry (ios27/cache/
 - CP protect: `a730_protect`, as on the A740. Power-up list: `a7xx_pwrup_reglist` as on the A740, plus `a7xx_dyn_pwrup_reglist`;
   `a750_ifpc_reglist` only with IFPC.
 - GMEM 3 MiB as on the A740; preemption record 3572 KiB.
+- hw_init A750 branch (ported): `RB_CMP_DBG_ECO_CNTL` bit 19 instead of bit 11, `TPL1_DBG_ECO_CNTL1` (0xb602) = 0xc0700.
+- UBWC: SM8650 and SM8550 share `ubwc_4_0_hbb16` in Linux `drivers/soc/qcom/ubwc_config.c`, so sheng's values apply.
+- Not yet ported: the A750 secure GPU init (`a6xx_gmu.c`: SCM `gpu_init_regs(ALWAYS_EN | TSENSE_EN)`, which also sets
+  `CX_MISC_SW_FUSE_VALUE` ray tracing), the GMU timestamp at `GMU_CX_AO_COUNTER_L/H` (0x1f880/0x1f881) instead of
+  `GMU_ALWAYS_ON_COUNTER`, and the A750 AB bandwidth vote (25 % of the level, quantized to 16 bits of the top bandwidth).
 
 ## Prior work on this phone
 
