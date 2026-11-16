@@ -622,6 +622,17 @@ static void command_line(void)
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
+    else if (!strcmp(u.command,"commpage")) {
+        /* The user commpage as processes see it (kernel alias commPagePtr): what libsystem/dyld read to choose timers, TPRO and APT. */
+        extern vm_address_t commPagePtr;
+        const uint8_t *cp=(const uint8_t *)commPagePtr;
+        if (!cp) printf("HOUJI COMMPAGE: not set up\n");
+        else for (unsigned at=0;at<0x400;at+=32) {
+            char line[120];unsigned used=0;
+            for (unsigned j=at;j<at+32;j++) used+=(unsigned)snprintf(line+used,sizeof(line)-used,"%02x%s",cp[j],(j&3)==3?" ":"");
+            printf("HOUJI COMMPAGE +%03x: %s\n",at,line);
+        }
+    }
     else if (!strcmp(u.command,"buttons")) { extern void houji_buttons_report(void); houji_buttons_report(); }
     else if (!strcmp(u.command,"pon")) { extern void houji_pon_report(void); houji_pon_report(); }
     else if (!strcmp(u.command,"touch")) { houji_touch_report(); houji_touch_driver_report(); }
