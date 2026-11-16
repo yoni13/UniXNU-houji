@@ -554,7 +554,8 @@ compile_c(ROOT / 'kits/houji/MhiBoot.c', OUT / 'MhiBoot.o')
 wifi_objects.append(OUT / 'MhiBoot.o')
 compile_c(ROOT / 'kits/houji/WifiFirmware.c', OUT / 'WifiFirmware.o', 'bsd/DEVELOPMENT/kern_exec.o.json')   # reads through the VFS
 wifi_objects.append(OUT / 'WifiFirmware.o')
-wifi_objects += sorted((ROOT / 'build/ath12k-wifi').glob('*.o'))
+# Only the compile step's objects: constants_to_data leaves its X.data.o next to each input, which a later run must not take again.
+wifi_objects += sorted(p for p in (ROOT / 'build/ath12k-wifi').glob('*.o') if not p.name.endswith('.data.o'))
 print(f'HID: {len(hid_bindings)} original IOHIDDevice bindings, vtables {hid_vtables} match the original diversities')
 
 # houji: the prelinked collection leaves native __DATA_CONST no more than its 0x120000 bytes below the retained kexts'
