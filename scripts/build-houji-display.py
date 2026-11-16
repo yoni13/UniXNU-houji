@@ -386,6 +386,16 @@ extern "C" int boot_kthread_report_nth(const char *,unsigned,char *name,unsigned
     if(out)out[0]=0;
     return 0;
 }
+// WifiNet.cpp's receive-stall diagnostics, also from that trace probe: the thread is reported as not found (WifiNet logs that) and no
+// CPU is kicked.
+extern "C" int boot_kthread_report(const char *,char *out,unsigned size) {
+    if(out && size)out[0]=0;
+    return 1;
+}
+extern "C" unsigned boot_cpu_kick(char *out,unsigned size) {
+    if(out && size)out[0]=0;
+    return 0;
+}
 // The swap request fields validateSwap reads in this family build (the request offsets of the 24B156 fixture), for the
 // rejection report of the board probe. NativeLegacyDisplay.cpp defines this table only for macOS.
 extern "C" const unsigned native_legacy_request_layout[6]={REQUEST_LAYOUT};

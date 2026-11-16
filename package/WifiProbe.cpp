@@ -761,6 +761,7 @@ void pLog(int level, const char *line) {
     const uint32_t i = __atomic_fetch_add(const_cast<uint32_t *>(&native_wifi_text_n), 1u, __ATOMIC_RELAXED) % 512;
     snprintf(native_wifi_text[i], sizeof native_wifi_text[i], "%u %d %.100s", static_cast<uint32_t>(now - first), level, line);
     if (level <= 6) {
+        IOLog("HOUJI WIFI: %s\n", native_wifi_text[i]);   // houji: the console carries what sheng's boot UI shows
         const uint32_t j = __atomic_fetch_add(const_cast<uint32_t *>(&native_wifi_note_n), 1u, __ATOMIC_RELAXED) % 128;
         memcpy(native_wifi_note[j], native_wifi_text[i], sizeof native_wifi_note[j]);
     }
@@ -1706,9 +1707,25 @@ void wifiThread(void *arg, wait_result_t) {
 // A cached Data firmware file by name, for the board's own test hooks.
 extern "C" int sheng_wifi_file(const char *name, const uint8_t **data, size_t *size) {return pFwGet(name, data, size);}
 
+// houji: the stage word and the words the survey, power and link stages fill, logged whenever they change (every 2 s for 10 minutes).
+static void stageWatch(void *, wait_result_t) {
+    uint32_t last[8] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+    static const unsigned words[8] = {0, 5, 6, 8, 12, 15, 16, 17};
+    for (unsigned t = 0; t < 300; ++t) {
+        uint32_t now[8]; bool changed = false;
+        for (unsigned i = 0; i < 8; ++i) {now[i] = native_wifi_stats[words[i]]; changed |= now[i] != last[i];}
+        if (changed) {
+            IOLog("HOUJI WIFI STATS: t=%us stage %d pins %08x ltssm %08x link %08x phy %08x ep %08x ms %u rails %08x\n", 2 * t,
+                  int32_t(now[0]), now[1], now[2], now[3], now[4], now[5], now[6], now[7]);
+            memcpy(last, now, sizeof last);
+        }
+        IOSleep(2000);
+    }
+}
 extern "C" void sheng_wifi_probe(void) {
     unsigned stage = 0;
     if (!PE_parse_boot_argn("wifi", &stage, sizeof stage) || stage < 1 || native_wifi_stats[0]) return;
+    {thread_t watch = nullptr; if (kernel_thread_start(stageWatch, nullptr, &watch) == KERN_SUCCESS) thread_deallocate(watch);}
     thread_t thread = nullptr;
     if (kernel_thread_start(wifiThread, reinterpret_cast<void *>(uintptr_t(stage)), &thread) == KERN_SUCCESS) thread_deallocate(thread);
     else native_wifi_stats[0] = -7;
