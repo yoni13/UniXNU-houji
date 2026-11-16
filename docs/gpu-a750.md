@@ -75,6 +75,25 @@ ADRENO_7XX_GEN3, gmu_chipid 0x7090100, gmem 3 MiB). The packed iOS 27 DTB is the
   SM8650 clock deltas; built by `build-houji-display.py` and started from `LegacyDisplayProbe.cpp` only with `gpu-power=<1..9>`.
   Each result row is also logged as `HOUJI GPU: <row> <text>`.
 
+## Device results
+
+| Boot | Args | Result |
+|---|---|---|
+| root41 | defaults (GPU linked, off) | Same boot as root39: 380 s, no panic, 56.7 C, identical display swap/present markers |
+| root42 | defaults + `gpu-power=3` | At 19.8 s: all five windows mapped; GCC, GPUCC, GPU SMMU read; `io=0`; CX GDSC `0x0022f801 -> 0xf822f800` (powered through gds_hw_ctrl 0x9168); AHB and SMMU vote clocks on; SMMU sCR0 `0x002f0406`, ID0 `0x4c017e18` (24 SMRs), ID1 `0x40000016` (22 context banks), no SMR valid; RBBM skipped (GX off, the GMU's job). No fault; ran 200 s at 56 C |
+
+## Mode 9 (GPU hardware init) deltas still to port
+
+From Linux `a6xx_gpu.c` `a6xx_set_hwcg` and the A750 catalog entry (ios27/cache/adreno-source):
+
+- Clock gating: the A750 has no `hwcg` register list. Linux writes GMU `CGC_MODE_CNTL` 0x00020202 (`gmu_cgc_mode`), `CGC_DELAY_CNTL`
+  0x10111, `CGC_HYST_CNTL` 0x5555, then `RBBM_CLOCK_CNTL_GLOBAL` 1, `RBBM_CGC_GLOBAL_LOAD_CMD` 1, `RBBM_CGC_P2S_TRIG_CMD` 1, polls
+  `RBBM_CGC_P2S_STATUS` TXDONE, and writes `RBBM_CLOCK_CNTL_GLOBAL` 0. sheng's probe writes the A740 table and `RBBM_CLOCK_CNTL`
+  0x8aa8aa82 instead.
+- CP protect: `a730_protect`, as on the A740. Power-up list: `a7xx_pwrup_reglist` as on the A740, plus `a7xx_dyn_pwrup_reglist`;
+  `a750_ifpc_reglist` only with IFPC.
+- GMEM 3 MiB as on the A740; preemption record 3572 KiB.
+
 ## Prior work on this phone
 
 The iOS 16 port (fork/kernel/overlay/iokit/Kernel/houji-ufs-root) reached bounded GPU writeback, batched submission, cache coherency

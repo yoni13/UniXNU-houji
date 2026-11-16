@@ -1609,10 +1609,15 @@ void gpuHwInit() {
     gmuWr(A740_GPU_GMU_AO_GMU_CGC_MODE_CNTL, 0x00020202);
     gmuWr(A740_GPU_GMU_AO_GMU_CGC_DELAY_CNTL, 0x10111);
     gmuWr(A740_GPU_GMU_AO_GMU_CGC_HYST_CNTL, 0x5555);
-    if (gpuRd(A740_RBBM_CLOCK_CNTL) != 0x8aa8aa82) {
-        for (unsigned i = 0; i < NATIVE_ADRENO_A740_HWCG_COUNT; ++i) gpuWr(NativeAdrenoA740Hwcg[i][0], NativeAdrenoA740Hwcg[i][1]);
-        gpuWr(A740_RBBM_CLOCK_CNTL, 0x8aa8aa82);
-    }
+    // houji: the A750 has no hwcg list (a7xx_catalog.c); a6xx_set_hwcg loads the clock gating globally instead (a6xx.xml A7XX
+    // offsets): CLOCK_CNTL_GLOBAL 1, CGC_GLOBAL_LOAD_CMD 1, CGC_P2S_TRIG_CMD 1, TXDONE within 10 us, CLOCK_CNTL_GLOBAL 0.
+    constexpr uint32_t kClockCntlGlobal = 0x000ad, kCgcGlobalLoad = 0x0011e, kCgcP2sTrig = 0x0011f, kCgcP2sStatus = 0x00122;
+    gpuWr(kClockCntlGlobal, 1);
+    gpuWr(kCgcGlobalLoad, 1);
+    gpuWr(kCgcP2sTrig, 1);
+    {bool done = false; for (unsigned i = 0; i < 10 && !(done = gpuRd(kCgcP2sStatus) & 1); ++i) IODelay(1);
+     if (done) gpuWr(kClockCntlGlobal, 0);
+     IOLog("HOUJI GPU: hwcg global load %s\n", done ? "done" : "TXDONE timeout");}
     gpuWr(A740_RBBM_GBIF_CLIENT_QOS_CNTL, 0x2120212);
     gpuWr(A740_UCHE_GBIF_GX_CONFIG, 0x10240e0);
     gpuWr(A740_RBBM_PERFCTR_GPU_BUSY_MASKED, 0xffffffff);
