@@ -1471,6 +1471,10 @@ void metalRows() {
     // GPU7/GPU8 (wide): the raw test's report line and the Turnip phase's line (T result or W watchdog sample).
     if (d.report[0]) snprintf(boot_progress_ext_wide[0], sizeof boot_progress_ext_wide[0], "R %.63s", d.report);
     if (d.report2[0]) snprintf(boot_progress_ext_wide[1], sizeof boot_progress_ext_wide[1], "%.63s", d.report2);
+    // houji: the plugin's text reports (sheng shows them in the boot UI's wide rows) on the console, each time one changes.
+    {static char last[2][64];
+     if (d.report[0] && strncmp(last[0], d.report, 63)) {strlcpy(last[0], d.report, sizeof last[0]); IOLog("HOUJI GPU: R %.63s\n", d.report);}
+     if (d.report2[0] && strncmp(last[1], d.report2, 63)) {strlcpy(last[1], d.report2, sizeof last[1]); IOLog("HOUJI GPU: R2 %.63s\n", d.report2);}}
     {
         // Row 5: the newest four IOServiceOpen attempts as <process><P plugin type|F other type><MACF result of the sandbox>; 0 = admitted.
         char list[48] = {};
