@@ -1057,6 +1057,13 @@
       "original_sha256": "2616bd9c14220811be4af120a05456937f60b69845c6c604645fa0107215d745",
       "native_symbol": "_ubc_upl_commit_range",
       "evidence": "Twin of 0xfffffe000b2c42f0 in kernelcache 38e6d9fa5f78 (calls pair), which the matcher names _ubc_upl_commit_range there by reference-order; here the symbol order differs and no automatic match exists."
+    },
+    {
+      "original": "0xfffffff00b2f69c0",
+      "original_size": 276,
+      "original_sha256": "c9b001f723ca8eb20658878c0ade6c076a49c9f3b7cffd4efa687f1a41367ec5",
+      "native_symbol": "__ZN9IOService20SetProperties_InvokeE5IORPCP15OSMetaClassBasePFiS2_P12OSDictionaryE",
+      "evidence": "iig-generated IOService::SetProperties_Invoke(IORPC, OSMetaClassBase *, SetProperties_Handler): returns kIOReturnBadArgument (0xe00002bf) on a malformed message, checks the request/reply sizes, walks the target's metaclass chain, calls the handler through a pointer signed with discriminator 0xe4fe and fills the reply. IOHIDFamily's Dispatch reaches it through auth_got slot 0xfffffff0082cfd78 (stub 0xfffffff00a16c68c) for message 0xd8a753ea156f9162, which the native DriverKit/IOService.h defines as IOService_SetProperties_ID; the call site 0xfffffff00a1487c8 is the panic's caller (root28, 2026-11-16: 'fileset: original component called an unmapped kernel function' when AppleUserHIDDrivers set properties on its kernel service). Source: build/xnu/obj/.../iokit/DriverKit/IOService.iig.cpp IOService::SetProperties_Invoke."
     }
   ],
   "data": [
