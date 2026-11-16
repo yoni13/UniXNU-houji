@@ -377,6 +377,20 @@ static void handle_setup(void)
 }
 /* XNU's own reboot: sync and unmount, then halt_all_cpus -> PSCI reset
  * (houji_panic_recovery=1). The host armed the no-wipe recovery BCB. */
+/* houji_heartbeat_ms=N (10..1000): one line every N ms with a sequence number and the time since boot, so the log shows whether
+ * the system ran up to a reset that leaves no panic (a sudden fault below the kernel) or stopped first (a hang, then a watchdog). */
+static void heartbeat_thread(void *arg,wait_result_t result __unused)
+{
+    const unsigned ms=(unsigned)(uintptr_t)arg;
+    for (uint64_t n=0;;n++) {
+        uint64_t now=mach_absolute_time(),ns=0;absolutetime_to_nanoseconds(now,&ns);
+        printf("HOUJI HB %llu %llu.%03llu\n",n,ns/1000000000ull,(ns/1000000ull)%1000ull);
+        static int channel;uint64_t deadline;
+        clock_interval_to_deadline(ms,NSEC_PER_MSEC,&deadline);
+        (void)assert_wait_deadline(&channel,THREAD_UNINT,deadline);
+        thread_block(THREAD_CONTINUE_NULL);
+    }
+}
 static void reboot_thread(void *arg,wait_result_t result __unused)
 {
     extern int houji_ufs_arm_recovery_bcb(void);
@@ -885,6 +899,13 @@ void houji_usb_debug_start(void)
     }
     { extern void houji_power_start(void); static bool power; if (!power) { power=true; houji_power_start(); } }
     { extern void houji_pon_report(void); static bool pon; if (!pon) { pon=true; houji_pon_report(); } }
+    {
+        static bool hb;unsigned ms=0;thread_t th;
+        if (!hb && PE_parse_boot_argn("houji_heartbeat_ms",&ms,sizeof(ms)) && ms>=10 && ms<=1000) {
+            hb=true;
+            if (kernel_thread_start(heartbeat_thread,(void *)(uintptr_t)ms,&th)==KERN_SUCCESS) thread_deallocate(th);
+        }
+    }
     {
         /* houji_reboot_bootloader=1: every restart (console, iOS, panic) stops in the bootloader instead of starting boot_a again. */
         static bool reason;int always=0;extern int houji_reboot_reason_prepare(int);
