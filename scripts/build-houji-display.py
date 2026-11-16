@@ -529,6 +529,22 @@ gpu_objects = []
 for stem in ('GpuPowerProbe', 'GpuMemoryPool', 'HoujiGpuGlue'):
     compile_cpp(ROOT / 'kits/houji' / (stem + '.cpp'), OUT / (stem + '.o'), GPU_INCLUDES)
     gpu_objects.append(OUT / (stem + '.o'))
+# Wi-Fi (docs/wifi.md): sheng's WifiProbe/WifiNet board layer with the SM8650 values, the MHI boot and firmware reader, and the Ath12kWifi
+# objects of build-ath12k-wifi.py. Started from LegacyDisplayProbe.cpp only with wifi=<1..5>.
+WIFI = ROOT / 'drivers/Ath12kWifi'
+WIFI_INCLUDES = ('-I', str(WIFI / 'include'), '-I', str(WIFI / 'src'))
+wifi_objects = []
+compile_cpp(ROOT / 'kits/houji/WifiProbe.cpp', OUT / 'WifiProbe.o', WIFI_INCLUDES)
+wifi_objects.append(OUT / 'WifiProbe.o')
+compile_cpp(ROOT / 'kits/houji/WifiNet.cpp', OUT / 'WifiNet.o', WIFI_INCLUDES)
+run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--globalize-symbol=__GLOBAL__sub_I_WifiNet.cpp',
+     OUT / 'WifiNet.o', OUT / 'WifiNet.late.o'])
+wifi_objects.append(OUT / 'WifiNet.late.o')
+compile_c(ROOT / 'kits/houji/MhiBoot.c', OUT / 'MhiBoot.o')
+wifi_objects.append(OUT / 'MhiBoot.o')
+compile_c(ROOT / 'kits/houji/WifiFirmware.c', OUT / 'WifiFirmware.o', 'bsd/DEVELOPMENT/kern_exec.o.json')   # reads through the VFS
+wifi_objects.append(OUT / 'WifiFirmware.o')
+wifi_objects += sorted((ROOT / 'build/ath12k-wifi').glob('*.o'))
 print(f'HID: {len(hid_bindings)} original IOHIDDevice bindings, vtables {hid_vtables} match the original diversities')
 
 # houji: the prelinked collection leaves native __DATA_CONST no more than its 0x120000 bytes below the retained kexts'
@@ -541,11 +557,12 @@ def constants_to_data(path):
     return moved
 late, gop_late, keyevents_late, hid_late = (constants_to_data(p) for p in (late, gop_late, keyevents_late, hid_late))
 gpu_objects = [constants_to_data(p) for p in gpu_objects]
+wifi_objects = [constants_to_data(p) for p in wifi_objects]
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
 run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', OUT / 'original-addresses.o', OUT / 'LegacyDisplayProbe.o',
      OUT / 'LegacyDisplaySupport27.o', gop_late, OUT / 'KeyStoreProbe.o', keyevents_late,
-     hid_late, HID_OUT / 'hid-bindings.o', HID_OUT / 'hid-addresses.o', HID_OUT / 'HidInputProbe.o', *gpu_objects])
+     hid_late, HID_OUT / 'hid-bindings.o', HID_OUT / 'hid-addresses.o', HID_OUT / 'HidInputProbe.o', *gpu_objects, *wifi_objects])
 sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp', ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',
            ROOT / 'drivers/GopFramebuffer/NativeGOPPresenter.cpp', ROOT / 'drivers/GopFramebuffer/NativeGOPWire.h',
            ROOT / 'drivers/GopFramebuffer/NativeHalfCodes.h', source,
