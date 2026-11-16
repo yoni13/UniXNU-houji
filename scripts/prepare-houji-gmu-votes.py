@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""houji (A750) GMU vote inputs for UniXNU Adreno740, ported from UniXNU-sheng scripts/prepare-sheng-gmu-votes.py.
+
+Derives the enabled GPU/GMU OPPs and the A750 BCM policy from pinned inputs only; no hardware value is invented:
+  DTB      this phone's mainline device tree (sm8650-xiaomi-houji.dtb), nodes /soc@0/gpu@3d00000 and /soc@0/gmu@3d6a000
+  CATALOG  Linux drivers/gpu/drm/msm/adreno/a7xx_catalog.c, the ADRENO_CHIP_IDS(0x43051401) entry
+Writes ShengGmuVotesSource.h and ShengGmuCommandDbSource.h (the names Adreno740 includes) and votes-source-report.json into OUT.
+Usage: prepare-houji-gmu-votes.py DTB CATALOG OUT"""
+import hashlib, json, re, subprocess, sys
+from pathlib import Path
+
+CHIP_ID = 0x43051401
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def main():
+    dtb, catalog, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+
+    def prop(node, name, kind='x'):
+        return subprocess.check_output(['fdtget', '-t', kind, str(dtb), node, name], text=True).split()
+
+    def cells(node, name):
+        return [int(v, 16) for v in prop(node, name)]
+
+    def one(node, name):
+        v = cells(node, name)
+        if len(v) != 1:
+            raise SystemExit('Expected one cell ' + name)
+        return v[0]
+
+    if prop('/soc@0/gpu@3d00000', 'compatible', 's')[0] != 'qcom,adreno-43051401':
+        raise SystemExit('DTB GPU node is not the A750 (qcom,adreno-43051401)')
+    records = {}
+    for kind, node, max_count in [('gpu', '/soc@0/gpu@3d00000', 16), ('gmu', '/soc@0/gmu@3d6a000', 4)]:
+        table = node + '/opp-table'
+        if cells(node, 'operating-points-v2') != cells(table, 'phandle'):
+            raise SystemExit('OPP phandle binding mismatch')
+        children = subprocess.check_output(['fdtget', '-l', str(dtb), table], text=True).split()
+        entries = []
+        for child in children:
+            path = table + '/' + child
+            keys = set(subprocess.check_output(['fdtget', '-p', str(dtb), path], text=True).split())
+            supported = {'opp-hz', 'opp-level', 'opp-peak-kBps', 'qcom,opp-acd-level', 'phandle', 'status'}
+            if keys - supported:
+                raise SystemExit('Unimplemented OPP policy: ' + repr(keys - supported))
+            if 'status' in keys and prop(path, 'status', 's') != ['okay']:
+                continue
+            hz = cells(path, 'opp-hz')
+            if len(hz) != 2:
+                raise SystemExit('Expected 64-bit frequency')
+            hz = (hz[0] << 32) | hz[1]
+            if not hz or hz % 1000 or hz // 1000 > 0xffffffff:
+                raise SystemExit('Unrepresentable OPP frequency')
+            level = one(path, 'opp-level')
+            if not 0 < level <= 65535:
+                raise SystemExit('Unrepresentable ARC level')
+            entry = dict(hz=hz, level=level, kbps=one(path, 'opp-peak-kBps') if kind == 'gpu' else 0,
+                         acd_present='qcom,opp-acd-level' in keys,
+                         acd=one(path, 'qcom,opp-acd-level') if 'qcom,opp-acd-level' in keys else 0)
+            if kind == 'gpu' and not entry['kbps']:
+                raise SystemExit('Missing active bandwidth')
+            entries.append(entry)
+        entries.sort(key=lambda e: e['hz'])
+        if not entries or len(entries) + 1 > max_count or len({e['hz'] for e in entries}) != len(entries):
+            raise SystemExit('Invalid OPP count/order')
+        if any(entries[i]['level'] < entries[i - 1]['level'] for i in range(1, len(entries))):
+            raise SystemExit('Nonmonotonic OPP levels')
+        records[kind] = [dict(hz=0, level=0, kbps=0, acd_present=False, acd=0)] + entries
+
+    text = catalog.read_text()
+    m = re.search(r'\.chip_ids = ADRENO_CHIP_IDS\(0x43051401\)([\s\S]*?)\.preempt_record_size', text)
+    if not m:
+        raise SystemExit('A750 catalog entry not found')
+    record = m[1]
+    entries = re.findall(r'\{\s*\.name = "([A-Z0-9]+)",([^{}]+)\}', record)
+    if [e[0] for e in entries] != ['SH0', 'MC0', 'ACV']:
+        raise SystemExit('BCM order mismatch')
+    policies = []
+    for name, body in entries:
+        if name != 'ACV':
+            mm = re.fullmatch(r'\s*\.buswidth = (\d+)\s*', body)
+            if not mm:
+                raise SystemExit('Unrecognized proportional BCM policy')
+            policies.append(dict(name=name, buswidth=int(mm[1]), fixed=0, perfmode=0, perfmode_kbps=0))
+        else:
+            mm = re.fullmatch(r'\s*\.fixed = true,\s*\.perfmode = BIT\((\d+)\),\s*\.perfmode_bw = (\d+),\s*', body)
+            if not mm or int(mm[1]) >= 14:
+                raise SystemExit('Unrecognized fixed BCM policy')
+            policies.append(dict(name=name, buswidth=0, fixed=1, perfmode=1 << int(mm[1]), perfmode_kbps=int(mm[2])))
+    gmu_chipid = re.search(r'\.gmu_chipid = (0x[0-9a-f]+)', record)
+    bandwidths = sorted({e['kbps'] for e in records['gpu']})
+
+    out.mkdir(parents=True, exist_ok=True)
+    text = '/* Generated by prepare-houji-gmu-votes.py from this phone\'s mainline DTB and the Linux A750 catalog entry; ' \
+           'contains no command-db values. */\n#include <stdint.h>\n'
+    text += '#define SHENG_GMU_VOTES_CHIP_ID 0x%08xu\n' % CHIP_ID
+    text += 'typedef struct {uint64_t hz;uint32_t level,kbps,acd_present,acd;} ShengGmuOpp;\n'
+    for kind in ['gpu', 'gmu']:
+        text += '#define SHENG_' + kind.upper() + '_OPPS ' + str(len(records[kind])) + 'u\n'
+        text += 'static const ShengGmuOpp sheng_' + kind + '_opps[]={\n'
+        text += '\n'.join('{' + ','.join(str(int(e[k])) for k in ['hz', 'level', 'kbps', 'acd_present', 'acd']) + '},'
+                          for e in records[kind]) + '\n};\n'
+    text += '#define SHENG_GPU_BANDWIDTHS ' + str(len(bandwidths)) + 'u\nstatic const uint32_t sheng_gpu_bandwidths[]={' + \
+            ','.join(map(str, bandwidths)) + '};\n'
+    text += 'static const AdrenoHfiBcm sheng_bcm_policy[3]={\n'
+    text += '\n'.join('{.buswidth=' + str(e['buswidth']) + ',.fixed=' + str(e['fixed']) + ',.perfmode=' + str(e['perfmode']) +
+                      ',.perfmode_kbps=' + str(e['perfmode_kbps']) + '},' for e in policies) + '\n};\n'
+    header = out / 'ShengGmuVotesSource.h'
+    header.write_text(text)
+
+    db_nodes = [n for n in subprocess.check_output(['fdtget', '-l', str(dtb), '/reserved-memory'], text=True).split()
+                if 'cmd-db' in n]
+    if len(db_nodes) != 1:
+        raise SystemExit('Expected one command-db reservation, found ' + repr(db_nodes))
+    db_node = '/reserved-memory/' + db_nodes[0]
+    if prop(db_node, 'compatible', 's') != ['qcom,cmd-db']:
+        raise SystemExit('Command DB resource binding mismatch')
+    db_range = cells(db_node, 'reg')
+    if len(db_range) != 4:
+        raise SystemExit('Command DB range format differs')
+    db_base = (db_range[0] << 32) | db_range[1]
+    db_bytes = (db_range[2] << 32) | db_range[3]
+    if db_bytes < 144 or db_bytes > 1048576:
+        raise SystemExit('Unsupported command DB reservation size')
+    db_header = out / 'ShengGmuCommandDbSource.h'
+    db_header.write_text('/* Pinned DT reservation, not observed hardware memory. */\n#define SHENG_GMU_COMMAND_DB_BASE UINT64_C(' +
+                         hex(db_base) + ')\n#define SHENG_GMU_COMMAND_DB_BYTES ' + str(db_bytes) + 'u\n')
+    report = dict(chip_id=hex(CHIP_ID), gmu_chipid=gmu_chipid[1] if gmu_chipid else None, dtb_sha256=sha(dtb),
+                  catalog_sha256=sha(catalog), command_db_base=hex(db_base), command_db_bytes=db_bytes, opps=records,
+                  bandwidths_kbps=bandwidths, bcms=policies, generated_header_sha256=sha(header),
+                  command_db_header_sha256=sha(db_header))
+    (out / 'votes-source-report.json').write_text(json.dumps(report, indent=2) + '\n')
+    print('PASS: A750 %d GPU and %d GMU OPPs, %d bandwidths, BCM %s; command db %s + %d' % (
+        len(records['gpu']) - 1, len(records['gmu']) - 1, len(bandwidths), '/'.join(p['name'] for p in policies), hex(db_base), db_bytes))
+
+
+if __name__ == '__main__':
+    main()

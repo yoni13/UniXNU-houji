@@ -47,6 +47,21 @@ Compared with sheng's `package/GpuPowerBoard.h` (SM8550):
 Adreno740 takes the GMU and SQE images as embedded archive symbols (`native_adreno_firmware_image`, `native_adreno_sqe_firmware_image`;
 weak empty defaults refuse to run). The A750 also has the AQE microcode, which the A740 driver has no slot for yet.
 
+## GMU vote inputs (scripts/prepare-houji-gmu-votes.py)
+
+Generated from this phone's mainline DTB (`sm8650-xiaomi-houji.dtb`, SHA-256 78aca71b65eac87b…, the SteamOS houji build) and Linux
+`drivers/gpu/drm/msm/adreno/a7xx_catalog.c` (SHA-256 6941242f183b7614…, entry `ADRENO_CHIP_IDS(0x43051401)`: family
+ADRENO_7XX_GEN3, gmu_chipid 0x7090100, gmem 3 MiB). The packed iOS 27 DTB is the stock vendor tree, whose KGSL nodes
+(`qcom,kgsl-3d0`, `qcom,gen7-gmu` at 0x3d69000) the A740 driver does not read, so the mainline values are the board input.
+
+| Output | Value |
+|---|---|
+| GPU OPPs | 11: 231, 310, 366, 422, 500, 578, 629, 680, 720, 770, 834 MHz; RPMh levels 52 ... 320; ACD on all |
+| GMU OPPs | 260 MHz (level 64), 625 MHz (level 128) |
+| Bandwidths | 7 steps, 2136718 ... 14398437 kBps |
+| BCM policy | SH0 buswidth 16, MC0 buswidth 4, ACV fixed perfmode BIT(2) 10687500 kBps |
+| Command DB | 0x81c60000 + 131072 (`qcom,cmd-db`) |
+
 ## Prior work on this phone
 
 The iOS 16 port (fork/kernel/overlay/iokit/Kernel/houji-ufs-root) reached bounded GPU writeback, batched submission, cache coherency
