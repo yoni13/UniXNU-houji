@@ -380,8 +380,17 @@ static void handle_setup(void)
 static void reboot_thread(void *arg,wait_result_t result __unused)
 {
     extern int houji_ufs_arm_recovery_bcb(void);
-    if (arg) printf("HOUJI DEBUG: reboot to the bootloader requested over USB; syncing filesystems\n");
-    else printf("HOUJI DEBUG: reboot requested over USB; recovery request %d; syncing filesystems\n",houji_ufs_arm_recovery_bcb());
+    if (arg) {
+        /* To the bootloader: the platform restart at once. reboot_kernel()'s process shutdown and unmounts once stopped the whole
+         * system on iOS 27 (root17, 2026-11-16: console dead, no reset); nothing here needs them, the root is read only and Data
+         * is a RAM disk. The reason cell is already set and the console thread still runs (200 ms sends this line), so this calls
+         * PSCI SYSTEM_RESET itself rather than the reset hook, whose log drain drives the USB controller and is for stopped CPUs. */
+        printf("HOUJI DEBUG: reboot to the bootloader requested over USB; platform restart\n");
+        delay(200000);
+        extern void houji_psci_reset(void);
+        houji_psci_reset();
+    }
+    printf("HOUJI DEBUG: reboot requested over USB; recovery request %d; syncing filesystems\n",houji_ufs_arm_recovery_bcb());
     houji_restart((char *)"houji usb debug reboot");
     printf("HOUJI DEBUG: reboot_kernel returned\n");
     thread_terminate(current_thread());
