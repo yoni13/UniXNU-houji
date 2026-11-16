@@ -57,6 +57,24 @@ def kits():
     # NativeAdrenoService.cpp is build-arm-driver.py's object; the accelerator (AdrenoMetal's staged build) is not built yet.
     sources += sorted(p for p in (ROOT / 'drivers/Adreno740').glob('NativeAdreno*.cpp')
                       if p.name not in ('NativeAdrenoClient.cpp', 'NativeAdrenoService.cpp', 'NativeAdrenoAccelerator.cpp'))
+    # The A750 SQE (gen70900_sqe.fw, 85300 bytes, 85296 copied without its first dword) does not fit the A740's 0x13000-byte SQE
+    # buffer (NativeAdrenoGpuContext.h GpuSqeBytes; root45: "C2 no sqe image"). Its only user is NativeAdrenoGpuContext.cpp, which
+    # is compiled here from a staged copy whose header gives 0x15000; the next buffer is at 0x200000, so the GPU addresses stay.
+    driver = ROOT / 'drivers/Adreno740'
+    users = [p.name for p in driver.glob('*.cpp') if 'GpuSqeBytes' in p.read_text()]
+    if users != ['NativeAdrenoGpuContext.cpp']:
+        sys.exit('GpuSqeBytes users changed: ' + repr(users))
+    staged = OUT / 'a750-src'
+    staged.mkdir(parents=True, exist_ok=True)
+    header = (driver / 'NativeAdrenoGpuContext.h').read_text()
+    if header.count('GpuSqeBytes=0x13000,') != 1:
+        sys.exit('NativeAdrenoGpuContext.h: GpuSqeBytes definition changed')
+    (staged / 'NativeAdrenoGpuContext.h').write_text(header.replace('GpuSqeBytes=0x13000,', 'GpuSqeBytes=0x15000,'))
+    shutil.copyfile(driver / 'NativeAdrenoGpuContext.cpp', staged / 'NativeAdrenoGpuContext.cpp')
+    sources = [staged / p.name if p.name == 'NativeAdrenoGpuContext.cpp' else p for p in sources]
+    size = json.loads((ROOT / 'scripts/houji-gpu-firmware.json').read_text())['files']['gen70900_sqe.fw']['bytes']
+    if size - 4 > 0x15000:
+        sys.exit('A750 SQE larger than the staged SQE buffer')
     objects = []
     for source in sources:
         recipe = c_recipe if source.suffix == '.c' else cxx_recipe

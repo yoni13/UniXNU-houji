@@ -81,6 +81,8 @@ ADRENO_7XX_GEN3, gmu_chipid 0x7090100, gmem 3 MiB). The packed iOS 27 DTB is the
 |---|---|---|
 | root41 | defaults (GPU linked, off) | Same boot as root39: 380 s, no panic, 56.7 C, identical display swap/present markers |
 | root42 | defaults + `gpu-power=3` | At 19.8 s: all five windows mapped; GCC, GPUCC, GPU SMMU read; `io=0`; CX GDSC `0x0022f801 -> 0xf822f800` (powered through gds_hw_ctrl 0x9168); AHB and SMMU vote clocks on; SMMU sCR0 `0x002f0406`, ID0 `0x4c017e18` (24 SMRs), ID1 `0x40000016` (22 context banks), no SMR valid; RBBM skipped (GX off, the GMU's job). No fault; ran 200 s at 56 C |
+| root43 | defaults + `gpu-power=7` | GMU SMMU context ready (`s7 st0`); GMU clocks up with the SM8650 PLL1 (`l4444001b`, locked); command DB parsed, HFI vote table built; then `S bind refused`: the probe mapped cx_mem at sheng's 0x1000, the DT size is 0x2000 |
+| root44 | defaults + `gpu-power=7`, cx_mem 0x2000 | **GMU running**: state `G1/0/0/0 > G0/1/0/1`; load `S0 ph7 h1 f100 H1 r11 a0` (hash verified, FW_INIT_RESULT 0x100, firmware and HFI ready, no AO fault); HFI start-up `P0 g8 kc6 e0 n4` in 1 ms |
 
 ## Mode 9 (GPU hardware init) deltas still to port
 
