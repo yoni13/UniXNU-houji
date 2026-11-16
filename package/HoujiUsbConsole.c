@@ -132,7 +132,7 @@ static struct {
     enum { SETUP_PHASE, DATA_PHASE, WAIT2, WAIT3, STATUS_PHASE } phase;
     bool data_in, set_line;
     uint8_t coding[7];
-    char command[64];
+    char command[160];
     unsigned command_n;
     bool command_overflow;
     int sleep_channel;
@@ -391,6 +391,39 @@ static void heartbeat_thread(void *arg,wait_result_t result __unused)
         thread_block(THREAD_CONTINUE_NULL);
     }
 }
+/* Console "readfile PATH": read a whole file through the vnode layer in 1 MiB pieces, printing progress every 4 MiB, to test whether
+ * the storage path can read a given file (for example the DriverKit shared cache, first read when a dext starts). Read only. */
+#include <sys/vnode.h>
+#include <sys/fcntl.h>
+#include <sys/uio.h>
+static char readfile_path[256];
+static int _Atomic readfile_busy;
+static void readfile_thread(void *arg __unused,wait_result_t result __unused)
+{
+    vfs_context_t ctx=vfs_context_kernel();
+    vnode_t vp=NULLVP;
+    int error=vnode_open(readfile_path,FREAD,0,0,&vp,ctx);
+    if (error) { printf("HOUJI READFILE: open %s error %d\n",readfile_path,error); goto out; }
+    const size_t chunk=1u<<20;
+    char *buffer=(char *)kalloc_data(chunk,Z_WAITOK);
+    if (!buffer) { printf("HOUJI READFILE: no buffer\n"); vnode_close(vp,FREAD,ctx); goto out; }
+    uint64_t total=0,start=mach_absolute_time();
+    for (;;) {
+        int resid=0;
+        error=vn_rdwr(UIO_READ,vp,buffer,(int)chunk,(off_t)total,UIO_SYSSPACE,0,vfs_context_ucred(ctx),&resid,vfs_context_proc(ctx));
+        const uint64_t got=chunk-(uint64_t)resid;
+        if (error || !got) break;
+        total+=got;
+        if (!(total&((4u<<20)-1))) printf("HOUJI READFILE: %llu MiB\n",total>>20);
+    }
+    uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time()-start,&ns);
+    printf("HOUJI READFILE: %s %llu bytes, error %d, %llu ms\n",readfile_path,total,error,ns/1000000ull);
+    kfree_data(buffer,chunk);
+    vnode_close(vp,FREAD,ctx);
+out:
+    os_atomic_store(&readfile_busy,0,release);
+    thread_terminate(current_thread());
+}
 static void reboot_thread(void *arg,wait_result_t result __unused)
 {
     extern int houji_ufs_arm_recovery_bcb(void);
@@ -622,6 +655,15 @@ static void command_line(void)
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
+    else if (!strncmp(u.command,"readfile ",9)) {
+        int expected=0;thread_t th;
+        if (!os_atomic_cmpxchg(&readfile_busy,expected,1,acq_rel)) printf("HOUJI READFILE: busy\n");
+        else {
+            strlcpy(readfile_path,u.command+9,sizeof(readfile_path));
+            if (kernel_thread_start(readfile_thread,NULL,&th)==KERN_SUCCESS) thread_deallocate(th);
+            else os_atomic_store(&readfile_busy,0,release);
+        }
+    }
     else if (!strcmp(u.command,"commpage")) {
         /* The user commpage as processes see it (kernel alias commPagePtr): what libsystem/dyld read to choose timers, TPRO and APT. */
         extern vm_address_t commPagePtr;
