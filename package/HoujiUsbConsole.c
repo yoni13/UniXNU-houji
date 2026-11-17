@@ -394,6 +394,7 @@ static void heartbeat_thread(void *arg,wait_result_t result __unused)
 /* Console "readfile PATH": read a whole file through the vnode layer in 1 MiB pieces, printing progress every 4 MiB, to test whether
  * the storage path can read a given file (for example the DriverKit shared cache, first read when a dext starts). Read only. */
 #include <sys/vnode.h>
+#include <sys/proc.h>
 #include <sys/fcntl.h>
 #include <sys/uio.h>
 #include <sys/vnode_if.h>
@@ -432,10 +433,44 @@ static void list_directory(vnode_t vp,vfs_context_t ctx)
     printf("HOUJI LS: %s %u entries\n",readfile_path,entries);
     kfree_data(buffer,16384);
 }
+/* sshot NAME: a kcdata stackshot of the first process with that name (thread states, wait info, dispatch queues, load info), printed as
+   "HOUJI HEX" lines like hex PATH; decode with unhex.py and xnu's tools/lldbmacros/kcdata.py. */
+extern kern_return_t stack_snapshot_from_kernel(int pid,void *buf,uint32_t size,uint64_t flags,uint64_t delta_since_timestamp,uint32_t pagetable_mask,unsigned *bytes_traced);
+static void stackshot_process(const char *name)
+{
+    int pid=-1;
+    for (int candidate=1;candidate<8000 && pid<0;++candidate) {
+        proc_t p=proc_find(candidate);
+        if (!p) continue;
+        char found[64]={0};
+        proc_name(candidate,found,sizeof(found));
+        if (!strcmp(found,name)) pid=candidate;
+        proc_rele(p);
+    }
+    if (pid<0) { printf("HOUJI SSHOT: no process %s\n",name); return; }
+    const uint32_t size=2u<<20;
+    char *buffer=(char *)kalloc_data(size,Z_WAITOK|Z_ZERO);
+    if (!buffer) { printf("HOUJI SSHOT: no buffer\n"); return; }
+    unsigned bytes=0;
+    /* KCDATA_FORMAT | GET_DQ | SAVE_LOADINFO | NO_IO_STATS | THREAD_WAITINFO */
+    const uint64_t flags=0x10000ull|0x01ull|0x02ull|0x800000ull|0x1000000ull;
+    const kern_return_t kr=stack_snapshot_from_kernel(pid,buffer,size,flags,0,0,&bytes);
+    printf("HOUJI SSHOT: %s pid %d kr %d bytes %u\n",name,pid,kr,bytes);
+    unsigned lines=0;
+    for (uint32_t i=0;kr==KERN_SUCCESS && i<bytes;i+=64) {
+        char line[140];unsigned n=0;
+        for (uint32_t j=i;j<i+64 && j<bytes;++j) n+=(unsigned)snprintf(line+n,sizeof(line)-n,"%02x",(unsigned char)buffer[j]);
+        printf("HOUJI HEX %x %s\n",i,line);
+        if (!(++lines&15)) delay(15000);
+    }
+    printf("HOUJI HEX: sshot %s %u bytes\n",name,bytes);
+    kfree_data(buffer,size);
+}
 static void readfile_thread(void *arg __unused,wait_result_t result __unused)
 {
     vfs_context_t ctx=vfs_context_kernel();
     vnode_t vp=NULLVP;
+    if (readfile_mode==4) { stackshot_process(readfile_path); goto out; }
     int error=vnode_open(readfile_path,FREAD,0,0,&vp,ctx);
     if (error) { printf("HOUJI READFILE: open %s error %d\n",readfile_path,error); goto out; }
     if (readfile_mode==2) { list_directory(vp,ctx); vnode_close(vp,FREAD,ctx); goto out; }
@@ -731,12 +766,12 @@ static void command_line(void)
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
-    else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4)) {
+    else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
         int expected=0;thread_t th;
         if (!os_atomic_cmpxchg(&readfile_busy,expected,1,acq_rel)) printf("HOUJI READFILE: busy\n");
         else {
-            readfile_mode=u.command[0]=='c'?1:u.command[0]=='l'?2:u.command[0]=='h'?3:0;
-            strlcpy(readfile_path,u.command+(readfile_mode==1||readfile_mode==3?4:readfile_mode==2?3:9),sizeof(readfile_path));
+            readfile_mode=u.command[0]=='c'?1:u.command[0]=='l'?2:u.command[0]=='h'?3:u.command[0]=='s'?4:0;
+            strlcpy(readfile_path,u.command+(readfile_mode==1||readfile_mode==3?4:readfile_mode==2?3:readfile_mode==4?6:9),sizeof(readfile_path));
             if (kernel_thread_start(readfile_thread,NULL,&th)==KERN_SUCCESS) thread_deallocate(th);
             else os_atomic_store(&readfile_busy,0,release);
         }
@@ -814,7 +849,7 @@ static void command_line(void)
             __DATE__,__TIME__,u.events,u.tx_bytes,u.rx_bytes,houji_debug_total(),houji_debug_dropped());
     else if (!strcmp(u.command,"replay")) {
         u.cursor=0;printf("HOUJI DEBUG: replay retained RAM log\n");
-    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt ls cat hex readfile\n");
+    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt ls cat hex sshot readfile\n");
     u.command_n=0;u.command_overflow=false;
 }
 static void receive_done(unsigned length)
