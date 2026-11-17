@@ -1,5 +1,5 @@
 diff --git a/NativeAdrenoMetalPlugin.mm b/NativeAdrenoMetalPlugin.mm
-index ffa797d..7f797ae 100644
+index ffa797d..dd83fa9 100644
 --- a/NativeAdrenoMetalPlugin.mm
 +++ b/NativeAdrenoMetalPlugin.mm
 @@ -125,11 +125,11 @@ static bool bootArgSet(const char *key) {
@@ -82,3 +82,14 @@ index ffa797d..7f797ae 100644
                  char note[96];
                  if ((uint32_t)cf[1] == 0x7c8 && cf[3] > 0 && cf[3] < 64) {
                      const char *text = reinterpret_cast<const char *>(ptrauth_strip(reinterpret_cast<void *>(cf[2]), ptrauth_key_process_independent_data));
+@@ -613,7 +634,9 @@ static id deviceForPort(unsigned port) {
+         // The translator recurses deeply on large functions: give it the stack of a main thread.
+         pthread_attr_setstacksize(&attributes, 8u << 20);
+         pthread_t primer;
+-        pthread_create(&primer, &attributes, [](void *) -> void * {
++        // houji: only with gpu-prime=1. root68's stackshots: the walk over every library (fts_read/getattrlistbulk) competed with
++        // SpringBoard's code page-ins (76k, main thread faulting in PosterKit) on the UFS disk, and the lock screen never came.
++        if (bootArgSet("gpu-prime=1")) pthread_create(&primer, &attributes, [](void *) -> void * {
+                 pthread_setname_np("native-metal-prime");   // a process sample and the telemetry's TH rows name its CPU time
+                 char list[1024];
+                 prime::run((id<MTLDevice>)device, gCacheDirectory, 90,
