@@ -1,0 +1,9 @@
+diff --git a/patches/xnu/series b/patches/xnu/series
+--- a/patches/xnu/series
++++ b/patches/xnu/series
+@@ -11,4 +11,5 @@
+ sheng/zzzzzzzzzzz-sheng-edge-matrix.patch
+ houji-stage0-optional-runtime.patch
+ houji-debug-console.patch
+ houji-iphone-shared-region.patch
++houji-wifi-userspace.patch

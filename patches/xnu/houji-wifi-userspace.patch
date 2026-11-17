@@ -1,0 +1,27 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8572,5 +8572,23 @@ static void
+ native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
+ {
++	/* iOS 27 consumes a precompiled launchd dictionary.  With an independent,
++	 * opt-in boot argument, expose the owner-merged cache and signed supplicant
++	 * from Data before launchd starts.  No network or credential is selected here. */
++	uint32_t wifi_userspace = 0;
++	if (PE_parse_boot_argn("wifi-userspace", &wifi_userspace, sizeof(wifi_userspace)) && wifi_userspace == 1) {
++		static const char xpc_source[] = "/private/var/ngpu/xpc", xpc_point[] = "/System/Library/xpc";
++		static volatile int xpc_stage, xpc_status;
++		native_gpu_addon_mount(p, scratch, 0x400, xpc_source, sizeof(xpc_source), xpc_point, sizeof(xpc_point),
++		    "/System/Library/xpc/foreground_user_endpoints.plist", "/System/Library/xpc/launchd.plist",
++		    &xpc_stage, &xpc_status);
++		printf("wifi: launchd cache mount stage %d status %d\n", xpc_stage, xpc_status);
++		/* xpcproxy policy requires a system executable path, not a Data path. */
++		static const char bin_source[] = "/private/var/ngpu/wifi-bin", bin_point[] = "/usr/libexec";
++		static volatile int bin_stage, bin_status;
++		native_gpu_addon_mount(p, scratch, 0x600, bin_source, sizeof(bin_source), bin_point, sizeof(bin_point),
++		    "/usr/libexec/launchd_cache_loader", "/usr/libexec/unixnu-wpa_supplicant", &bin_stage, &bin_status);
++		printf("wifi: service executable mount stage %d status %d\n", bin_stage, bin_status);
++	}
+ 	uint32_t enabled = 0;
+ 	if (!PE_parse_boot_argn("gpu-addon", &enabled, sizeof(enabled)) || enabled != 1) {
+ 		return;
