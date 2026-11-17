@@ -92,12 +92,38 @@ def prepare(source, legacy, output):
         'static void houjiStage (const char *stage)\n', 1)
     commands = (source / 'RootCommands.h').read_text()
     commands = replace_once(commands, '  *ocs = 15;\n',
-                            '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
+                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
     # Also reject the public write entry before it copies or modifies DMA data.
     commands = replace_once(commands,
         '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {',
         '  return kIOReturnNotPermitted; // houji: persistence is not qualified\n'
         '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {')
+    # The public firmware reader may read only a partition extent first granted by an exact GPT-name lookup. The GPT survey itself is
+    # internal and read-only. This covers all six normal LUNs; on houji modem_a is expected on LUN 4.
+    native = replace_once(native,
+        'extern "C" int native_ufs_part_find (const char *name, uint32_t *lun, uint64_t *first, uint64_t *blocks)\n{',
+        'namespace {\nstruct HoujiPartGrant { uint32_t lun; uint64_t first, blocks; };\n'
+        'HoujiPartGrant gHoujiPartGrants[8] = {};\nunsigned gHoujiPartGrantCount = 0;\n}\n\n'
+        'extern "C" int native_ufs_part_find (const char *name, uint32_t *lun, uint64_t *first, uint64_t *blocks)\n{')
+    native = replace_once(native,
+        '        *blocks = lastLba - firstLba + 1;\n        found = 1;',
+        '        *blocks = lastLba - firstLba + 1;\n'
+        '        bool granted = false;\n'
+        '        for (unsigned g = 0; g < gHoujiPartGrantCount; ++g)\n'
+        '          if (gHoujiPartGrants[g].lun == l && gHoujiPartGrants[g].first == firstLba &&\n'
+        '              gHoujiPartGrants[g].blocks == *blocks) granted = true;\n'
+        '        if (!granted && gHoujiPartGrantCount < 8) gHoujiPartGrants[gHoujiPartGrantCount++] = {l, firstLba, *blocks};\n'
+        '        found = 1;')
+    native = replace_once(native,
+        '  if (!gHost.ready || !dst || !blocks || lun > 5) return 0;\n  while (blocks) {',
+        '  if (!gHost.ready || !dst || !blocks || lun > 5 || lba > 0xffffffffULL || blocks - 1 > 0xffffffffULL - lba) return 0;\n'
+        '  bool granted = false;\n'
+        '  for (unsigned i = 0; i < gHoujiPartGrantCount; ++i) {\n'
+        '    const HoujiPartGrant &g = gHoujiPartGrants[i];\n'
+        '    if (g.lun == lun && lba >= g.first && lba - g.first < g.blocks && blocks <= g.blocks - (lba - g.first)) granted = true;\n'
+        '  }\n'
+        '  if (!granted) return 0;\n'
+        '  while (blocks) {')
     output.mkdir(parents=True, exist_ok=False)
     for path in source.glob('*.h'):
         shutil.copyfile(path, output / path.name)

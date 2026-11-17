@@ -336,10 +336,12 @@ int authenticateHeader(Image &image, uint32_t pas, uint64_t base) {
     if (qcom_mdt_metadata(&image.mdt, fileRead, image.file, va, bytes)) return -5;
     cleanToPoc(va, bytes);
     const uint64_t phys = image.meta->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+    {char what[64]; snprintf(what, sizeof what, "pas %u init_image meta %#llx bytes %llu", pas, phys, bytes); step(what);}
     if (!scmOk(scm(QCOM_SCM_PAS_INIT_IMAGE, qcom_scm_args(2, QCOM_SCM_VAL, QCOM_SCM_RW, 0), pas, phys, 0))) return -1;
     if (image.mdt.relocatable &&
         !scmOk(scm(QCOM_SCM_PAS_MEM_SETUP, qcom_scm_args(3, 0, 0, 0), pas, base, qcom_mdt_span(&image.mdt))))
         return -2;
+    {char what[64]; snprintf(what, sizeof what, "pas %u mem_setup done span %#llx", pas, qcom_mdt_span(&image.mdt)); step(what);}
     return 0;
 }
 int loadSegments(Image &image, uint64_t base, uint64_t size) {
@@ -353,6 +355,7 @@ int loadSegments(Image &image, uint64_t base, uint64_t size) {
         uint64_t at = 0;
         if (!s.load) continue;
         if (qcom_mdt_place(&image.mdt, i, base, size, &at)) {rc = -7; break;}
+        {char what[72]; snprintf(what, sizeof what, "seg %u at %#llx file %llu mem %llu", i, base + at, s.file_size, s.memory_size); step(what);}
         uint8_t *to = const_cast<uint8_t *>(region.va) + at;
         for (uint64_t done = 0; !rc && done < s.file_size;) {
             const size_t n = s.file_size - done < kChunk ? (size_t)(s.file_size - done) : kChunk;
@@ -501,30 +504,30 @@ bool attachIrqs() {
     return true;
 }
 
-// Firmware is local-only Data content. houji_adsp_fw=DIR overrides the default directory; both files are validated as MDT images.
-// The Data volume may not be up when this thread starts, so bounded growing pauses cover its mount.
-int openPair(Image &dtb, Image &adsp, const char *source, char *path, size_t size) {
-    const bool modem = false;
-    snprintf(path, size, modem ? "%sadsp_dtb" : "%s/adsp_dtb.mbn", source);
+// Firmware source: houji_adsp_src=modem|data (default modem). Modem reads the phone's own split image in modem_a/modem_b and falls
+// back to Data. houji_adsp_fw=DIR still overrides the Data directory. The bounded pauses cover either UFS or Data becoming ready.
+int openPair(Image &dtb, Image &adsp, const char *source, bool modem, char *path, size_t size) {
+    snprintf(path, size, modem ? "modem:adsp_dtb" : "%s/adsp_dtb.mbn", source);
     int rc = openImage(dtb, path);
     if (rc) return rc;
-    snprintf(path, size, modem ? "%sadsp" : "%s/adsp.mbn", source);
+    snprintf(path, size, modem ? "modem:adsp" : "%s/adsp.mbn", source);
     if ((rc = openImage(adsp, path))) release(dtb);
     return rc;
 }
-int openFirmware(Image &dtb, Image &adsp, char *path, size_t size, const char *chosen) {
+int openFirmware(Image &dtb, Image &adsp, char *path, size_t size, const char *chosen, bool dataOnly) {
     static const uint32_t pauses[] = {1, 2, 4, 8, 16, 30, 30, 30};
-    const char *sources[1] = {"/private/var/firmware/qcom/sm8650/houji"};
-    const unsigned count = 1;
-    if (chosen) sources[0] = chosen;
+    const char *data = chosen ? chosen : "/private/var/firmware/qcom/sm8650/houji";
     int rc = 0;
     for (unsigned i = 0;; ++i) {
         int first = 0;
+        const unsigned count = dataOnly ? 1 : 2;
         for (unsigned s = 0; s < count; ++s) {
-            rc = openPair(dtb, adsp, sources[s], path, size);
+            const bool modem = !dataOnly && s == 0;
+            rc = openPair(dtb, adsp, data, modem, path, size);
             if (!rc) return 0;
             if (!s) first = rc;
-            if (rc != ENOENT && rc != ENXIO && rc != EIO) return rc;  // found but unusable: no other source is tried
+            if (s + 1 < count) continue;  // modem is preferred, but every modem failure falls back to Data
+            if (rc != ENOENT && rc != ENXIO && rc != EIO) return rc;
         }
         rc = first;  // the reason the first source failed is the one worth reporting
         if (i == sizeof pauses / sizeof pauses[0]) return rc;
@@ -540,9 +543,13 @@ void shutdownDsp(bool dtb, bool adsp) {
 bool start() {
     char dir[80] = "";
     const bool chosen = PE_parse_boot_argn("houji_adsp_fw", dir, sizeof dir) && dir[0];
+    char source[8] = "";
+    const bool sourceSet = PE_parse_boot_argn("houji_adsp_src", source, sizeof source) && source[0];
+    if (sourceSet && strcmp(source, "modem") && strcmp(source, "data")) {note("fw source: ", source); fail(StFirmware, EINVAL); return false;}
+    const bool dataOnly = sourceSet && !strcmp(source, "data");
     char path[112];
     Image &dtb = gDtbImage, &adsp = gAdspImage;
-    int rc = openFirmware(dtb, adsp, path, sizeof path, chosen ? dir : nullptr);
+    int rc = openFirmware(dtb, adsp, path, sizeof path, chosen ? dir : nullptr, dataOnly);
     if (rc) {note("fw: ", path); fail(StFirmware, rc); return false;}
     native_adsp_stats[7] = (int32_t)(adsp.size >> 10);
     stage(StFirmware);

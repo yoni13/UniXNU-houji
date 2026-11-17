@@ -14,7 +14,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 RECORDS = {'.c': OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json', '.cpp': OBJ / 'iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'}
 # Sources that need osfmk's Mach-private view (struct processor, recount) compile with osfmk/kern/processor.c's own command.
 RECORD_OVERRIDES = {'HoujiCpuIdle.c': OBJ / 'osfmk/DEVELOPMENT/processor.o.json'}
-SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c', 'HoujiQcomMdt.c', 'HoujiQcomSmem.c', 'HoujiQcomSmp2p.c', 'HoujiQcomGlink.c', 'HoujiQcomQmp.c', 'HoujiAdspFirmware.c', 'HoujiBattmgr.c', 'HoujiAdspProbe.cpp', 'HoujiBattery.cpp', 'HoujiBatteryProbe.cpp']
+SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c', 'HoujiQcomMdt.c', 'HoujiQcomSmem.c', 'HoujiQcomSmp2p.c', 'HoujiQcomGlink.c', 'HoujiQcomQmp.c', 'HoujiFatVolume.c', 'HoujiUfsPartition.cpp', 'HoujiAdspFirmware.c', 'HoujiBattmgr.c', 'HoujiAdspProbe.cpp', 'HoujiBattery.cpp', 'HoujiBatteryProbe.cpp']
 
 
 def command(record, source, obj):

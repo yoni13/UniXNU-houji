@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-2-Clause-Patent */
-#include "HoujiHoujiFatVolume.h"
+#include "HoujiFatVolume.h"
 
 static uint16_t le16(const uint8_t *p) {return (uint16_t)(p[0] | (uint16_t)p[1] << 8);}
 static uint32_t le32(const uint8_t *p) {return (uint32_t)le16(p) | (uint32_t)le16(p + 2) << 16;}
@@ -8,18 +8,18 @@ static int fits(uint64_t at, uint64_t length, uint64_t size) {return at <= size 
 static int vread(HoujiFatVolume *v, uint64_t offset, void *to, size_t length)
 {
     if (!fits(offset, length, v->size)) return HoujiFatDamaged;
-    return v->read(v->context, offset, to, length) ? HoujiHoujiFatReadError : HoujiFatOk;
+    return v->read(v->context, offset, to, length) ? HoujiFatReadError : HoujiFatOk;
 }
 
 int houji_fat_mount(HoujiFatVolume *v, uint64_t size, HoujiFatRead read, void *context)
 {
     uint8_t b[512];
-    if (!v || !read) return HoujiHoujiFatReadError;
+    if (!v || !read) return HoujiFatReadError;
     *v = (HoujiFatVolume){0};
     v->read = read; v->context = context; v->size = size;
     v->cached_sector = UINT64_MAX;
     if (size < sizeof b) return HoujiFatNotFat;
-    if (vread(v, 0, b, sizeof b)) return HoujiHoujiFatReadError;
+    if (vread(v, 0, b, sizeof b)) return HoujiFatReadError;
     const uint32_t bps = le16(b + 11), spc = b[13], reserved = le16(b + 14), fats = b[16], root = le16(b + 17);
     const uint32_t total = le16(b + 19) ? le16(b + 19) : le32(b + 32);
     const uint32_t fat_sectors = le16(b + 22) ? le16(b + 22) : le32(b + 36);
@@ -191,7 +191,7 @@ int houji_fat_open(HoujiFatVolume *v, const char *path, HoujiFatFile *file)
 int houji_fat_read(HoujiFatVolume *v, const HoujiFatFile *file, uint64_t offset, void *to, size_t length)
 {
     uint8_t *out = to;
-    if (!v || !file || !to) return HoujiHoujiFatReadError;
+    if (!v || !file || !to) return HoujiFatReadError;
     if (file->directory) return HoujiFatIsDirectory;
     if (!fits(offset, length, file->size)) return HoujiFatRange;
     if (!length) return HoujiFatOk;

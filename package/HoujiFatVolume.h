@@ -16,7 +16,7 @@ typedef int (*HoujiFatRead)(void *context, uint64_t offset, void *to, size_t len
 
 enum {
     HoujiFatOk = 0,
-    HoujiHoujiFatReadError = -1,
+    HoujiFatReadError = -1,
     HoujiFatNotFat = -2,     /* no boot sector of a FAT16 or FAT32 volume */
     HoujiFatNotFound = -3,
     HoujiFatNotDirectory = -4,
