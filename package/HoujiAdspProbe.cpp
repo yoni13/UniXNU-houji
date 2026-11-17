@@ -15,6 +15,8 @@
 // ready 5 s) and then sleeps until the next doorbell or client send. Nothing spins on a register in a loop, and no lock is held across a
 // wait. Clients (HoujiAdsp.h) register channels and queue sends from any thread; their callbacks run on this thread.
 #include <IOKit/IOLib.h>
+extern "C" int get_preemption_level(void);
+extern "C" boolean_t ml_at_interrupt_context(void);
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
@@ -69,8 +71,16 @@ bool mapWindow(Window &w, uint64_t base, uint64_t size, IOOptionBits cache = kIO
 void unmap(Window &w) {if (w.map) w.map->release(); w = {};}
 uint32_t rd(const Window &w, uint64_t at) {return *reinterpret_cast<volatile uint32_t *>(w.va + at);}
 void wr(const Window &w, uint64_t at, uint32_t value) {*reinterpret_cast<volatile uint32_t *>(w.va + at) = value; __asm__ volatile("dsb sy" ::: "memory");}
-void fail(int step, int error) {native_adsp_stats[1] = error; native_adsp_stats[0] = -step;}
-void stage(int value) {native_adsp_stats[0] = value;}
+// Every stage change goes to the console at once, then 300 ms for the USB console to send it: a step that resets the SoC (root78: the
+// log ended 0.4 s into battery=2 without a panic) leaves the last completed stage as the final line.
+void step(const char *what) {
+    IOLog("HOUJI ADSP STEP: %s %d err %d slave %d items %#x qmp %#x scm %#x/%#x votes %#x %.40s\n", what, native_adsp_stats[0],
+          native_adsp_stats[1], native_adsp_stats[3], native_adsp_stats[4], native_adsp_stats[5], native_adsp_stats[13],
+          native_adsp_stats[14], native_adsp_stats[15], native_adsp_text);
+    if (!ml_at_interrupt_context() && get_preemption_level() == 0) IOSleep(300);
+}
+void fail(int step_, int error) {native_adsp_stats[1] = error; native_adsp_stats[0] = -step_; step("fail");}
+void stage(int value) {if (native_adsp_stats[0] == value) return; native_adsp_stats[0] = value; step("stage");}   // polled: print changes only
 void note(const char *prefix, const char *text) {
     size_t at = 0;
     for (; prefix[at] && at < sizeof native_adsp_text - 1; ++at) native_adsp_text[at] = prefix[at];
