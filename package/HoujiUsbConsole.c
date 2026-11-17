@@ -472,9 +472,9 @@ static void key_thread(void *arg,wait_result_t result __unused)
 {
     const int key=*(const int *)arg;
     sweet_hid_key(key,1);
-    IOSleep(150);
+    IOSleep(500);   /* 150 ms woke the display once in eight presses (fps85, fps85c); a person holds for 200-500 ms */
     sweet_hid_key(key,0);
-    printf("HOUJI KEY: %s pressed 150 ms\n",key==0?"power":key==1?"volume-up":"volume-down");
+    printf("HOUJI KEY: %s pressed 500 ms\n",key==0?"power":key==1?"volume-up":"volume-down");
     thread_terminate(current_thread());
 }
 static void readfile_thread(void *arg __unused,wait_result_t result __unused)
