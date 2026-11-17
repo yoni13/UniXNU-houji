@@ -822,6 +822,22 @@ static void command_line(void)
         thread_t t;
         if (kernel_thread_start(pac_thread,(void *)(uintptr_t)(u.command[3]!=0),&t)==KERN_SUCCESS) thread_deallocate(t);
     }
+    else if (!strncmp(u.command,"sysctl ",7)) {
+        /* sysctl NAME prints an integer sysctl; sysctl NAME=VALUE sets it (32-bit when the old value is 4 bytes, else 64-bit). */
+        extern int kernel_sysctlbyname(const char *,void *,size_t *,void *,size_t);
+        char name[56];strlcpy(name,u.command+7,sizeof(name));
+        char *eq=strchr(name,'=');long long set=0;
+        if (eq) {*eq=0;for (const char *d=eq+1;*d>='0' && *d<='9';++d) set=set*10+(*d-'0');}
+        uint64_t value=0;size_t size=sizeof(value);
+        int error=kernel_sysctlbyname(name,&value,&size,NULL,0);
+        printf("HOUJI SYSCTL: %s = %llu (size %zu, error %d)\n",name,size==4?(unsigned long long)(uint32_t)value:(unsigned long long)value,size,error);
+        if (eq && !error) {
+            uint32_t v32=(uint32_t)set;uint64_t v64=(uint64_t)set;
+            error=size==4?kernel_sysctlbyname(name,NULL,NULL,&v32,4):kernel_sysctlbyname(name,NULL,NULL,&v64,8);
+            value=0;size=sizeof(value);kernel_sysctlbyname(name,&value,&size,NULL,0);
+            printf("HOUJI SYSCTL: set %s error %d, now %llu\n",name,error,size==4?(unsigned long long)(uint32_t)value:(unsigned long long)value);
+        }
+    }
     else if (!strcmp(u.command,"pm")) { extern void houji_pm_report(void); houji_pm_report(); }
     else if (!strcmp(u.command,"batt") || !strncmp(u.command,"batt ",5)) { extern void houji_batt_command(const char *); houji_batt_command(u.command[4]?u.command+5:""); }
     else if (!strcmp(u.command,"gpu clients")) { extern void native_adreno_client_report(void); native_adreno_client_report(); }
@@ -849,7 +865,7 @@ static void command_line(void)
             __DATE__,__TIME__,u.events,u.tx_bytes,u.rx_bytes,houji_debug_total(),houji_debug_dropped());
     else if (!strcmp(u.command,"replay")) {
         u.cursor=0;printf("HOUJI DEBUG: replay retained RAM log\n");
-    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt ls cat hex sshot readfile\n");
+    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt ls cat hex sshot sysctl readfile\n");
     u.command_n=0;u.command_overflow=false;
 }
 static void receive_done(unsigned length)
