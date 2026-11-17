@@ -14,7 +14,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 RECORDS = {'.c': OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json', '.cpp': OBJ / 'iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'}
 # Sources that need osfmk's Mach-private view (struct processor, recount) compile with osfmk/kern/processor.c's own command.
 RECORD_OVERRIDES = {'HoujiCpuIdle.c': OBJ / 'osfmk/DEVELOPMENT/processor.o.json'}
-SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c']
+SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c', 'HoujiQcomMdt.c', 'HoujiQcomSmem.c', 'HoujiQcomSmp2p.c', 'HoujiQcomGlink.c', 'HoujiQcomQmp.c', 'HoujiAdspFirmware.c', 'HoujiBattmgr.c', 'HoujiAdspProbe.cpp', 'HoujiBattery.cpp', 'HoujiBatteryProbe.cpp']
 
 
 def command(record, source, obj):
@@ -45,6 +45,12 @@ for name in SOURCES:
     record = json.loads(RECORD_OVERRIDES.get(name, RECORDS[source.suffix]).read_text().strip().rstrip(','))
     obj = OUT / (source.stem + '.o')
     subprocess.run(command(record, source, obj), cwd=record['directory'], check=True, timeout=180)
+    if name == 'HoujiBattery.cpp':
+        # Register IOPMPowerSource only when the late battery probe asks for it, as sheng's iOS 27 builder does.
+        late = OUT / 'HoujiBattery.late.o'
+        subprocess.run(['xcrun', 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
+                        '--globalize-symbol=__GLOBAL__sub_I_HoujiBattery.cpp', str(obj), str(late)], check=True, timeout=30)
+        obj = late
     objects.append(str(obj))
 archive = OUT / 'libHoujiKit.a'
 archive.unlink(missing_ok=True)

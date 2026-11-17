@@ -41,6 +41,10 @@
             reg = <0 0xfc400000 0 0x2b00000>;
             no-map;
         };
+        // Stock houji DT reserved-memory. Keep PAS load targets and shared state out of allocatable RAM.
+        smem_region: smem@81d00000 { reg = <0 0x81d00000 0 0x200000>; no-map; };
+        q6_adsp_dtb_region: q6-adsp-dtb@9de80000 { reg = <0 0x9de80000 0 0x80000>; no-map; };
+        adspslpi_region: adspslpi@9df00000 { reg = <0 0x9df00000 0 0x4680000>; no-map; };
     };
 
     // The Wi-Fi radio, exported before launchd evaluates wifid's device-tree condition (as sheng.dts); WifiProbe.cpp owns the PCIe

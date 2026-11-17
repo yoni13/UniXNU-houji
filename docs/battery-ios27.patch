@@ -1,0 +1,2463 @@
+diff --git a/dts/houji.dts b/dts/houji.dts
+index a4285c1..c360d5e 100644
+--- a/dts/houji.dts
++++ b/dts/houji.dts
+@@ -41,6 +41,10 @@
+             reg = <0 0xfc400000 0 0x2b00000>;
+             no-map;
+         };
++        // Stock houji DT reserved-memory. Keep PAS load targets and shared state out of allocatable RAM.
++        smem_region: smem@81d00000 { reg = <0 0x81d00000 0 0x200000>; no-map; };
++        q6_adsp_dtb_region: q6-adsp-dtb@9de80000 { reg = <0 0x9de80000 0 0x80000>; no-map; };
++        adspslpi_region: adspslpi@9df00000 { reg = <0 0x9df00000 0 0x4680000>; no-map; };
+     };
+ 
+     // The Wi-Fi radio, exported before launchd evaluates wifid's device-tree condition (as sheng.dts); WifiProbe.cpp owns the PCIe
+diff --git a/package/HoujiAdsp.h b/package/HoujiAdsp.h
+new file mode 100644
+index 0000000..df01b00
+--- /dev/null
++++ b/package/HoujiAdsp.h
+@@ -0,0 +1,30 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* Clients of the audio DSP (HoujiAdspProbe.cpp): a client registers a GLINK channel by name at any time (before or after the DSP is up) and
++ * gets its state and messages through callbacks that run on the DSP thread; they must not block (copy what they need and wake their own
++ * thread). Sends are queued and go out from the DSP thread, so a caller never waits for the DSP. */
++#ifndef HOUJI_ADSP_H
++#define HOUJI_ADSP_H
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define HOUJI_ADSP_MAX_MESSAGE 560u
++
++typedef struct HoujiAdspChannel HoujiAdspChannel;
++typedef struct {
++    void (*state)(void *context, int up);
++    void (*receive)(void *context, const uint8_t *data, uint32_t length);
++} HoujiAdspClient;
++
++/* Registers the channel; intent_size/intent_count are the receive buffers offered to the DSP. initiator: we open it (otherwise we answer
++ * the DSP's open). Returns null when out of slots or memory. Weak-imported by clients: the DSP code may be absent from a build. */
++HoujiAdspChannel *houji_adsp_channel(const char *name, uint32_t intent_size, uint32_t intent_count, int initiator,
++                                     const HoujiAdspClient *client, void *context);
++/* Queues one message (at most HOUJI_ADSP_MAX_MESSAGE bytes): 0 queued, -1 queue full or too big, -2 bad arguments. */
++int houji_adsp_send(HoujiAdspChannel *channel, const void *data, uint32_t length);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/HoujiAdspFirmware.c b/package/HoujiAdspFirmware.c
+new file mode 100644
+index 0000000..8e487f2
+--- /dev/null
++++ b/package/HoujiAdspFirmware.c
+@@ -0,0 +1,69 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++// Local houji ADSP images. Firmware is staged on Data; no vendor bytes belong in this repository.
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/proc.h>
++#include <sys/vnode.h>
++#include <sys/uio.h>
++#include <sys/fcntl.h>
++#include <sys/kauth.h>
++#include <IOKit/IOLib.h>
++
++struct houji_fw {
++    vnode_t vnode;
++    uint64_t size;
++};
++
++int houji_fw_open(const char *path, void **handle, uint64_t *size)
++{
++    if (!path || !handle || !size) return EINVAL;
++    struct houji_fw *fw = IOMallocType(struct houji_fw);
++    if (!fw) return ENOMEM;
++    bzero(fw, sizeof *fw);
++    vfs_context_t ctx = vfs_context_kernel();
++    int error = vnode_open(path, FREAD, 0, 0, &fw->vnode, ctx);
++    if (!error) {
++        struct vnode_attr va;
++        VATTR_INIT(&va);
++        VATTR_WANTED(&va, va_data_size);
++        error = vnode_getattr(fw->vnode, &va, ctx);
++        if (!error && (vnode_vtype(fw->vnode) != VREG || !VATTR_IS_SUPPORTED(&va, va_data_size) || !va.va_data_size ||
++                       va.va_data_size > 64u * 1024u * 1024u)) error = EFTYPE;
++        if (!error) fw->size = va.va_data_size;
++    }
++    if (error) {
++        if (fw->vnode) vnode_close(fw->vnode, FREAD, ctx);
++        IOFreeType(fw, struct houji_fw);
++        return error;
++    }
++    *handle = fw;
++    *size = fw->size;
++    return 0;
++}
++
++int houji_fw_read(void *handle, uint64_t offset, void *to, size_t length)
++{
++    struct houji_fw *fw = handle;
++    if (!fw || !to || offset > fw->size || length > fw->size - offset) return EINVAL;
++    vfs_context_t ctx = vfs_context_kernel();
++    uint8_t *out = to;
++    while (length) {
++        const int want = length > (1u << 30) ? (1 << 30) : (int)length;
++        int resid = want;
++        const int error = vn_rdwr(UIO_READ, fw->vnode, (caddr_t)out, want, (off_t)offset, UIO_SYSSPACE, IO_NOAUTH,
++                                  vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++        if (error || resid == want) return error ? error : EIO;
++        out += want - resid;
++        offset += (uint64_t)(want - resid);
++        length -= (size_t)(want - resid);
++    }
++    return 0;
++}
++
++void houji_fw_close(void *handle)
++{
++    struct houji_fw *fw = handle;
++    if (!fw) return;
++    if (fw->vnode) vnode_close(fw->vnode, FREAD, vfs_context_kernel());
++    IOFreeType(fw, struct houji_fw);
++}
+diff --git a/package/HoujiAdspProbe.cpp b/package/HoujiAdspProbe.cpp
+new file mode 100644
+index 0000000..a5bb76a
+--- /dev/null
++++ b/package/HoujiAdspProbe.cpp
+@@ -0,0 +1,687 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++// The audio DSP (ADSP, LPASS) of the houji board: boot argument battery=1 surveys what the boot stages left (SMEM partition and items,
++// the DSP's SMP2P state, the AOSS mailbox, the RSC, the command database) and writes nothing; battery>=2 starts the DSP and brings up
++// GLINK so the battery manager (PMIC GLINK) and the audio services (GPR) can talk to it.
++//
++// Devicetree facts: remoteproc@6800000 (qcom,sm8550-adsp-pas), PAS id 1 for adsp.mbn in adspslpi 0x9df00000 + 0x4680000 and id 36 for
++// adsp_dtb.mbn in q6-adsp-dtb 0x9de80000 + 0x80000; proxy power domains lcx and lmx (RPMh ARC lcx.lvl, lmx.lvl) and the AOSS load_state
++// "adsp"; SMEM 0x81d00000 + 0x200000 with TCSR mutex 3 (0x1f40000, stride 0x1000); SMP2P items 443 (in) and 429 (out), remote pid 2,
++// entries "master-kernel" (bit 0 stop) and "slave-kernel" (fatal 0, ready 1, handover 2, stop ack 3); IPCC 0x406000 (SPI 229): LPASS
++// client 3 with signal 0 GLINK and 2 SMP2P, AOP client 0 signal 0; GLINK items 478 (descriptor), 479 (our FIFO), 480 (the DSP's FIFO);
++// AOSS message RAM 0xc300000 + 0x400; apps RSC DRV 2 at 0x17a20000 with TCS block at +0xd00 and its interrupt SPI 5; cmd-db 0x81c60000.
++//
++// Design: one kernel thread owns every step and all protocol state. Interrupt handlers only acknowledge their hardware, record which
++// doorbell rang and wake the thread; the thread waits on that event with a deadline for each step (QMP 1 s per phase, RPMh 100 ms, DSP
++// ready 5 s) and then sleeps until the next doorbell or client send. Nothing spins on a register in a loop, and no lock is held across a
++// wait. Clients (HoujiAdsp.h) register channels and queue sends from any thread; their callbacks run on this thread.
++#include <IOKit/IOLib.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <IOKit/IODeviceMemory.h>
++#include <kern/thread.h>
++#include <sys/errno.h>
++#include <pexpert/pexpert.h>
++extern "C" {
++#include "HoujiQcomGlink.h"
++#include "HoujiQcomMdt.h"
++#include "HoujiQcomQmp.h"
++#include "QcomRpmh.h"
++#include "HoujiQcomScm.h"
++#include "HoujiQcomSmem.h"
++#include "HoujiQcomSmp2p.h"
++#include "HoujiAdsp.h"
++int houji_fw_open(const char *path, void **handle, uint64_t *size);
++int houji_fw_read(void *handle, uint64_t offset, void *to, size_t length);
++void houji_fw_close(void *handle);
++}
++
++extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
++// [0] stage (see Stage; negative: the step that failed), [1] last error, [2] IPCC interrupts, [3] the DSP's slave-kernel bits (-1 no
++// item), [4] items (bit 0 SMP2P in 443, 1 out 429, 2 GLINK 478, 3 479, 4 480, 8 our partition, 9 global partition), [5] QMP state | AOSS
++// link bits << 8, [6] RSC DRV id, [7] adsp.mbn KiB, [8] ms from the start call to "ready", [9] GLINK messages in, [10] out, [11] channels
++// up (bit per client) | version agreed << 14 | link broken << 15, [12] channel opens nobody serves, [13] last SCM x0, [14] its x1,
++// [15] votes: lcx index | lmx index << 8 | RSC done interrupts << 16
++extern "C" {volatile int32_t native_adsp_stats[16]; char native_adsp_text[96];}
++
++namespace {
++enum Stage {
++    StMapped = 1, StSurveyed = 2, StFirmware = 3, StSmp2p = 4, StDoorbells = 5, StLoadState = 6, StRails = 7, StDtb = 8, StLoaded = 9,
++    StStarted = 10, StReady = 11, StGlink = 12, StChannel = 13,
++};
++constexpr uint64_t kSmem = 0x81d00000, kSmemSize = 0x200000, kMutex = 0x1f40000 + 3 * 0x1000, kIpcc = 0x406000, kAoss = 0xc300000;
++constexpr uint64_t kRscDrv = 0x17a20000, kRscTcs = 0xd00, kCmdDb = 0x81c60000, kCmdDbSize = 0x20000;
++constexpr uint64_t kAdspBase = 0x9df00000, kAdspSize = 0x4680000, kDtbBase = 0x9de80000, kDtbSize = 0x80000;
++constexpr uint32_t kPasAdsp = 1, kPasDtb = 36, kRemotePid = 2, kItemIn = 443, kItemOut = 429, kItemCrash = 423;
++constexpr uint32_t kItemGlinkDesc = 478, kItemGlinkTx = 479, kItemGlinkRx = 480, kGlinkFifo = 0x4000;
++constexpr uint32_t kSpiIpcc = 229, kSpiRsc = 5;
++constexpr uint32_t kFatal = 1u << 0, kReady = 1u << 1, kHandover = 1u << 2;
++constexpr uint32_t kEvSmp2p = 1, kEvGlink = 2, kEvAop = 4, kEvRsc = 8, kEvSend = 16;
++constexpr unsigned kClients = 4, kQueue = 8;
++
++struct Window {IOMemoryMap *map; volatile uint8_t *va;};
++bool mapWindow(Window &w, uint64_t base, uint64_t size, IOOptionBits cache = kIOMapInhibitCache) {
++    IODeviceMemory *memory = IODeviceMemory::withRange(base, size);
++    w.map = memory ? memory->map(kIOMapAnywhere | cache) : nullptr;
++    if (memory) memory->release();
++    w.va = w.map ? reinterpret_cast<volatile uint8_t *>(w.map->getVirtualAddress()) : nullptr;
++    return w.va != nullptr;
++}
++void unmap(Window &w) {if (w.map) w.map->release(); w = {};}
++uint32_t rd(const Window &w, uint64_t at) {return *reinterpret_cast<volatile uint32_t *>(w.va + at);}
++void wr(const Window &w, uint64_t at, uint32_t value) {*reinterpret_cast<volatile uint32_t *>(w.va + at) = value; __asm__ volatile("dsb sy" ::: "memory");}
++void fail(int step, int error) {native_adsp_stats[1] = error; native_adsp_stats[0] = -step;}
++void stage(int value) {native_adsp_stats[0] = value;}
++void note(const char *prefix, const char *text) {
++    size_t at = 0;
++    for (; prefix[at] && at < sizeof native_adsp_text - 1; ++at) native_adsp_text[at] = prefix[at];
++    for (size_t i = 0; text[i] && at < sizeof native_adsp_text - 1; ++i) native_adsp_text[at++] = text[i];
++    native_adsp_text[at] = 0;
++}
++
++Window gSmemW, gMutex, gIpcc, gAoss, gRsc;
++QcomSmem gSmem;
++QcomSmemPartition gPart;
++QcomSmp2p gP2p;
++int gStopEntry = -1;
++QcomQmp gQmp;
++QcomGlink gGlink;
++bool gGlinkStarted;
++QcomRscLayout gLayout;
++uint32_t gRscIrqBits;
++volatile uint32_t gPending, gRscDone;
++
++// ---- clients ----
++struct Message {uint32_t length; uint8_t data[HOUJI_ADSP_MAX_MESSAGE];};
++}  // namespace
++extern "C" {volatile int32_t native_adsp_audio[8];}
++struct HoujiAdspChannel {
++    char name[QCOM_GLINK_NAME];
++    uint32_t intent_size, intent_count;
++    int initiator;
++    HoujiAdspClient client;
++    void *context;
++    uint8_t *storage;
++    QcomGlinkChannel *glink;
++    Message *queue;  // kQueue slots
++    uint32_t head, count;
++};
++namespace {
++HoujiAdspChannel gClients[kClients];
++uint32_t gClientCount;
++IOLock *gClientLock;
++
++void wake(uint32_t bits) {
++    __atomic_fetch_or(&gPending, bits, __ATOMIC_RELEASE);
++    thread_wakeup((event_t)&gPending);
++}
++
++// ---- interrupts: acknowledge, record, wake ----
++void ipccIrq(void *) {
++    uint32_t bits = 0;
++    for (unsigned n = 0; n < 32; ++n) {
++        const uint32_t id = rd(gIpcc, QCOM_IPCC_RECV_ID);
++        if (id == QCOM_IPCC_NONE) break;
++        wr(gIpcc, QCOM_IPCC_RECV_CLEAR, id);
++        if (id == qcom_ipcc_id(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_SMP2P)) bits |= kEvSmp2p;
++        else if (id == qcom_ipcc_id(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_GLINK_QMP)) bits |= kEvGlink;
++        else if (id == qcom_ipcc_id(QCOM_IPCC_CLIENT_AOP, QCOM_IPCC_SIGNAL_GLINK_QMP)) bits |= kEvAop;
++    }
++    native_adsp_stats[2] = native_adsp_stats[2] + 1;
++    if (bits) wake(bits);
++}
++void rscIrq(void *) {
++    const uint32_t status = rd(gRsc, kRscTcs + gLayout.irq_status) & gRscIrqBits;
++    if (!status) return;
++    wr(gRsc, kRscTcs + gLayout.irq_clear, status);
++    __atomic_fetch_or(&gRscDone, status, __ATOMIC_RELEASE);
++    native_adsp_stats[15] = native_adsp_stats[15] + (1 << 16);
++    wake(kEvRsc);
++}
++
++// Waits for an event up to ms milliseconds; returns the event bits (0: the deadline passed).
++uint32_t waitEvents(uint32_t ms) {
++    uint32_t bits = __atomic_exchange_n(&gPending, 0, __ATOMIC_ACQ_REL);
++    if (bits) return bits;
++    assert_wait_timeout((event_t)&gPending, THREAD_UNINT, ms, kMillisecondScale);
++    bits = __atomic_exchange_n(&gPending, 0, __ATOMIC_ACQ_REL);
++    if (bits) {clear_wait(current_thread(), THREAD_AWAKENED); return bits;}
++    thread_block(THREAD_CONTINUE_NULL);
++    return __atomic_exchange_n(&gPending, 0, __ATOMIC_ACQ_REL);
++}
++
++void ring(uint32_t client, uint32_t signal) {wr(gIpcc, QCOM_IPCC_SEND, qcom_ipcc_id(client, signal));}
++void kickAop(void *) {ring(QCOM_IPCC_CLIENT_AOP, QCOM_IPCC_SIGNAL_GLINK_QMP);}
++void kickGlink(void *) {ring(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_GLINK_QMP);}
++void kickSmp2p() {ring(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_SMP2P);}
++
++// ---- SMEM helpers (allocation under the TCSR hardware mutex) ----
++bool lockSmem() {
++    // The mutex is held only for the few writes of one allocation by whichever processor has it; it is tried a bounded number of times.
++    for (unsigned i = 0; i < 1000; ++i) {
++        wr(gMutex, 0, 1);
++        if (rd(gMutex, 0) == 1) return true;
++        IODelay(10);
++    }
++    return false;
++}
++void unlockSmem() {wr(gMutex, 0, 0);}
++int allocItem(uint16_t item, uint32_t size) {
++    if (!lockSmem()) return -16;
++    const int rc = qcom_smem_alloc(&gSmem, &gPart, item, size);
++    unlockSmem();
++    return rc == QcomSmemExists ? 0 : rc;
++}
++volatile uint8_t *item(uint16_t id, uint32_t *size) {
++    uint32_t at = 0, bytes = 0;
++    if (qcom_smem_find(&gSmem, &gPart, id, &at, &bytes)) return nullptr;
++    if (size) *size = bytes;
++    return gSmemW.va + at;
++}
++
++void readCrashReason() {
++    QcomSmemPartition global;
++    uint32_t at = 0, size = 0;
++    if (qcom_smem_partition(&gSmem, QCOM_SMEM_HOST_GLOBAL, QCOM_SMEM_HOST_GLOBAL, &global) ||
++        qcom_smem_find(&gSmem, &global, kItemCrash, &at, &size) || !size)
++        return;
++    char text[80];
++    size_t n = 0;
++    for (; n < sizeof text - 1 && n < size; ++n) {const char c = (char)gSmemW.va[at + n]; if (!c) break; text[n] = c >= 32 && c < 127 ? c : '.';}
++    text[n] = 0;
++    if (n) note("crash: ", text);
++}
++
++// ---- the survey (battery=1 and the first step of 2): reads only ----
++void survey() {
++    int32_t bits = 0;
++    if (!qcom_smem_partition(&gSmem, QCOM_SMEM_HOST_APPS, kRemotePid, &gPart)) {
++        bits |= 1 << 8;
++        const uint16_t ids[5] = {kItemIn, kItemOut, kItemGlinkDesc, kItemGlinkTx, kItemGlinkRx};
++        for (unsigned i = 0; i < 5; ++i) if (item(ids[i], nullptr)) bits |= 1 << i;
++    }
++    QcomSmemPartition global;
++    if (!qcom_smem_partition(&gSmem, QCOM_SMEM_HOST_GLOBAL, QCOM_SMEM_HOST_GLOBAL, &global)) bits |= 1 << 9;
++    native_adsp_stats[4] = bits;
++    native_adsp_stats[3] = -1;
++    if (volatile uint8_t *in = item(kItemIn, nullptr)) {
++        QcomSmp2p view = {};
++        view.in = reinterpret_cast<volatile uint32_t *>(in);
++        view.local_pid = 0; view.remote_pid = kRemotePid;
++        const int index = qcom_smp2p_check_in(view.in, 0, kRemotePid) ? -1 : qcom_smp2p_find_in(&view, "slave-kernel");
++        if (index >= 0) native_adsp_stats[3] = (int32_t)qcom_smp2p_in_value(&view, index);
++    }
++    const uint32_t up = 0xffff;
++    native_adsp_stats[5] = (rd(gAoss, 0) == 0x4d41494cu ? 1 : 0) << 12 | (rd(gAoss, 0xc) == up) << 8 | (rd(gAoss, 0x24) == up) << 9 |
++                           (rd(gAoss, 0x14) == up) << 10 | (rd(gAoss, 0x2c) == up) << 11;
++    native_adsp_stats[6] = (int32_t)rd(gRsc, 0);
++    readCrashReason();
++}
++
++void service(uint32_t bits);
++
++// ---- RPMh proxy votes ----
++bool readCmdDb(uint8_t *copy) {
++    Window db = {};
++    if (!mapWindow(db, kCmdDb, kCmdDbSize)) return false;
++    for (uint64_t i = 0; i < kCmdDbSize; i += 4) {const uint32_t w = rd(db, i); memcpy(copy + i, &w, 4);}
++    unmap(db);
++    return true;
++}
++QcomRpmhResource gLcx, gLmx;
++int gTcs = -1;
++
++// Votes both rails to the given ARC index pair through active TCS 1 and waits up to 100 ms for its done interrupt. The active TCSs are 0
++// to 2 (tcs-config lists the active type first); the WiFi bring-up sends through TCS 0, so the two never share one. A request whose done
++// interrupt is not seen still counts (bit 15 of [15]): the WiFi rails show such requests take effect.
++int vote(uint32_t lcx, uint32_t lmx) {
++    if (gTcs < 0) {
++        gTcs = 1;
++        gRscIrqBits = 1u << gTcs;
++        wr(gRsc, kRscTcs + 0, rd(gRsc, kRscTcs + 0) | gRscIrqBits);  // IRQ_ENABLE for our TCS
++    }
++    const uint32_t addresses[2] = {gLcx.address, gLmx.address}, values[2] = {lcx, lmx};
++    QcomRpmhWrite writes[16];
++    const unsigned n = qcom_rpmh_active_request(&gLayout, (unsigned)gTcs, addresses, values, 2, writes, 16);
++    if (!n) return -22;
++    __atomic_store_n(&gRscDone, 0, __ATOMIC_RELEASE);
++    for (unsigned i = 0; i < n; ++i) wr(gRsc, kRscTcs + writes[i].offset, writes[i].value);
++    uint64_t deadline;
++    clock_interval_to_deadline(100, kMillisecondScale, &deadline);
++    // The RSC's completion line is not taken as an interrupt (as a GIC SPI it froze the phone at boot): the TCS status is read here
++    // every millisecond while other events are still served.
++    bool done = false;
++    while (mach_absolute_time() < deadline) {
++        if (rd(gRsc, kRscTcs + gLayout.irq_status) & gRscIrqBits) {done = true; break;}
++        service(waitEvents(1));
++    }
++    if (done) wr(gRsc, kRscTcs + gLayout.irq_clear, gRscIrqBits);
++    const unsigned m = qcom_rpmh_finish(&gLayout, (unsigned)gTcs, writes, 16);
++    for (unsigned i = 0; i < m; ++i) wr(gRsc, kRscTcs + writes[i].offset, writes[i].value);
++    native_adsp_stats[15] = (native_adsp_stats[15] & ~0xffff) | (int32_t)(lcx | lmx << 8 | (done ? 0 : 1u << 15));
++    return 0;
++}
++
++// ---- secure world calls ----
++struct ScmResult {int64_t x0; uint64_t x1;};
++ScmResult scm(uint32_t command, uint32_t arginfo, uint64_t a, uint64_t b, uint64_t c) {
++    ScmResult result = {-1, 0};
++    for (unsigned busy = 0; busy < 20; ++busy) {
++        uint64_t function = qcom_scm_fn(QCOM_SCM_SVC_PIL, command), session = 0;
++        unsigned resumes = 0;
++        for (;;) {
++            register uint64_t x0 __asm__("x0") = function, x1 __asm__("x1") = arginfo, x2 __asm__("x2") = a, x3 __asm__("x3") = b,
++                              x4 __asm__("x4") = c, x5 __asm__("x5") = 0, x6 __asm__("x6") = session, x7 __asm__("x7") = 0;
++            __asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
++                             :: "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
++            result = {(int64_t)x0, x1};
++            if ((int64_t)x0 != QCOM_SCM_INTERRUPTED || ++resumes > 100000) break;
++            function = QCOM_SCM_INTERRUPTED;  // resume the interrupted call in its session
++            session = x6;
++        }
++        if (result.x0 != QCOM_SCM_V2_EBUSY) break;
++        IOSleep(30);
++    }
++    native_adsp_stats[13] = (int32_t)result.x0;
++    native_adsp_stats[14] = (int32_t)result.x1;
++    return result;
++}
++bool scmOk(const ScmResult &r) {return r.x0 == 0 && r.x1 == 0;}
++
++void cleanToPoc(const void *start, size_t length) {
++    uint64_t ctr;
++    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
++    const uintptr_t line = static_cast<uintptr_t>(4) << ((ctr >> 16) & 15);
++    for (uintptr_t a = reinterpret_cast<uintptr_t>(start) & ~(line - 1); a < reinterpret_cast<uintptr_t>(start) + length; a += line)
++        __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
++    __asm__ volatile("dsb sy" ::: "memory");
++}
++
++// ---- a firmware image: parsed from its file, metadata handed over, segments written into the carveout ----
++struct Image {  // plain data, zero at start: the two live in static storage (a few KiB of header table each, kept off the stack)
++    void *file;
++    uint64_t size;
++    QcomMdtImage mdt;
++    IOBufferMemoryDescriptor *meta;
++};
++Image gDtbImage, gAdspImage;
++int fileRead(void *context, uint64_t offset, void *to, size_t length) {return houji_fw_read(context, offset, to, length);}
++void release(Image &image) {
++    if (image.file) houji_fw_close(image.file);
++    if (image.meta) image.meta->release();
++    image.file = nullptr; image.meta = nullptr;
++}
++int openImage(Image &image, const char *path) {
++    int rc = houji_fw_open(path, &image.file, &image.size);
++    if (rc) {image.file = nullptr; return rc;}
++    rc = qcom_mdt_parse(&image.mdt, image.size, fileRead, image.file);
++    return rc ? 1000 - rc : 0;
++}
++// init_image with the metadata in physically contiguous memory, then the memory setup of a relocatable image.
++int authenticateHeader(Image &image, uint32_t pas, uint64_t base) {
++    const uint64_t bytes = qcom_mdt_metadata_size(&image.mdt);
++    image.meta = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous, bytes,
++                                                                 0xfffffffffffff000ull);
++    if (!image.meta || image.meta->prepare() != kIOReturnSuccess) return -12;
++    uint8_t *va = static_cast<uint8_t *>(image.meta->getBytesNoCopy());
++    if (qcom_mdt_metadata(&image.mdt, fileRead, image.file, va, bytes)) return -5;
++    cleanToPoc(va, bytes);
++    const uint64_t phys = image.meta->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
++    if (!scmOk(scm(QCOM_SCM_PAS_INIT_IMAGE, qcom_scm_args(2, QCOM_SCM_VAL, QCOM_SCM_RW, 0), pas, phys, 0))) return -1;
++    if (image.mdt.relocatable &&
++        !scmOk(scm(QCOM_SCM_PAS_MEM_SETUP, qcom_scm_args(3, 0, 0, 0), pas, base, qcom_mdt_span(&image.mdt))))
++        return -2;
++    return 0;
++}
++int loadSegments(Image &image, uint64_t base, uint64_t size) {
++    Window region = {};
++    if (!mapWindow(region, base, size, kIOMapWriteCombineCache)) return -12;
++    constexpr size_t kChunk = 256 * 1024;
++    uint8_t *bounce = static_cast<uint8_t *>(IOMallocData(kChunk));
++    int rc = bounce ? 0 : -12;
++    for (unsigned i = 0; !rc && i < image.mdt.count; ++i) {
++        const QcomMdtSegment &s = image.mdt.segment[i];
++        uint64_t at = 0;
++        if (!s.load) continue;
++        if (qcom_mdt_place(&image.mdt, i, base, size, &at)) {rc = -7; break;}
++        uint8_t *to = const_cast<uint8_t *>(region.va) + at;
++        for (uint64_t done = 0; !rc && done < s.file_size;) {
++            const size_t n = s.file_size - done < kChunk ? (size_t)(s.file_size - done) : kChunk;
++            if (houji_fw_read(image.file, s.file_offset + done, bounce, n)) {rc = -5; break;}
++            memcpy(to + done, bounce, n);
++            done += n;
++        }
++        if (!rc && s.memory_size > s.file_size) bzero(to + s.file_size, (size_t)(s.memory_size - s.file_size));
++    }
++    __asm__ volatile("dsb sy" ::: "memory");
++    if (bounce) IOFreeData(bounce, kChunk);
++    unmap(region);
++    return rc;
++}
++
++// ---- events ----
++uint32_t gSlave;
++bool gHandedOver;
++void serviceSmp2p() {
++    if (!gP2p.in) {
++        if (volatile uint8_t *in = item(kItemIn, nullptr)) gP2p.in = reinterpret_cast<volatile uint32_t *>(in);
++        else return;
++    }
++    uint32_t value = 0, changed = 0;
++    if (qcom_smp2p_service(&gP2p, "slave-kernel", &value, &changed)) kickSmp2p();
++    gSlave = value;
++    native_adsp_stats[3] = (int32_t)value;
++    if ((changed & value & kFatal)) readCrashReason();
++    if ((value & kHandover) && !gHandedOver) {
++        gHandedOver = true;
++        vote(0, 0);  // the DSP holds its own votes now
++    }
++}
++
++void applyClients();
++void pumpSends();
++void serviceGlink() {
++    if (!gGlinkStarted) return;
++    if (!gGlink.rx.data) {
++        uint32_t size = 0;
++        if (volatile uint8_t *rx = item(kItemGlinkRx, &size)) qcom_glink_set_rx(&gGlink, rx, size);
++    }
++    qcom_glink_poll(&gGlink);
++    pumpSends();
++    uint32_t up = 0;
++    for (unsigned i = 0; i < gClientCount; ++i) if (gClients[i].glink && gClients[i].glink->up) up |= 1u << i;
++    native_adsp_stats[9] = (int32_t)gGlink.rx_messages;
++    native_adsp_stats[10] = (int32_t)gGlink.tx_messages;
++    native_adsp_stats[11] = (int32_t)(up | (uint32_t)gGlink.version_agreed << 14 | (uint32_t)gGlink.broken << 15);
++    native_adsp_stats[12] = (int32_t)gGlink.unknown_opens;
++    if (gGlink.unknown_opens && strncmp(native_adsp_text, "crash: ", 7)) note("open: ", gGlink.unknown_names);
++    if (gGlink.version_agreed && native_adsp_stats[0] >= StReady && native_adsp_stats[0] < StGlink) stage(StGlink);
++    if (up && native_adsp_stats[0] >= StGlink) stage(StChannel);
++}
++void service(uint32_t bits) {
++    if (bits & kEvAop) qcom_qmp_step(&gQmp);
++    if (bits & (kEvSmp2p | kEvGlink)) serviceSmp2p();
++    if (bits & (kEvGlink | kEvSend)) {applyClients(); serviceGlink();}
++}
++// Runs events until done() holds or ms pass; returns done().
++template <typename F> bool waitUntil(uint32_t ms, F done) {
++    uint64_t deadline;
++    clock_interval_to_deadline(ms, kMillisecondScale, &deadline);
++    while (!done()) {
++        const uint64_t now = mach_absolute_time();
++        if (now >= deadline) return done();
++        uint64_t left = 0;
++        absolutetime_to_nanoseconds(deadline - now, &left);
++        service(waitEvents((uint32_t)(left / 1000000) + 1));
++    }
++    return true;
++}
++
++// ---- client glue (DSP thread side) ----
++void clientState(void *context, QcomGlinkChannel *, int up) {
++    HoujiAdspChannel *c = static_cast<HoujiAdspChannel *>(context);
++    if (c->client.state) c->client.state(c->context, up);
++}
++void clientReceive(void *context, QcomGlinkChannel *, const uint8_t *data, uint32_t length) {
++    HoujiAdspChannel *c = static_cast<HoujiAdspChannel *>(context);
++    if (c->client.receive) c->client.receive(c->context, data, length);
++}
++void applyClients() {
++    if (!gGlinkStarted) return;
++    const QcomGlinkClient glue = {clientState, clientReceive};
++    IOLockLock(gClientLock);
++    for (unsigned i = 0; i < gClientCount; ++i) {
++        HoujiAdspChannel &c = gClients[i];
++        if (!c.glink) c.glink = qcom_glink_channel(&gGlink, c.name, c.intent_size, c.intent_count, c.storage, &glue, &c, c.initiator);
++    }
++    IOLockUnlock(gClientLock);
++}
++// The audio channel's send state, for the log: [0] sent, [1] deferred (no intent or FIFO room), [2] refused otherwise, [3] queued now,
++// [4] intent asked (0/1), [5] valid remote intents, [6] the largest remote intent, [7] the last deferred length
++void noteChannel(const HoujiAdspChannel &c, int rc, uint32_t length) {
++    if (strcmp(c.name, "adsp_apps")) return;
++    if (rc == QcomGlinkOk) native_adsp_audio[0] = native_adsp_audio[0] + 1;
++    else if (rc == QcomGlinkAgain) {native_adsp_audio[1] = native_adsp_audio[1] + 1; native_adsp_audio[7] = (int32_t)length;}
++    else native_adsp_audio[2] = native_adsp_audio[2] + 1;
++    native_adsp_audio[3] = (int32_t)c.count;
++    native_adsp_audio[4] = c.glink->intent_asked;
++    int32_t valid = 0, largest = 0;
++    for (unsigned k = 0; k < QCOM_GLINK_MAX_REMOTE_INTENTS; ++k)
++        if (c.glink->remote[k].valid) {++valid; if ((int32_t)c.glink->remote[k].size > largest) largest = (int32_t)c.glink->remote[k].size;}
++    native_adsp_audio[5] = valid;
++    native_adsp_audio[6] = largest;
++}
++void pumpSends() {
++    for (unsigned i = 0; i < gClientCount; ++i) {
++        HoujiAdspChannel &c = gClients[i];
++        if (!c.glink || !c.glink->up) continue;
++        for (;;) {
++            IOLockLock(gClientLock);
++            if (!c.count) {IOLockUnlock(gClientLock); break;}
++            Message *m = &c.queue[c.head];
++            IOLockUnlock(gClientLock);
++            // Only this thread takes messages off the queue, so m stays valid while the lock is dropped for the send.
++            const int rc = qcom_glink_send(&gGlink, c.glink, m->data, m->length);
++            noteChannel(c, rc, m->length);
++            if (rc != QcomGlinkOk) break;
++            IOLockLock(gClientLock);
++            c.head = (c.head + 1) % kQueue;
++            c.count--;
++            IOLockUnlock(gClientLock);
++        }
++    }
++}
++
++// ---- the bring-up ----
++bool gIrq;
++bool attachIrqs() {
++    if (!armcpu_spi_attach) return false;
++    int rc = 0;
++    for (unsigned tries = 0;; ++tries) {  // the GIC driver may not have started yet (as ButtonProbe found)
++        rc = armcpu_spi_attach(32 + kSpiIpcc, false, ipccIrq, nullptr, nullptr, nullptr);
++        if (rc != kIOReturnNotReady || tries == 240) break;
++        IOSleep(250);
++    }
++    if (rc) {fail(StDoorbells, rc); return false;}
++    // Proven iOS 16 houji path polls RSC completion in vote(); attaching this SPI froze boot.
++    const uint32_t enable[3] = {qcom_ipcc_id(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_SMP2P),
++                                qcom_ipcc_id(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_GLINK_QMP),
++                                qcom_ipcc_id(QCOM_IPCC_CLIENT_AOP, QCOM_IPCC_SIGNAL_GLINK_QMP)};
++    for (uint32_t id : enable) wr(gIpcc, QCOM_IPCC_RECV_ENABLE, id);
++    gIrq = true;
++    return true;
++}
++
++// Firmware is local-only Data content. houji_adsp_fw=DIR overrides the default directory; both files are validated as MDT images.
++// The Data volume may not be up when this thread starts, so bounded growing pauses cover its mount.
++int openPair(Image &dtb, Image &adsp, const char *source, char *path, size_t size) {
++    const bool modem = false;
++    snprintf(path, size, modem ? "%sadsp_dtb" : "%s/adsp_dtb.mbn", source);
++    int rc = openImage(dtb, path);
++    if (rc) return rc;
++    snprintf(path, size, modem ? "%sadsp" : "%s/adsp.mbn", source);
++    if ((rc = openImage(adsp, path))) release(dtb);
++    return rc;
++}
++int openFirmware(Image &dtb, Image &adsp, char *path, size_t size, const char *chosen) {
++    static const uint32_t pauses[] = {1, 2, 4, 8, 16, 30, 30, 30};
++    const char *sources[1] = {"/private/var/firmware/qcom/sm8650/houji"};
++    const unsigned count = 1;
++    if (chosen) sources[0] = chosen;
++    int rc = 0;
++    for (unsigned i = 0;; ++i) {
++        int first = 0;
++        for (unsigned s = 0; s < count; ++s) {
++            rc = openPair(dtb, adsp, sources[s], path, size);
++            if (!rc) return 0;
++            if (!s) first = rc;
++            if (rc != ENOENT && rc != ENXIO && rc != EIO) return rc;  // found but unusable: no other source is tried
++        }
++        rc = first;  // the reason the first source failed is the one worth reporting
++        if (i == sizeof pauses / sizeof pauses[0]) return rc;
++        IOSleep(pauses[i] * 1000);
++    }
++}
++
++void shutdownDsp(bool dtb, bool adsp) {
++    if (adsp) scm(QCOM_SCM_PAS_SHUTDOWN, qcom_scm_args(1, 0, 0, 0), kPasAdsp, 0, 0);
++    if (dtb) scm(QCOM_SCM_PAS_SHUTDOWN, qcom_scm_args(1, 0, 0, 0), kPasDtb, 0, 0);
++}
++
++bool start() {
++    char dir[80] = "";
++    const bool chosen = PE_parse_boot_argn("houji_adsp_fw", dir, sizeof dir) && dir[0];
++    char path[112];
++    Image &dtb = gDtbImage, &adsp = gAdspImage;
++    int rc = openFirmware(dtb, adsp, path, sizeof path, chosen ? dir : nullptr);
++    if (rc) {note("fw: ", path); fail(StFirmware, rc); return false;}
++    native_adsp_stats[7] = (int32_t)(adsp.size >> 10);
++    stage(StFirmware);
++    if (native_adsp_stats[3] > 0) {fail(StFirmware, -114); release(dtb); release(adsp); return false;}  // running already: left alone
++
++    // Our SMP2P item, before the DSP starts (it looks for it at boot).
++    if ((rc = allocItem(kItemOut, QCOM_SMP2P_ITEM_BYTES))) {fail(StSmp2p, rc); release(dtb); release(adsp); return false;}
++    qcom_smp2p_init_out(&gP2p, reinterpret_cast<volatile uint32_t *>(item(kItemOut, nullptr)), 0, kRemotePid);
++    gStopEntry = qcom_smp2p_add_entry(&gP2p, "master-kernel");
++    stage(StSmp2p);
++    if (!attachIrqs()) {release(dtb); release(adsp); return false;}
++    kickSmp2p();
++    stage(StDoorbells);
++
++    qcom_qmp_init(&gQmp, reinterpret_cast<volatile uint32_t *>(gAoss.va), 0x400, kickAop, nullptr);
++    for (int phase = 0; phase < 4 && qcom_qmp_step(&gQmp) > 0 && gQmp.state != QcomQmpOpen; ++phase)
++        waitUntil(1000, [] {return qcom_qmp_step(&gQmp) == QcomQmpOpen || gQmp.state < 0;});
++    native_adsp_stats[5] = (native_adsp_stats[5] & ~0xff) | (gQmp.state & 0xff);
++    if (gQmp.state != QcomQmpOpen) {fail(StLoadState, gQmp.state); release(dtb); release(adsp); return false;}
++    qcom_qmp_send(&gQmp, "{class: image, res: load_state, name: adsp, val: on}");
++    if (!waitUntil(1000, [] {return qcom_qmp_step(&gQmp) == QcomQmpOpen;})) {
++        qcom_qmp_abandon(&gQmp);
++        fail(StLoadState, -60); release(dtb); release(adsp); return false;
++    }
++    stage(StLoadState);
++
++    struct CmdDbCopy {uint8_t *bytes = static_cast<uint8_t *>(IOMallocData(kCmdDbSize)); ~CmdDbCopy() {if (bytes) IOFreeData(bytes, kCmdDbSize);}} copy;
++    uint32_t lcx = 0, lmx = 0;
++    if (!copy.bytes || !readCmdDb(copy.bytes) || qcom_cmd_db_find(copy.bytes, kCmdDbSize, "lcx.lvl", &gLcx) ||
++        qcom_cmd_db_find(copy.bytes, kCmdDbSize, "lmx.lvl", &gLmx) || qcom_rpmh_level_index(&gLcx, 0xffffffffu, &lcx) ||
++        qcom_rpmh_level_index(&gLmx, 0xffffffffu, &lmx)) {fail(StRails, -2); release(dtb); release(adsp); return false;}
++    if ((rc = vote(lcx, lmx))) {fail(StRails, rc); release(dtb); release(adsp); return false;}
++    stage(StRails);
++
++    // The DSP's devicetree image first, as its own authenticated image, then the DSP image.
++    if ((rc = authenticateHeader(dtb, kPasDtb, kDtbBase)) || (rc = loadSegments(dtb, kDtbBase, kDtbSize)) ||
++        (rc = scmOk(scm(QCOM_SCM_PAS_AUTH_AND_RESET, qcom_scm_args(1, 0, 0, 0), kPasDtb, 0, 0)) ? 0 : -3)) {
++        fail(StDtb, rc); vote(0, 0); release(dtb); release(adsp); return false;
++    }
++    stage(StDtb);
++    if ((rc = authenticateHeader(adsp, kPasAdsp, kAdspBase)) || (rc = loadSegments(adsp, kAdspBase, kAdspSize))) {
++        fail(StLoaded, rc); shutdownDsp(true, false); vote(0, 0); release(dtb); release(adsp); return false;
++    }
++    stage(StLoaded);
++    const uint64_t began = mach_absolute_time();
++    if (!scmOk(scm(QCOM_SCM_PAS_AUTH_AND_RESET, qcom_scm_args(1, 0, 0, 0), kPasAdsp, 0, 0))) {
++        fail(StStarted, -3); shutdownDsp(true, false); vote(0, 0); release(dtb); release(adsp); return false;
++    }
++    stage(StStarted);
++    const bool ready = waitUntil(5000, [] {return (gSlave & (kReady | kFatal)) != 0;});
++    uint64_t ns = 0;
++    absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
++    native_adsp_stats[8] = (int32_t)(ns / 1000000);
++    release(dtb);
++    release(adsp);  // the metadata may go once the images are authenticated
++    if (!ready || (gSlave & kFatal)) {
++        readCrashReason();
++        fail(StReady, ready ? -5 : -60);
++        shutdownDsp(true, true);
++        if (!gHandedOver) vote(0, 0);
++        return false;
++    }
++    stage(StReady);
++    return true;
++}
++
++bool startGlink() {
++    int rc = allocItem(kItemGlinkDesc, 32);
++    if (!rc) rc = allocItem(kItemGlinkTx, kGlinkFifo);
++    uint32_t size = 0;
++    volatile uint8_t *desc = item(kItemGlinkDesc, nullptr), *txf = item(kItemGlinkTx, &size);
++    if (rc || !desc || !txf) {fail(StGlink, rc ? rc : -2); return false;}
++    volatile uint32_t *d = reinterpret_cast<volatile uint32_t *>(desc);
++    // Descriptor words: our FIFO's tail and head, then the DSP's FIFO's tail and head.
++    const QcomGlinkFifo tx = {&d[1], &d[0], txf, size}, rx = {&d[3], &d[2], nullptr, 0};
++    qcom_glink_init(&gGlink, tx, rx, kickGlink, nullptr);
++    gGlinkStarted = true;
++    applyClients();
++    serviceGlink();
++    return true;
++}
++
++void adspThread(void *argument, wait_result_t) {
++    thread_set_thread_name(current_thread(), "adsp");
++    const unsigned mode = (unsigned)(uintptr_t)argument;
++    if (!mapWindow(gSmemW, kSmem, kSmemSize) || !mapWindow(gMutex, kMutex, 0x1000) || !mapWindow(gIpcc, kIpcc, 0x1000) ||
++        !mapWindow(gAoss, kAoss, 0x1000) || !mapWindow(gRsc, kRscDrv, 0x10000)) {
++        fail(StMapped, -12);
++        return;
++    }
++    gSmem = {gSmemW.va, (uint32_t)kSmemSize};
++    gLayout = qcom_rsc_layout(rd(gRsc, 0));
++    stage(StMapped);
++    survey();
++    stage(StSurveyed);
++    if (mode < 2 || !start()) return;
++    if (mode < 3 || !startGlink()) return;
++    // From here on the thread only answers doorbells and client sends; with nothing pending it sleeps without a deadline, except while
++    // a send waits for an intent or FIFO room (then it looks again every second).
++    for (;;) {
++        bool pending = false;
++        for (unsigned i = 0; i < gClientCount; ++i) pending |= gClients[i].count != 0;
++        service(waitEvents(pending ? 1000 : 3600u * 1000u) | (pending ? kEvSend : 0));
++    }
++}
++}  // namespace
++
++extern "C" HoujiAdspChannel *houji_adsp_channel(const char *name, uint32_t intent_size, uint32_t intent_count, int initiator,
++                                                const HoujiAdspClient *client, void *context) {
++    if (!gClientLock || !name || !client || !intent_size || !intent_count || intent_count > QCOM_GLINK_MAX_LOCAL_INTENTS) return nullptr;
++    uint8_t *storage = static_cast<uint8_t *>(IOMallocData((vm_size_t)intent_size * intent_count));
++    Message *queue = static_cast<Message *>(IOMallocData(sizeof(Message) * kQueue));
++    IOLockLock(gClientLock);
++    HoujiAdspChannel *c = gClientCount < kClients && storage && queue ? &gClients[gClientCount] : nullptr;
++    if (c) {
++        bzero(c, sizeof *c);
++        strlcpy(c->name, name, sizeof c->name);
++        c->intent_size = intent_size; c->intent_count = intent_count; c->initiator = initiator;
++        c->client = *client; c->context = context; c->storage = storage; c->queue = queue;
++        __atomic_store_n(&gClientCount, gClientCount + 1, __ATOMIC_RELEASE);
++    }
++    IOLockUnlock(gClientLock);
++    if (!c) {
++        if (storage) IOFreeData(storage, (vm_size_t)intent_size * intent_count);
++        if (queue) IOFreeData(queue, sizeof(Message) * kQueue);
++        return nullptr;
++    }
++    wake(kEvSend);
++    return c;
++}
++
++extern "C" int houji_adsp_send(HoujiAdspChannel *c, const void *data, uint32_t length) {
++    if (!c || !data || !length) return -2;
++    if (length > HOUJI_ADSP_MAX_MESSAGE) return -1;
++    IOLockLock(gClientLock);
++    if (c->count == kQueue) {IOLockUnlock(gClientLock); return -1;}
++    Message &m = c->queue[(c->head + c->count) % kQueue];
++    memcpy(m.data, data, length);
++    m.length = length;
++    c->count++;
++    IOLockUnlock(gClientLock);
++    wake(kEvSend);
++    return 0;
++}
++
++extern "C" void houji_adsp_probe(unsigned mode) {
++    if (mode < 1 || mode > 5 || native_adsp_stats[0]) return;
++    gClientLock = IOLockAlloc();
++    thread_t thread = nullptr;
++    if (!gClientLock || kernel_thread_start(adspThread, (void *)(uintptr_t)mode, &thread) != KERN_SUCCESS) {fail(StMapped, -7); return;}
++    thread_deallocate(thread);
++}
+diff --git a/package/HoujiBattery.cpp b/package/HoujiBattery.cpp
+new file mode 100644
+index 0000000..77b3257
+--- /dev/null
++++ b/package/HoujiBattery.cpp
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++// PMIC GLINK survey at battery=3, read-only messages at 4, IOPMPowerSource publication at 5.
++#include <IOKit/IOLib.h>
++#include <IOKit/IOWorkLoop.h>
++#include <IOKit/IOTimerEventSource.h>
++#include <IOKit/IOInterruptEventSource.h>
++#include <IOKit/IOPlatformExpert.h>
++#include <IOKit/pwr_mgt/IOPM.h>
++#include <IOKit/pwr_mgt/IOPMPowerSource.h>
++#include <libkern/c++/OSBoolean.h>
++#include <libkern/c++/OSDictionary.h>
++#include <libkern/c++/OSNumber.h>
++#include <libkern/c++/OSSymbol.h>
++extern "C" {
++#include "HoujiAdsp.h"
++#include "HoujiBattmgr.h"
++}
++
++extern "C" {volatile int32_t native_houji_battery_stats[16];}
++namespace {constexpr uint32_t kRequestMs=2000,kRefreshMs=60000,kRing=16,kMessage=64;}
++
++class HoujiBattery : public IOPMPowerSource {
++    OSDeclareDefaultStructors(HoujiBattery)
++    IOWorkLoop *loop=nullptr; IOTimerEventSource *request=nullptr,*refresh=nullptr; IOInterruptEventSource *inbox=nullptr;
++    IOSimpleLock *ringLock=nullptr; struct {uint32_t length;uint8_t data[kMessage];} ring[kRing]; uint32_t ringHead=0,ringCount=0;
++    volatile uint32_t channelUp=0,channelChanged=0; bool wasUp=false,published=false; unsigned mode=0;
++    HoujiBattmgr bm; HoujiAdspChannel *channel=nullptr;
++
++    static void dspState(void *context,int up){auto *s=static_cast<HoujiBattery*>(context);__atomic_store_n(&s->channelUp,up?1u:0u,__ATOMIC_RELEASE);__atomic_store_n(&s->channelChanged,1u,__ATOMIC_RELEASE);s->inbox->interruptOccurred(nullptr,nullptr,0);}
++    static void dspReceive(void *context,const uint8_t *data,uint32_t length){auto *s=static_cast<HoujiBattery*>(context);IOSimpleLockLock(s->ringLock);if(s->ringCount<kRing&&length<=kMessage){auto &slot=s->ring[(s->ringHead+s->ringCount)%kRing];memcpy(slot.data,data,length);slot.length=length;s->ringCount++;}else native_houji_battery_stats[14]++;IOSimpleLockUnlock(s->ringLock);s->inbox->interruptOccurred(nullptr,nullptr,0);}
++    void pump(){if(mode<4||!wasUp)return;uint8_t out[HOUJI_BATTMGR_REQUEST_BYTES];uint32_t n=houji_battmgr_next(&bm,out);if(!n)return;if(houji_adsp_send(channel,out,n))native_houji_battery_stats[15]++;request->setTimeoutMS(kRequestMs);}
++    void number(const char *key,int value){const OSSymbol *k=OSSymbol::withCString(key);OSNumber *n=OSNumber::withNumber((unsigned long long)value,32);if(k&&n)setPSProperty(k,n);OSSafeReleaseNULL(n);OSSafeReleaseNULL(k);}
++    void flag(const char *key,bool value){const OSSymbol *k=OSSymbol::withCString(key);if(k)setPSProperty(k,value?kOSBooleanTrue:kOSBooleanFalse);OSSafeReleaseNULL(k);}
++    void publish(){HoujiBatterySnapshot s;houji_battmgr_snapshot(&bm,&s);native_houji_battery_stats[1]=s.percent;native_houji_battery_stats[2]=s.voltage_mv;native_houji_battery_stats[4]=s.temperature;native_houji_battery_stats[5]=s.present|s.external<<1|s.charging<<2|s.full<<3|bm.enabled<<4;if(mode<5||!s.charge_known)return;
++        setBatteryInstalled(s.present);setExternalConnected(s.external);setExternalChargeCapable(s.external);setIsCharging(s.charging);setAtCriticalLevel(s.critical);setCurrentCapacity((unsigned)s.percent);setMaxCapacity(100);setVoltage((unsigned)(s.voltage_mv>0?s.voltage_mv:0));setTimeRemaining(0xffff);flag("FullyCharged",s.full);if(s.temperature_valid)number("Temperature",s.temperature);if(s.full_mah>0){number("AppleRawMaxCapacity",s.full_mah);number("NominalChargeCapacity",s.full_mah);}if(s.design_mah>0)number("DesignCapacity",s.design_mah);if(s.cycles>0)setCycleCount((unsigned)s.cycles);
++        OSDictionary *a=OSDictionary::withCapacity(4);if(a){OSNumber *family=OSNumber::withNumber(s.adapter_family,32);if(family){a->setObject(kIOPMPSAdapterDetailsFamilyKey,family);family->release();}const OSSymbol *key=OSSymbol::withCString(kIOPMPSAdapterDetailsKey);if(key)setPSProperty(key,a);OSSafeReleaseNULL(key);a->release();}
++        if(!published){published=true;registerService();native_houji_battery_stats[0]=5;}updateStatus();}
++    void handle(int result){if(result==HoujiBmCycleDone)publish();pump();native_houji_battery_stats[6]=bm.cycles_done;native_houji_battery_stats[7]=bm.responses;native_houji_battery_stats[8]=bm.timeouts|bm.errors<<16;native_houji_battery_stats[9]=bm.notifications;}
++    static void inboxAction(OSObject *owner,IOInterruptEventSource*,int){auto *s=OSDynamicCast(HoujiBattery,owner);if(!s)return;if(__atomic_exchange_n(&s->channelChanged,0u,__ATOMIC_ACQ_REL)){bool up=__atomic_load_n(&s->channelUp,__ATOMIC_ACQUIRE)!=0;if(up&&!s->wasUp){s->wasUp=true;native_houji_battery_stats[0]=3;if(s->mode>=4){uint8_t enable[HOUJI_BATTMGR_ENABLE_BYTES];houji_adsp_send(s->channel,enable,houji_battmgr_enable_request(enable));houji_battmgr_refresh(&s->bm);s->pump();s->refresh->setTimeoutMS(kRefreshMs);}}else if(!up&&s->wasUp){s->wasUp=false;s->request->cancelTimeout();houji_battmgr_init(&s->bm);}}
++        for(;;){uint8_t data[kMessage];uint32_t length=0;IOSimpleLockLock(s->ringLock);if(s->ringCount){auto &slot=s->ring[s->ringHead];length=slot.length;memcpy(data,slot.data,length);s->ringHead=(s->ringHead+1)%kRing;s->ringCount--;}IOSimpleLockUnlock(s->ringLock);if(!length)break;int result=houji_battmgr_receive(&s->bm,data,length);if(result==HoujiBmAnswer||result==HoujiBmCycleDone)s->request->cancelTimeout();s->handle(result);}}
++    static void requestAction(OSObject *owner,IOTimerEventSource*){auto *s=OSDynamicCast(HoujiBattery,owner);if(!s||!s->wasUp)return;uint32_t before=s->bm.cycles_done;houji_battmgr_timeout(&s->bm);s->handle(s->bm.cycles_done!=before?HoujiBmCycleDone:HoujiBmAnswer);}
++    static void refreshAction(OSObject *owner,IOTimerEventSource *sender){auto *s=OSDynamicCast(HoujiBattery,owner);if(!s||!s->wasUp)return;houji_battmgr_refresh(&s->bm);s->handle(HoujiBmAnswer);sender->setTimeoutMS(kRefreshMs);}
++public:
++    bool startBattery(unsigned requested){mode=requested;houji_battmgr_init(&bm);loop=IOWorkLoop::workLoop();ringLock=IOSimpleLockAlloc();inbox=IOInterruptEventSource::interruptEventSource(this,&HoujiBattery::inboxAction);request=IOTimerEventSource::timerEventSource(this,&HoujiBattery::requestAction);refresh=IOTimerEventSource::timerEventSource(this,&HoujiBattery::refreshAction);if(!loop||!ringLock||!inbox||!request||!refresh||loop->addEventSource(inbox)!=kIOReturnSuccess||loop->addEventSource(request)!=kIOReturnSuccess||loop->addEventSource(refresh)!=kIOReturnSuccess)return false;
++        const HoujiAdspClient client={&HoujiBattery::dspState,&HoujiBattery::dspReceive};channel=houji_adsp_channel("PMIC_RTR_ADSP_APPS",1024,4,0,&client,this);if(!channel)return false;native_houji_battery_stats[0]=2;return true;}
++};
++OSDefineMetaClassAndStructors(HoujiBattery,IOPMPowerSource)
++extern "C" void houji_battery_start(unsigned mode){HoujiBattery *b=OSTypeAlloc(HoujiBattery);if(!b||!b->init()||!b->attach(IOService::getPlatform())||!b->startBattery(mode)){if(b)b->release();native_houji_battery_stats[0]=-1;return;}b->release();}
+diff --git a/package/HoujiBatteryProbe.cpp b/package/HoujiBatteryProbe.cpp
+new file mode 100644
+index 0000000..9a05d6d
+--- /dev/null
++++ b/package/HoujiBatteryProbe.cpp
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++// One explicit cumulative gate: 1 survey, 2 PAS boot, 3 GLINK channel, 4 reads, 5 IOPMPowerSource.
++#include <IOKit/IOService.h>
++#include <libkern/OSKextLib.h>
++#include <mach/kmod.h>
++#include <pexpert/pexpert.h>
++extern kmod_info_t g_kernel_kmod_info;
++extern "C" void native_houji_battery_static_init(void) __asm__("__GLOBAL__sub_I_HoujiBattery.cpp");
++extern "C" void houji_adsp_probe(unsigned mode);
++extern "C" void houji_battery_start(unsigned mode);
++extern "C" {volatile int32_t native_houji_battery_stats[16];}
++
++extern "C" void houji_battery_probe(void)
++{
++    unsigned mode=0;
++    if(!PE_parse_boot_argn("battery",&mode,sizeof mode)||mode<1||mode>5)return;
++    houji_adsp_probe(mode);
++    if(mode<3||native_houji_battery_stats[0])return;
++    void *handle=OSMetaClass::preModLoad(g_kernel_kmod_info.name);
++    if(!handle){native_houji_battery_stats[0]=-10;return;}
++    native_houji_battery_static_init();
++    if(OSMetaClass::postModLoad(handle)){native_houji_battery_stats[0]=-11;return;}
++    houji_battery_start(mode);
++}
+diff --git a/package/HoujiBattmgr.c b/package/HoujiBattmgr.c
+new file mode 100644
+index 0000000..24f7449
+--- /dev/null
++++ b/package/HoujiBattmgr.c
+@@ -0,0 +1,58 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++// Read-only subset used by battery=4/5. No SET opcode is emitted.
++#include "HoujiBattmgr.h"
++
++static const struct {uint8_t opcode, property;} kFields[HoujiBmFields] = {
++    [HoujiBmStatus] = {HOUJI_BATTMGR_OP_BATTERY_GET, 0},
++    [HoujiBmPresent] = {HOUJI_BATTMGR_OP_BATTERY_GET, 2},
++    [HoujiBmCapacity] = {HOUJI_BATTMGR_OP_BATTERY_GET, 4},
++    [HoujiBmVoltage] = {HOUJI_BATTMGR_OP_BATTERY_GET, 7},
++    [HoujiBmTemperature] = {HOUJI_BATTMGR_OP_BATTERY_GET, 13},
++    [HoujiBmUsbOnline] = {HOUJI_BATTMGR_OP_USB_GET, 0},
++    [HoujiBmUsbType] = {HOUJI_BATTMGR_OP_USB_GET, 6},
++    [HoujiBmUsbVoltage] = {HOUJI_BATTMGR_OP_USB_GET, 1},
++    [HoujiBmUsbCurrent] = {HOUJI_BATTMGR_OP_USB_GET, 3},
++    [HoujiBmFull] = {HOUJI_BATTMGR_OP_BATTERY_GET, 18},
++    [HoujiBmDesign] = {HOUJI_BATTMGR_OP_BATTERY_GET, 17},
++    [HoujiBmCycles] = {HOUJI_BATTMGR_OP_BATTERY_GET, 16},
++};
++#define NO_CYCLE 0xffu
++static void put32(uint8_t *p, uint32_t v) {p[0]=v; p[1]=v>>8; p[2]=v>>16; p[3]=v>>24;}
++static uint32_t get32(const uint8_t *p) {return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
++static void header(uint8_t *p, uint32_t op) {put32(p,HOUJI_BATTMGR_OWNER);put32(p+4,HOUJI_BATTMGR_TYPE_REQUEST);put32(p+8,op);}
++
++void houji_battmgr_init(HoujiBattmgr *b) {for(unsigned i=0;i<sizeof *b;++i)((uint8_t*)b)[i]=0;b->cursor=NO_CYCLE;}
++uint32_t houji_battmgr_enable_request(uint8_t out[HOUJI_BATTMGR_ENABLE_BYTES]) {
++    header(out,HOUJI_BATTMGR_OP_REQUEST_NOTIFICATION);put32(out+12,0);put32(out+16,0);put32(out+20,1);put32(out+24,100);return HOUJI_BATTMGR_ENABLE_BYTES;
++}
++void houji_battmgr_refresh(HoujiBattmgr *b) {if(b->cursor!=NO_CYCLE){b->refresh_wanted=1;return;}b->cursor=0;b->in_flight=0;}
++uint32_t houji_battmgr_next(HoujiBattmgr *b,uint8_t out[HOUJI_BATTMGR_REQUEST_BYTES]) {
++    if(b->in_flight||b->cursor==NO_CYCLE||b->cursor>=HoujiBmFields)return 0;
++    header(out,kFields[b->cursor].opcode);put32(out+12,0);put32(out+16,kFields[b->cursor].property);put32(out+20,0);b->in_flight=1;return HOUJI_BATTMGR_REQUEST_BYTES;
++}
++static int advance(HoujiBattmgr *b) {b->in_flight=0;if(++b->cursor<HoujiBmFields)return HoujiBmAnswer;b->cursor=NO_CYCLE;b->cycles_done++;if(b->refresh_wanted){b->refresh_wanted=0;houji_battmgr_refresh(b);}return HoujiBmCycleDone;}
++void houji_battmgr_timeout(HoujiBattmgr *b) {if(b->in_flight){b->timeouts++;b->valid&=~(1u<<b->cursor);advance(b);}}
++int houji_battmgr_receive(HoujiBattmgr *b,const uint8_t *data,uint32_t length) {
++    if(length<12||get32(data)!=HOUJI_BATTMGR_OWNER){b->ignored++;return HoujiBmIgnored;}
++    const uint32_t type=get32(data+4),op=get32(data+8);
++    if(op==HOUJI_BATTMGR_OP_NOTIFICATION){b->notifications++;houji_battmgr_refresh(b);return HoujiBmNotified;}
++    if(type!=HOUJI_BATTMGR_TYPE_REQUEST){b->ignored++;return HoujiBmIgnored;}
++    if(op==HOUJI_BATTMGR_OP_REQUEST_NOTIFICATION){b->enabled=1;return HoujiBmEnabled;}
++    if(b->cursor==NO_CYCLE||b->cursor>=HoujiBmFields||!b->in_flight||length<24||op!=kFields[b->cursor].opcode||get32(data+12)!=kFields[b->cursor].property){b->ignored++;return HoujiBmIgnored;}
++    b->responses++;if(get32(data+20)){b->errors++;b->valid&=~(1u<<b->cursor);}else{b->value[b->cursor]=(int32_t)get32(data+16);b->valid|=1u<<b->cursor;}return advance(b);
++}
++static uint32_t family(int type){switch(type){case 1:return 0xe0004000u;case 2:return 0xe0004004u;case 3:return 0xe0004005u;case 5:return 0xe0004009u;case 6:case 7:case 8:return 0xe000400au;default:return 0xe0004007u;}}
++void houji_battmgr_snapshot(const HoujiBattmgr *b,HoujiBatterySnapshot *s) {
++#define HAS(f) ((b->valid>>(f))&1u)
++#define V(f) (b->value[(f)])
++    for(unsigned i=0;i<sizeof *s;++i)((uint8_t*)s)[i]=0;
++    const int status=HAS(HoujiBmStatus)?V(HoujiBmStatus):0;
++    s->present=HAS(HoujiBmPresent)?V(HoujiBmPresent)!=0:HAS(HoujiBmCapacity);s->external=HAS(HoujiBmUsbOnline)&&V(HoujiBmUsbOnline)!=0;
++    s->percent=HAS(HoujiBmCapacity)?(V(HoujiBmCapacity)+50)/100:0;if(s->percent<0)s->percent=0;if(s->percent>100)s->percent=100;s->charge_known=HAS(HoujiBmCapacity);
++    s->charging=s->external&&status==1;s->full=s->external&&(status==4||s->percent==100);s->critical=s->present&&!s->external&&s->percent<=2;
++    s->voltage_mv=HAS(HoujiBmVoltage)?V(HoujiBmVoltage)/1000:0;s->temperature_valid=HAS(HoujiBmTemperature)&&V(HoujiBmTemperature)>=-4000&&V(HoujiBmTemperature)<=9000;s->temperature=s->temperature_valid?V(HoujiBmTemperature):0;
++    s->full_mah=HAS(HoujiBmFull)?V(HoujiBmFull)/1000:0;s->design_mah=HAS(HoujiBmDesign)?V(HoujiBmDesign)/1000:0;s->cycles=HAS(HoujiBmCycles)?V(HoujiBmCycles):0;
++    if(s->external){s->adapter_family=family(HAS(HoujiBmUsbType)?V(HoujiBmUsbType):0);s->adapter_mv=HAS(HoujiBmUsbVoltage)?V(HoujiBmUsbVoltage)/1000:0;s->adapter_ma=HAS(HoujiBmUsbCurrent)?V(HoujiBmUsbCurrent)/1000:0;if(s->adapter_mv<0)s->adapter_mv=0;if(s->adapter_ma<0)s->adapter_ma=-s->adapter_ma;s->adapter_watts=(int)(((int64_t)s->adapter_mv*s->adapter_ma+500000)/1000000);}
++#undef HAS
++#undef V
++}
+diff --git a/package/HoujiBattmgr.h b/package/HoujiBattmgr.h
+new file mode 100644
+index 0000000..464a89e
+--- /dev/null
++++ b/package/HoujiBattmgr.h
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#ifndef HOUJI_BATTMGR_H
++#define HOUJI_BATTMGR_H
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define HOUJI_BATTMGR_OWNER 32778u
++#define HOUJI_BATTMGR_TYPE_REQUEST 1u
++#define HOUJI_BATTMGR_OP_REQUEST_NOTIFICATION 0x04u
++#define HOUJI_BATTMGR_OP_NOTIFICATION 0x07u
++#define HOUJI_BATTMGR_OP_BATTERY_GET 0x30u
++#define HOUJI_BATTMGR_OP_USB_GET 0x32u
++#define HOUJI_BATTMGR_REQUEST_BYTES 24u
++#define HOUJI_BATTMGR_ENABLE_BYTES 28u
++
++enum {
++    HoujiBmStatus, HoujiBmPresent, HoujiBmCapacity, HoujiBmVoltage, HoujiBmTemperature, HoujiBmUsbOnline,
++    HoujiBmUsbType, HoujiBmUsbVoltage, HoujiBmUsbCurrent, HoujiBmFull, HoujiBmDesign, HoujiBmCycles, HoujiBmFields
++};
++
++typedef struct {
++    int32_t value[HoujiBmFields];
++    uint32_t valid;
++    uint8_t cursor, in_flight, enabled;
++    uint32_t cycles_done, responses, notifications, errors, timeouts, ignored, refresh_wanted;
++} HoujiBattmgr;
++
++typedef struct {
++    int present, external, charging, full, critical, percent, charge_known;
++    int voltage_mv, temperature, temperature_valid, full_mah, design_mah, cycles;
++    uint32_t adapter_family;
++    int adapter_mv, adapter_ma, adapter_watts;
++} HoujiBatterySnapshot;
++
++enum {HoujiBmIgnored, HoujiBmAnswer, HoujiBmCycleDone, HoujiBmNotified, HoujiBmEnabled};
++void houji_battmgr_init(HoujiBattmgr *b);
++uint32_t houji_battmgr_enable_request(uint8_t out[HOUJI_BATTMGR_ENABLE_BYTES]);
++void houji_battmgr_refresh(HoujiBattmgr *b);
++uint32_t houji_battmgr_next(HoujiBattmgr *b, uint8_t out[HOUJI_BATTMGR_REQUEST_BYTES]);
++void houji_battmgr_timeout(HoujiBattmgr *b);
++int houji_battmgr_receive(HoujiBattmgr *b, const uint8_t *data, uint32_t length);
++void houji_battmgr_snapshot(const HoujiBattmgr *b, HoujiBatterySnapshot *s);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/HoujiQcomGlink.c b/package/HoujiQcomGlink.c
+new file mode 100644
+index 0000000..10006a5
+--- /dev/null
++++ b/package/HoujiQcomGlink.c
+@@ -0,0 +1,453 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "HoujiQcomGlink.h"
++
++/* The sender keeps 8 bytes so a full FIFO never looks empty, and 16 more for a READ_NOTIF when it runs out of room. */
++#define FULL_RESERVE 8u
++#define BLOCKED_RESERVE 16u
++#define GLINK_VERSION_1 1u
++
++static void barrier(void)
++{
++#if defined(__aarch64__) && defined(KERNEL)
++    __asm__ volatile("dmb osh" ::: "memory");
++#endif
++}
++static uint32_t align8(uint32_t v) {return (v + 7u) & ~7u;}
++static uint32_t le32(const uint8_t *p) {return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;}
++static void put32(uint8_t *p, uint32_t v) {p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);}
++static size_t name_length(const char *s) {size_t n = 0; while (n < QCOM_GLINK_NAME - 1 && s[n]) ++n; return n;}
++
++uint32_t qcom_glink_rx_avail(const QcomGlinkFifo *f)
++{
++    if (!f->data || !f->length) return 0;
++    const uint32_t head = *f->head, tail = *f->tail;
++    if (head >= f->length || tail >= f->length) return 0;
++    return head >= tail ? head - tail : f->length - tail + head;
++}
++
++uint32_t qcom_glink_tx_avail(const QcomGlinkFifo *f)
++{
++    const uint32_t head = *f->head, tail = *f->tail;
++    if (head >= f->length || tail >= f->length) return 0;
++    const uint32_t avail = tail <= head ? f->length - head + tail : tail - head;
++    return avail < FULL_RESERVE + BLOCKED_RESERVE ? 0 : avail - FULL_RESERVE - BLOCKED_RESERVE;
++}
++
++static void rx_peek(const QcomGlinkFifo *f, uint32_t offset, uint8_t *to, uint32_t count)
++{
++    uint32_t at = *f->tail + offset;
++    if (at >= f->length) at -= f->length;
++    for (uint32_t i = 0; i < count; ++i) {
++        to[i] = f->data[at];
++        if (++at == f->length) at = 0;
++    }
++}
++
++static void rx_advance(QcomGlinkFifo *f, uint32_t count)
++{
++    uint32_t tail = *f->tail + count;
++    if (tail >= f->length) tail -= f->length;
++    barrier();
++    *f->tail = tail;
++}
++
++/* Writes header and payload as one message (padded to 8 bytes); the caller checked the room. */
++static void tx_write(QcomGlink *g, const uint8_t *header, uint32_t header_length, const uint8_t *data, uint32_t data_length)
++{
++    QcomGlinkFifo *f = &g->tx;
++    uint32_t head = *f->head;
++    for (uint32_t i = 0; i < header_length; ++i) {f->data[head] = header[i]; if (++head == f->length) head = 0;}
++    for (uint32_t i = 0; i < data_length; ++i) {f->data[head] = data[i]; if (++head == f->length) head = 0;}
++    head = align8(head);
++    if (head >= f->length) head -= f->length;
++    barrier();
++    *f->head = head;
++    g->tx_messages++;
++    g->kick_pending = 1;
++}
++
++static int tx(QcomGlink *g, const uint8_t *header, uint32_t header_length, const uint8_t *data, uint32_t data_length)
++{
++    if (align8(header_length + data_length) > qcom_glink_tx_avail(&g->tx)) return QcomGlinkAgain;
++    tx_write(g, header, header_length, data, data_length);
++    return QcomGlinkOk;
++}
++
++static int command(QcomGlink *g, uint16_t cmd, uint16_t param1, uint32_t param2)
++{
++    uint8_t m[8];
++    m[0] = (uint8_t)cmd; m[1] = (uint8_t)(cmd >> 8); m[2] = (uint8_t)param1; m[3] = (uint8_t)(param1 >> 8);
++    put32(m + 4, param2);
++    return tx(g, m, 8, 0, 0);
++}
++
++void qcom_glink_init(QcomGlink *g, QcomGlinkFifo txf, QcomGlinkFifo rxf, void (*kick)(void *), void *kick_context)
++{
++    for (size_t i = 0; i < sizeof *g; ++i) ((uint8_t *)g)[i] = 0;
++    g->tx = txf;
++    g->rx = rxf;
++    g->kick = kick;
++    g->kick_context = kick_context;
++    g->features = QCOM_GLINK_FEATURE_INTENT_REUSE;
++    g->next_lcid = 1;
++    *g->tx.head = 0;
++    *g->rx.tail = 0;
++    barrier();
++}
++
++void qcom_glink_set_rx(QcomGlink *g, volatile uint8_t *data, uint32_t length)
++{
++    g->rx.data = data;
++    g->rx.length = length;
++}
++
++QcomGlinkChannel *qcom_glink_channel(QcomGlink *g, const char *name, uint32_t intent_size, uint32_t intent_count, uint8_t *storage,
++                                     const QcomGlinkClient *client, void *context, int open_now)
++{
++    if (!name || !client || intent_count > QCOM_GLINK_MAX_LOCAL_INTENTS || (intent_count && (!storage || !intent_size))) return 0;
++    for (unsigned i = 0; i < QCOM_GLINK_MAX_CHANNELS; ++i) {
++        QcomGlinkChannel *c = &g->channel[i];
++        if (c->used) continue;
++        for (size_t b = 0; b < sizeof *c; ++b) ((uint8_t *)c)[b] = 0;
++        const size_t n = name_length(name);
++        for (size_t b = 0; b < n; ++b) c->name[b] = name[b];
++        c->used = 1;
++        c->lcid = g->next_lcid++;
++        c->client = *client;
++        c->context = context;
++        c->storage = storage;
++        c->intent_size = intent_size;
++        c->intent_count = intent_count;
++        c->initiator = open_now != 0;
++        c->open_sent = open_now ? 0 : 2;  /* 2: wait for the remote's OPEN before sending ours */
++        return c;
++    }
++    return 0;
++}
++
++static QcomGlinkChannel *by_lcid(QcomGlink *g, uint32_t lcid)
++{
++    for (unsigned i = 0; i < QCOM_GLINK_MAX_CHANNELS; ++i)
++        if (g->channel[i].used && g->channel[i].lcid == lcid) return &g->channel[i];
++    return 0;
++}
++static QcomGlinkChannel *by_rcid(QcomGlink *g, uint32_t rcid)
++{
++    for (unsigned i = 0; i < QCOM_GLINK_MAX_CHANNELS; ++i)
++        if (g->channel[i].used && g->channel[i].remote_open && g->channel[i].rcid == rcid) return &g->channel[i];
++    return 0;
++}
++
++static int send_open(QcomGlink *g, QcomGlinkChannel *c)
++{
++    uint8_t m[8];
++    const uint32_t n = (uint32_t)name_length(c->name) + 1;
++    m[0] = QCOM_GLINK_OPEN; m[1] = 0; m[2] = (uint8_t)c->lcid; m[3] = (uint8_t)(c->lcid >> 8);
++    put32(m + 4, n);
++    if (align8(8 + n) > qcom_glink_tx_avail(&g->tx)) return QcomGlinkAgain;
++    tx_write(g, m, 8, (const uint8_t *)c->name, n);
++    c->open_sent = 1;
++    return QcomGlinkOk;
++}
++
++static int advertise(QcomGlink *g, QcomGlinkChannel *c, unsigned index)
++{
++    uint8_t m[16];
++    m[0] = QCOM_GLINK_INTENT; m[1] = 0; m[2] = (uint8_t)c->lcid; m[3] = (uint8_t)(c->lcid >> 8);
++    put32(m + 4, 1);
++    put32(m + 8, c->intent_size);
++    put32(m + 12, index + 1);
++    const int rc = tx(g, m, 16, 0, 0);
++    if (!rc) {c->local[index].advertised = 1; c->local[index].fill = 0;}
++    return rc;
++}
++
++static void reset_channel(QcomGlinkChannel *c)
++{
++    c->open_acked = c->remote_open = c->up = c->intent_asked = 0;
++    c->open_sent = c->initiator ? 0 : 2;
++    for (unsigned i = 0; i < QCOM_GLINK_MAX_LOCAL_INTENTS; ++i) c->local[i].advertised = c->local[i].busy = 0, c->local[i].fill = 0;
++    for (unsigned i = 0; i < QCOM_GLINK_MAX_REMOTE_INTENTS; ++i) c->remote[i].valid = 0;
++}
++
++/* Channel bring-up and our intents: whatever is due and fits in the FIFO now. */
++static void progress(QcomGlink *g)
++{
++    if (!g->version_sent) {
++        if (command(g, QCOM_GLINK_VERSION, GLINK_VERSION_1, g->features)) return;
++        g->version_sent = 1;
++    }
++    if (!g->version_agreed) return;
++    for (unsigned i = 0; i < QCOM_GLINK_MAX_CHANNELS; ++i) {
++        QcomGlinkChannel *c = &g->channel[i];
++        if (!c->used) continue;
++        if (c->open_sent == 0 || (c->open_sent == 2 && c->remote_open)) {
++            if (send_open(g, c)) return;
++        }
++        if (c->open_sent == 1 && c->open_acked && c->remote_open && !c->up) {
++            for (unsigned k = 0; k < c->intent_count; ++k)
++                if (!c->local[k].advertised && advertise(g, c, k)) return;
++            c->up = 1;
++            if (c->client.state) c->client.state(c->context, c, 1);
++        }
++        if (c->up)
++            for (unsigned k = 0; k < c->intent_count; ++k)
++                if (!c->local[k].advertised && !c->local[k].busy && advertise(g, c, k)) return;
++    }
++}
++
++static int handle_data(QcomGlink *g, uint16_t cmd, uint32_t rcid, uint32_t liid, uint32_t avail)
++{
++    uint8_t h[16];
++    if (avail < 16) return 0;
++    rx_peek(&g->rx, 0, h, 16);
++    const uint32_t chunk = le32(h + 8), left = le32(h + 12);
++    if (chunk > g->rx.length || align8(16 + chunk) < chunk) return QcomGlinkCorrupt;
++    if (avail < 16 + chunk) return 0;  /* not all there yet */
++    QcomGlinkChannel *c = by_rcid(g, rcid);
++    const unsigned index = liid - 1;
++    if (!c || !liid || index >= c->intent_count || !c->local[index].advertised) {
++        g->dropped++;
++    } else {
++        uint32_t fill = cmd == QCOM_GLINK_TX_DATA ? 0 : c->local[index].fill;
++        if ((uint64_t)fill + chunk + left > c->intent_size) {
++            g->dropped++;
++            fill = 0;
++        } else {
++            rx_peek(&g->rx, 16, c->storage + (size_t)index * c->intent_size + fill, chunk);
++            fill += chunk;
++            if (!left) {
++                c->local[index].busy = 1;
++                g->rx_data++;
++                if (c->client.receive) c->client.receive(c->context, c, c->storage + (size_t)index * c->intent_size, fill);
++                c->local[index].busy = 0;
++                fill = 0;
++                /* The intent is ours again once the remote knows it is done; with reuse it stays advertised. */
++                const int reuse = (g->features & QCOM_GLINK_FEATURE_INTENT_REUSE) != 0;
++                if (command(g, reuse ? QCOM_GLINK_RX_DONE_W_REUSE : QCOM_GLINK_RX_DONE, c->lcid, liid) == QcomGlinkOk && !reuse)
++                    c->local[index].advertised = 0;
++            }
++        }
++        c->local[index].fill = fill;
++    }
++    rx_advance(&g->rx, align8(16 + chunk));
++    return 1;
++}
++
++/* One message at the FIFO tail: 1 handled, 0 incomplete (wait for more), negative on a broken stream. */
++
++/* Adds name to the list of opens nobody serves unless it is there already or does not fit. */
++static void note_unknown(QcomGlink *g, const char *name)
++{
++    char *list = g->unknown_names;
++    const unsigned cap = sizeof g->unknown_names;
++    unsigned n = 0, used = 0;
++    while (n < QCOM_GLINK_NAME && name[n]) ++n;
++    while (used < cap && list[used]) ++used;
++    for (unsigned at = 0; at < used;) {
++        unsigned end = at;
++        while (end < used && list[end] != ' ') ++end;
++        unsigned same = end - at == n;
++        for (unsigned b = 0; same && b < n; ++b) same = list[at + b] == name[b];
++        if (same) return;
++        at = end + 1;
++    }
++    if (!n || used + (used ? 1 : 0) + n + 1 > cap) return;
++    if (used) list[used++] = ' ';
++    for (unsigned b = 0; b < n; ++b) list[used++] = name[b];
++    list[used] = 0;
++}
++static int receive_one(QcomGlink *g)
++{
++    const uint32_t avail = qcom_glink_rx_avail(&g->rx);
++    uint8_t m[8];
++    if (avail < 8) return 0;
++    rx_peek(&g->rx, 0, m, 8);
++    const uint16_t cmd = (uint16_t)(m[0] | m[1] << 8), param1 = (uint16_t)(m[2] | m[3] << 8);
++    const uint32_t param2 = le32(m + 4);
++    QcomGlinkChannel *c;
++    switch (cmd) {
++    case QCOM_GLINK_VERSION:
++        if (param1 == GLINK_VERSION_1) g->features &= param2;
++        if (param1 && command(g, QCOM_GLINK_VERSION_ACK, GLINK_VERSION_1, g->features)) return 0;
++        g->version_agreed = param1 != 0;
++        break;
++    case QCOM_GLINK_VERSION_ACK:
++        if (param1 == GLINK_VERSION_1 && param2 != g->features) {
++            g->features &= param2;
++            if (command(g, QCOM_GLINK_VERSION, GLINK_VERSION_1, g->features)) return 0;
++        }
++        g->version_agreed = param1 != 0;
++        break;
++    case QCOM_GLINK_OPEN: {
++        const uint32_t n = param2 & 0xffff;
++        if (n > g->rx.length || n == 0) return QcomGlinkCorrupt;
++        if (avail < 8 + n) return 0;
++        char name[QCOM_GLINK_NAME] = {0};
++        rx_peek(&g->rx, 8, (uint8_t *)name, n < QCOM_GLINK_NAME ? n : QCOM_GLINK_NAME - 1);
++        name[QCOM_GLINK_NAME - 1] = 0;
++        c = 0;
++        for (unsigned i = 0; i < QCOM_GLINK_MAX_CHANNELS && !c; ++i) {
++            QcomGlinkChannel *k = &g->channel[i];
++            unsigned same = k->used;
++            for (unsigned b = 0; same && b < QCOM_GLINK_NAME; ++b) {
++                if (k->name[b] != name[b]) same = 0;
++                if (!name[b]) break;
++            }
++            if (same) c = k;
++        }
++        if (!c) {
++            g->unknown_opens++;
++            for (unsigned b = 0; b < QCOM_GLINK_NAME; ++b) g->last_unknown[b] = name[b];
++            note_unknown(g, name);
++        } else {
++            if (c->remote_open && c->up && c->client.state) c->client.state(c->context, c, 0);
++            if (c->remote_open) reset_channel(c);
++            if (command(g, QCOM_GLINK_OPEN_ACK, param1, 0)) return 0;
++            c->rcid = param1;
++            c->remote_open = 1;
++        }
++        rx_advance(&g->rx, align8(8 + n));
++        g->rx_messages++;
++        return 1;
++    }
++    case QCOM_GLINK_OPEN_ACK:
++        if ((c = by_lcid(g, param1)) && c->open_sent == 1) c->open_acked = 1;
++        break;
++    case QCOM_GLINK_CLOSE:
++        if (command(g, QCOM_GLINK_CLOSE_ACK, param1, 0)) return 0;
++        if ((c = by_rcid(g, param1))) {
++            const int was = c->up;
++            if (c->open_sent == 1 && command(g, QCOM_GLINK_CLOSE, c->lcid, 0)) return 0;
++            reset_channel(c);
++            if (was && c->client.state) c->client.state(c->context, c, 0);
++        }
++        break;
++    case QCOM_GLINK_CLOSE_ACK:
++        break;
++    case QCOM_GLINK_INTENT: {
++        if (param2 > (g->rx.length - 8) / 8) return QcomGlinkCorrupt;
++        const uint32_t bytes = 8 + 8 * param2;
++        if (avail < bytes) return 0;
++        c = by_rcid(g, param1);
++        for (uint32_t i = 0; i < param2; ++i) {
++            uint8_t pair[8];
++            rx_peek(&g->rx, 8 + 8 * i, pair, 8);
++            if (!c) continue;
++            unsigned slot = QCOM_GLINK_MAX_REMOTE_INTENTS;
++            for (unsigned k = 0; k < QCOM_GLINK_MAX_REMOTE_INTENTS; ++k)
++                if (!c->remote[k].valid) {slot = k; break;}
++            /* Full: a larger intent (the one a send asked for) replaces the smallest idle one, so it is never lost. */
++            if (slot == QCOM_GLINK_MAX_REMOTE_INTENTS)
++                for (unsigned k = 0; k < QCOM_GLINK_MAX_REMOTE_INTENTS; ++k)
++                    if (!c->remote[k].busy && c->remote[k].size < le32(pair) &&
++                        (slot == QCOM_GLINK_MAX_REMOTE_INTENTS || c->remote[k].size < c->remote[slot].size)) slot = k;
++            if (slot == QCOM_GLINK_MAX_REMOTE_INTENTS) {g->dropped++; continue;}
++            c->remote[slot].size = le32(pair);
++            c->remote[slot].id = le32(pair + 4);
++            c->remote[slot].valid = 1;
++            c->remote[slot].busy = 0;
++        }
++        if (c) c->intent_asked = 0;
++        rx_advance(&g->rx, align8(bytes));
++        g->rx_messages++;
++        return 1;
++    }
++    case QCOM_GLINK_RX_DONE:
++    case QCOM_GLINK_RX_DONE_W_REUSE:
++        if ((c = by_rcid(g, param1)))
++            for (unsigned k = 0; k < QCOM_GLINK_MAX_REMOTE_INTENTS; ++k)
++                if (c->remote[k].valid && c->remote[k].id == param2) {
++                    c->remote[k].busy = 0;
++                    if (cmd == QCOM_GLINK_RX_DONE) c->remote[k].valid = 0;
++                    break;
++                }
++        break;
++    case QCOM_GLINK_RX_INTENT_REQ: {
++        /* Grant it if a buffer of ours that is big enough is not advertised (all are, normally: then refuse). */
++        int granted = 0;
++        if ((c = by_rcid(g, param1)) && c->up && param2 <= c->intent_size)
++            for (unsigned k = 0; k < c->intent_count; ++k)
++                if (!c->local[k].advertised && !c->local[k].busy) {
++                    if (advertise(g, c, k)) return 0;
++                    granted = 1;
++                    break;
++                }
++        if (command(g, QCOM_GLINK_RX_INTENT_REQ_ACK, c ? c->lcid : param1, (uint32_t)granted)) return 0;
++        break;
++    }
++    case QCOM_GLINK_RX_INTENT_REQ_ACK:
++        if ((c = by_rcid(g, param1)) && !param2) c->intent_asked = 0;
++        break;
++    case QCOM_GLINK_TX_DATA:
++    case QCOM_GLINK_TX_DATA_CONT: {
++        const int rc = handle_data(g, cmd, param1, param2, avail);
++        if (rc == 1) g->rx_messages++;
++        return rc;
++    }
++    case QCOM_GLINK_READ_NOTIF:
++        g->kick_pending = 1;
++        break;
++    case QCOM_GLINK_SIGNALS:
++        break;
++    default:
++        return QcomGlinkCorrupt;
++    }
++    rx_advance(&g->rx, 8);
++    g->rx_messages++;
++    return 1;
++}
++
++int qcom_glink_poll(QcomGlink *g)
++{
++    if (g->broken) return QcomGlinkCorrupt;
++    int handled = 0;
++    g->notify_sent = 0;
++    progress(g);
++    /* Bounded: at most one FIFO's worth of minimal messages per call. */
++    for (uint32_t budget = g->rx.length / 8 + 1; g->rx.data && budget; --budget) {
++        const int rc = receive_one(g);
++        if (rc < 0) {g->broken = 1; handled = rc; break;}
++        if (!rc) break;
++        ++handled;
++    }
++    if (!g->broken) progress(g);
++    if (g->kick_pending && g->kick) {g->kick_pending = 0; g->kick(g->kick_context);}
++    return handled;
++}
++
++int qcom_glink_send(QcomGlink *g, QcomGlinkChannel *c, const void *data, uint32_t length)
++{
++    if (!g || !c || (!data && length)) return QcomGlinkArgument;
++    if (g->broken || !c->up) return QcomGlinkNotOpen;
++    if (align8(16 + length) > g->tx.length / 2) return QcomGlinkTooBig;
++    unsigned best = QCOM_GLINK_MAX_REMOTE_INTENTS;
++    for (unsigned k = 0; k < QCOM_GLINK_MAX_REMOTE_INTENTS; ++k)
++        if (c->remote[k].valid && !c->remote[k].busy && c->remote[k].size >= length &&
++            (best == QCOM_GLINK_MAX_REMOTE_INTENTS || c->remote[k].size < c->remote[best].size))
++            best = k;
++    if (best == QCOM_GLINK_MAX_REMOTE_INTENTS) {
++        if (!c->intent_asked && command(g, QCOM_GLINK_RX_INTENT_REQ, c->lcid, length) == QcomGlinkOk) c->intent_asked = 1;
++        if (g->kick_pending && g->kick) {g->kick_pending = 0; g->kick(g->kick_context);}
++        return QcomGlinkAgain;
++    }
++    uint8_t h[16];
++    h[0] = QCOM_GLINK_TX_DATA; h[1] = 0; h[2] = (uint8_t)c->lcid; h[3] = (uint8_t)(c->lcid >> 8);
++    put32(h + 4, c->remote[best].id);
++    put32(h + 8, length);
++    put32(h + 12, 0);
++    if (tx(g, h, 16, (const uint8_t *)data, length)) {
++        /* Ask the remote to ring us once it has read, so the owner retries then. */
++        const uint32_t head = *g->tx.head, tail = *g->tx.tail;
++        if (!g->notify_sent && head < g->tx.length && tail < g->tx.length) {
++            uint8_t m[8] = {QCOM_GLINK_READ_NOTIF, 0, 0, 0, 0, 0, 0, 0};
++            const uint32_t raw = tail <= head ? g->tx.length - head + tail : tail - head;
++            if (raw >= FULL_RESERVE + 8) {tx_write(g, m, 8, 0, 0); g->notify_sent = 1;}
++        }
++        if (g->kick_pending && g->kick) {g->kick_pending = 0; g->kick(g->kick_context);}
++        return QcomGlinkAgain;
++    }
++    c->remote[best].busy = 1;
++    if (g->kick) {g->kick_pending = 0; g->kick(g->kick_context);}
++    return QcomGlinkOk;
++}
+diff --git a/package/HoujiQcomGlink.h b/package/HoujiQcomGlink.h
+new file mode 100644
+index 0000000..1fb845c
+--- /dev/null
++++ b/package/HoujiQcomGlink.h
+@@ -0,0 +1,100 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* GLINK over shared memory: the native GLINK protocol (version handshake, channel open/close, receive intents, data, done) on a pair of
++ * SMEM FIFOs. Event driven and allocation free: the owner calls qcom_glink_poll whenever the remote rings the GLINK doorbell (and after
++ * sending), every call does a bounded amount of work, and nothing here waits. A send that cannot go out yet (no remote intent, no FIFO
++ * room) returns QcomGlinkAgain and the owner tries again on the next event; an intent is asked for once per pending send. */
++#ifndef QCOM_GLINK_H
++#define QCOM_GLINK_H
++#include <stddef.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define QCOM_GLINK_MAX_CHANNELS 6u
++#define QCOM_GLINK_MAX_REMOTE_INTENTS 48u   /* the audio DSP offers 24 small intents on adsp_apps before granting a larger one */
++#define QCOM_GLINK_MAX_LOCAL_INTENTS 24u
++#define QCOM_GLINK_NAME 32u
++#define QCOM_GLINK_FEATURE_INTENT_REUSE 1u
++
++enum {
++    QCOM_GLINK_VERSION = 0, QCOM_GLINK_VERSION_ACK = 1, QCOM_GLINK_OPEN = 2, QCOM_GLINK_CLOSE = 3, QCOM_GLINK_OPEN_ACK = 4,
++    QCOM_GLINK_INTENT = 5, QCOM_GLINK_RX_DONE = 6, QCOM_GLINK_RX_INTENT_REQ = 7, QCOM_GLINK_RX_INTENT_REQ_ACK = 8,
++    QCOM_GLINK_TX_DATA = 9, QCOM_GLINK_CLOSE_ACK = 11, QCOM_GLINK_TX_DATA_CONT = 12, QCOM_GLINK_READ_NOTIF = 13,
++    QCOM_GLINK_RX_DONE_W_REUSE = 14, QCOM_GLINK_SIGNALS = 15,
++};
++
++enum {
++    QcomGlinkOk = 0,
++    QcomGlinkAgain = -1,    /* not now: no intent or no FIFO room yet */
++    QcomGlinkNotOpen = -2,
++    QcomGlinkTooBig = -3,
++    QcomGlinkFull = -4,     /* no channel slot */
++    QcomGlinkCorrupt = -5,  /* the receive FIFO holds something that cannot be a message: the link is stopped */
++    QcomGlinkArgument = -6,
++};
++
++/* One direction's FIFO in SMEM: indices are byte offsets into data. */
++typedef struct {
++    volatile uint32_t *head, *tail;
++    volatile uint8_t *data;
++    uint32_t length;
++} QcomGlinkFifo;
++
++typedef struct QcomGlinkChannel QcomGlinkChannel;
++typedef struct {
++    void (*state)(void *context, QcomGlinkChannel *channel, int up);
++    /* A complete message; data stays valid for the duration of the call only. */
++    void (*receive)(void *context, QcomGlinkChannel *channel, const uint8_t *data, uint32_t length);
++} QcomGlinkClient;
++
++struct QcomGlinkChannel {
++    char name[QCOM_GLINK_NAME];
++    uint16_t lcid, rcid;
++    uint8_t used, initiator, open_sent, open_acked, remote_open, up, intent_asked;
++    QcomGlinkClient client;
++    void *context;
++    /* Our receive intents: count buffers of size bytes in storage (count * size). */
++    uint8_t *storage;
++    uint32_t intent_size, intent_count;
++    struct {uint32_t fill; uint8_t advertised, busy;} local[QCOM_GLINK_MAX_LOCAL_INTENTS];
++    /* The remote's intents we may send into. */
++    struct {uint32_t id, size; uint8_t valid, busy;} remote[QCOM_GLINK_MAX_REMOTE_INTENTS];
++};
++
++typedef struct {
++    QcomGlinkFifo tx, rx;
++    void (*kick)(void *context);
++    void *kick_context;
++    uint32_t features;
++    uint8_t version_sent, version_agreed, broken, kick_pending, notify_sent;
++    uint16_t next_lcid;
++    QcomGlinkChannel channel[QCOM_GLINK_MAX_CHANNELS];
++    /* Counters for the log. */
++    uint32_t rx_messages, tx_messages, rx_data, unknown_opens, dropped;
++    char last_unknown[QCOM_GLINK_NAME];
++    char unknown_names[96];  /* the distinct names of those opens, space separated, as many as fit */
++} QcomGlink;
++
++/* Sets up the link on its FIFOs (rx may have no data yet: the remote makes its FIFO later) and resets the indices we own. */
++void qcom_glink_init(QcomGlink *g, QcomGlinkFifo tx, QcomGlinkFifo rx, void (*kick)(void *), void *kick_context);
++/* The remote's FIFO once it exists. */
++void qcom_glink_set_rx(QcomGlink *g, volatile uint8_t *data, uint32_t length);
++/* Registers a channel by name with intent_count receive buffers of intent_size bytes in storage. open_now: we send OPEN ourselves;
++ * otherwise we answer when the remote opens it. */
++QcomGlinkChannel *qcom_glink_channel(QcomGlink *g, const char *name, uint32_t intent_size, uint32_t intent_count, uint8_t *storage,
++                                     const QcomGlinkClient *client, void *context, int open_now);
++/* Sends VERSION (once) and any channel OPEN that is due, then handles every complete message in the receive FIFO. Returns the number of
++ * messages handled or QcomGlinkCorrupt. Rings the remote when anything was written. */
++int qcom_glink_poll(QcomGlink *g);
++/* Queues one message on an open channel (single chunk, up to the remote intent size). */
++int qcom_glink_send(QcomGlink *g, QcomGlinkChannel *channel, const void *data, uint32_t length);
++
++/* FIFO primitives, exposed for the tests. */
++uint32_t qcom_glink_rx_avail(const QcomGlinkFifo *f);
++uint32_t qcom_glink_tx_avail(const QcomGlinkFifo *f);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/HoujiQcomMdt.c b/package/HoujiQcomMdt.c
+new file mode 100644
+index 0000000..db84f76
+--- /dev/null
++++ b/package/HoujiQcomMdt.c
+@@ -0,0 +1,157 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "HoujiQcomMdt.h"
++
++#define PT_LOAD_ 1u
++
++static uint16_t le16(const uint8_t *p) {return (uint16_t)(p[0] | (uint16_t)p[1] << 8);}
++static uint32_t le32(const uint8_t *p) {return (uint32_t)le16(p) | (uint32_t)le16(p + 2) << 16;}
++static uint64_t le64(const uint8_t *p) {return (uint64_t)le32(p) | (uint64_t)le32(p + 4) << 32;}
++static int fits(uint64_t at, uint64_t length, uint64_t size) {return at <= size && length <= size - at;}
++
++int qcom_mdt_parse(QcomMdtImage *image, uint64_t file_size, QcomMdtRead read, void *context)
++{
++    uint8_t e[64];
++    if (!image || !read) return QcomMdtReadError;
++    *image = (QcomMdtImage){0};
++    image->hash = -1;
++    image->file_size = file_size;
++    if (file_size < 52 || read(context, 0, e, file_size < 64 ? 52 : 64)) return file_size < 52 ? QcomMdtTooSmall : QcomMdtReadError;
++    if (e[0] != 0x7f || e[1] != 'E' || e[2] != 'L' || e[3] != 'F' || e[5] != 1 /* little endian */) return QcomMdtNotElf;
++    const int elf64 = e[4] == 2;
++    if (!elf64 && e[4] != 1) return QcomMdtNotElf;
++    if (elf64 && file_size < 64) return QcomMdtTooSmall;
++    const uint64_t phoff = elf64 ? le64(e + 32) : le32(e + 28);
++    const unsigned phentsize = elf64 ? le16(e + 54) : le16(e + 42), phnum = elf64 ? le16(e + 56) : le16(e + 44);
++    if (phentsize != (elf64 ? 56u : 32u) || !phnum) return QcomMdtBadHeaders;
++    if (phnum > QCOM_MDT_MAX_SEGMENTS) return QcomMdtTooMany;
++    if (!fits(phoff, (uint64_t)phentsize * phnum, file_size)) return QcomMdtBadHeaders;
++    image->elf64 = (uint8_t)elf64;
++    image->count = phnum;
++    uint64_t lo = UINT64_MAX, hi = 0;
++    for (unsigned i = 0; i < phnum; ++i) {
++        uint8_t p[56];
++        if (read(context, phoff + (uint64_t)i * phentsize, p, phentsize)) return QcomMdtReadError;
++        QcomMdtSegment *s = &image->segment[i];
++        const uint32_t type = le32(p);
++        if (elf64) {
++            s->flags = le32(p + 4); s->file_offset = le64(p + 8); s->address = le64(p + 24);
++            s->file_size = le64(p + 32); s->memory_size = le64(p + 40);
++        } else {
++            s->file_offset = le32(p + 4); s->address = le32(p + 12); s->file_size = le32(p + 16);
++            s->memory_size = le32(p + 20); s->flags = le32(p + 24);
++        }
++        if ((s->flags & QCOM_MDT_TYPE_MASK) == QCOM_MDT_TYPE_HASH) {
++            if (image->hash < 0) image->hash = (int)i;
++            continue;
++        }
++        if (type != PT_LOAD_ || !s->memory_size) continue;
++        if (s->file_size > s->memory_size) return QcomMdtBadHeaders;
++        if (s->address + s->memory_size < s->address) return QcomMdtBadHeaders;
++        s->load = 1;
++        if (s->flags & QCOM_MDT_RELOCATABLE) image->relocatable = 1;
++        if (s->address < lo) lo = s->address;
++        if (s->address + s->memory_size > hi) hi = s->address + s->memory_size;
++    }
++    if (image->hash < 0) return QcomMdtNoHash;
++    if (hi == 0) return QcomMdtNoSegments;
++    image->header_size = image->segment[0].file_size;
++    /* The first program header (PT_NULL) covers the ELF header and the program headers themselves. */
++    if (!image->header_size || !fits(0, image->header_size, file_size) || image->header_size < phoff + (uint64_t)phentsize * phnum)
++        return QcomMdtBadHeaders;
++    image->min_address = lo;
++    image->max_address = hi;
++    return QcomMdtOk;
++}
++
++uint64_t qcom_mdt_metadata_size(const QcomMdtImage *image)
++{
++    return image->header_size + image->segment[image->hash].file_size;
++}
++
++int qcom_mdt_metadata(const QcomMdtImage *image, QcomMdtRead read, void *context, uint8_t *to, uint64_t capacity)
++{
++    const QcomMdtSegment *hash = &image->segment[image->hash];
++    if (capacity < qcom_mdt_metadata_size(image)) return QcomMdtTooSmall;
++    uint64_t hash_offset;
++    /* A hash packed right behind the headers (the split .mdt form) or a hash segment inside the file. */
++    if (image->header_size + hash->file_size == image->file_size) hash_offset = image->header_size;
++    else if (fits(hash->file_offset, hash->file_size, image->file_size)) hash_offset = hash->file_offset;
++    else return QcomMdtOutside;
++    if (read(context, 0, to, (size_t)image->header_size)) return QcomMdtReadError;
++    if (read(context, hash_offset, to + image->header_size, (size_t)hash->file_size)) return QcomMdtReadError;
++    return QcomMdtOk;
++}
++
++/* The secure world takes the span with its end rounded up to a 4 KiB page and refuses an unaligned one. */
++uint64_t qcom_mdt_span(const QcomMdtImage *image) {return ((image->max_address + 0xfff) & ~0xfffull) - image->min_address;}
++
++int qcom_mdt_place(const QcomMdtImage *image, unsigned index, uint64_t region_base, uint64_t region_size, uint64_t *offset)
++{
++    if (index >= image->count || !image->segment[index].load) return QcomMdtOutside;
++    const QcomMdtSegment *s = &image->segment[index];
++    uint64_t at;
++    if (image->relocatable) at = s->address - image->min_address;
++    else if (s->address >= region_base) at = s->address - region_base;
++    else return QcomMdtOutside;
++    if (!fits(at, s->memory_size, region_size)) return QcomMdtOutside;
++    if (s->file_size && !fits(s->file_offset, s->file_size, image->file_size)) return QcomMdtOutside;
++    *offset = at;
++    return QcomMdtOk;
++}
++
++int qcom_mdt_split(QcomMdtSplit *split, const uint8_t *headers, size_t length)
++{
++    if (!split || !headers) return QcomMdtReadError;
++    *split = (QcomMdtSplit){0};
++    if (length < 52) return QcomMdtTooSmall;
++    const uint8_t *e = headers;
++    if (e[0] != 0x7f || e[1] != 'E' || e[2] != 'L' || e[3] != 'F' || e[5] != 1 || (e[4] != 1 && e[4] != 2)) return QcomMdtNotElf;
++    const int elf64 = e[4] == 2;
++    if (elf64 && length < 64) return QcomMdtTooSmall;
++    const uint64_t phoff = elf64 ? le64(e + 32) : le32(e + 28);
++    const unsigned phentsize = elf64 ? le16(e + 54) : le16(e + 42), phnum = elf64 ? le16(e + 56) : le16(e + 44);
++    if (phentsize != (elf64 ? 56u : 32u) || !phnum) return QcomMdtBadHeaders;
++    if (phnum > QCOM_MDT_MAX_SEGMENTS) return QcomMdtTooMany;
++    if (!fits(phoff, (uint64_t)phentsize * phnum, length)) return QcomMdtBadHeaders;
++    split->count = phnum;
++    for (unsigned i = 0; i < phnum; ++i) {
++        const uint8_t *p = e + phoff + (uint64_t)i * phentsize;
++        const uint64_t offset = elf64 ? le64(p + 8) : le32(p + 4), size = elf64 ? le64(p + 32) : le32(p + 16);
++        if (offset + size < offset) return QcomMdtBadHeaders;
++        split->piece[i].offset = offset;
++        split->piece[i].size = size;
++        if (size && offset + size > split->size) split->size = offset + size;
++    }
++    /* piece 0 must be the headers themselves */
++    if (split->piece[0].offset || split->piece[0].size < phoff + (uint64_t)phentsize * phnum) return QcomMdtBadHeaders;
++    return QcomMdtOk;
++}
++
++int qcom_mdt_split_read(const QcomMdtSplit *split, QcomMdtPieceRead read, void *context, uint64_t offset, void *to, size_t length)
++{
++    uint8_t *out = to;
++    if (!split || !read || !to || !fits(offset, length, split->size)) return QcomMdtOutside;
++    while (length) {
++        /* the piece holding offset, or else the distance to the next piece */
++        uint64_t take = length, gap_end = split->size;
++        int hit = -1;
++        for (unsigned i = 0; i < split->count; ++i) {
++            const uint64_t at = split->piece[i].offset, size = split->piece[i].size;
++            if (!size) continue;
++            if (offset >= at && offset - at < size) {hit = (int)i; break;}
++            if (at > offset && at < gap_end) gap_end = at;
++        }
++        if (hit >= 0) {
++            const uint64_t left = split->piece[hit].offset + split->piece[hit].size - offset;
++            if (take > left) take = left;
++            if (read(context, (unsigned)hit, offset - split->piece[hit].offset, out, (size_t)take)) return QcomMdtReadError;
++        } else {
++            if (take > gap_end - offset) take = gap_end - offset;
++            for (uint64_t i = 0; i < take; ++i) out[i] = 0;
++        }
++        out += take;
++        offset += take;
++        length -= (size_t)take;
++    }
++    return QcomMdtOk;
++}
+diff --git a/package/HoujiQcomMdt.h b/package/HoujiQcomMdt.h
+new file mode 100644
+index 0000000..5728297
+--- /dev/null
++++ b/package/HoujiQcomMdt.h
+@@ -0,0 +1,87 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* Qualcomm signed firmware images (.mbn, an ELF32 or ELF64 whose program headers carry the segment types in p_flags) as the peripheral
++ * authentication service takes them: the metadata handed to the secure world (the ELF and program headers followed by the hash
++ * segment), the extent of the loadable segments and where each one goes in the carveout. Pure parsing over a read callback: no
++ * allocation, no hardware, so the same code runs in the kernel and in the host tests. */
++#ifndef QCOM_MDT_H
++#define QCOM_MDT_H
++#include <stddef.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define QCOM_MDT_MAX_SEGMENTS 64u
++#define QCOM_MDT_TYPE_MASK (7u << 24)
++#define QCOM_MDT_TYPE_HASH (2u << 24)
++#define QCOM_MDT_RELOCATABLE (1u << 27)
++
++/* Reads length bytes at offset of the image file into to; returns 0 on success. */
++typedef int (*QcomMdtRead)(void *context, uint64_t offset, void *to, size_t length);
++
++typedef struct {
++    uint64_t file_offset, file_size, memory_size, address;  /* address: p_paddr */
++    uint32_t flags;
++    uint8_t load;  /* a loadable segment (PT_LOAD, not the hash, memory size not zero) */
++} QcomMdtSegment;
++
++typedef struct {
++    uint8_t elf64;
++    uint32_t count;
++    QcomMdtSegment segment[QCOM_MDT_MAX_SEGMENTS];
++    int hash;                        /* index of the hash segment */
++    uint64_t header_size;            /* p_filesz of the first program header: ELF header plus program headers */
++    uint64_t min_address, max_address;  /* of the loadable segments */
++    uint8_t relocatable;
++    uint64_t file_size;
++} QcomMdtImage;
++
++enum {
++    QcomMdtOk = 0,
++    QcomMdtReadError = -1,
++    QcomMdtNotElf = -2,
++    QcomMdtBadHeaders = -3,
++    QcomMdtNoHash = -4,
++    QcomMdtTooMany = -5,
++    QcomMdtNoSegments = -6,
++    QcomMdtOutside = -7,
++    QcomMdtTooSmall = -8,
++};
++
++/* Parses the ELF and program headers of an image of file_size bytes. */
++int qcom_mdt_parse(QcomMdtImage *image, uint64_t file_size, QcomMdtRead read, void *context);
++
++/* Bytes of the metadata blob for the authentication service: the header part and the hash segment. */
++uint64_t qcom_mdt_metadata_size(const QcomMdtImage *image);
++
++/* Writes the metadata blob (qcom_mdt_metadata_size bytes) to to. The hash segment must lie inside the file: images split into .bNN
++ * files are joined into one .mbn on the host before they are installed. */
++int qcom_mdt_metadata(const QcomMdtImage *image, QcomMdtRead read, void *context, uint8_t *to, uint64_t capacity);
++
++/* Bytes the loadable segments span (the end rounded up to 4 KiB, minus the lowest address): the size to hand to the memory setup call
++ * of a relocatable image. */
++uint64_t qcom_mdt_span(const QcomMdtImage *image);
++
++/* Offset of a loadable segment inside a carveout of region_size bytes at region_base: relocatable images are placed by their offset from
++ * the lowest segment, fixed ones by their address. Returns QcomMdtOutside if the segment does not fit. */
++int qcom_mdt_place(const QcomMdtImage *image, unsigned index, uint64_t region_base, uint64_t region_size, uint64_t *offset);
++
++/* A split image (NAME.b00, NAME.b01, ... as found on the device's firmware partition) read as the joined image: the bytes of program
++ * header i's segment come from piece i (NAME.bNN) at the segment's file offset, piece 0 being the ELF and program headers; whatever
++ * lies between the pieces reads as zero. The pieces are the caller's files. */
++typedef int (*QcomMdtPieceRead)(void *context, unsigned piece, uint64_t offset, void *to, size_t length);
++typedef struct {
++    uint32_t count;
++    struct {uint64_t offset, size;} piece[QCOM_MDT_MAX_SEGMENTS];  /* size 0: no piece file for this header */
++    uint64_t size;                                                  /* bytes of the joined image */
++} QcomMdtSplit;
++
++/* Lays out the pieces from the headers (the bytes of NAME.b00, or the start of NAME.mdt). */
++int qcom_mdt_split(QcomMdtSplit *split, const uint8_t *headers, size_t length);
++/* Reads a range of the joined image. */
++int qcom_mdt_split_read(const QcomMdtSplit *split, QcomMdtPieceRead read, void *context, uint64_t offset, void *to, size_t length);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/HoujiQcomQmp.c b/package/HoujiQcomQmp.c
+new file mode 100644
+index 0000000..aa15225
+--- /dev/null
++++ b/package/HoujiQcomQmp.c
+@@ -0,0 +1,102 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "HoujiQcomQmp.h"
++
++/* Descriptor words (byte offset / 4): magic, version, features; the AOP's link state, its ack, channel state, its ack, mailbox size and
++ * offset; then the same six for our side. */
++#define MAGIC 0x4d41494cu
++#define D_MAGIC 0
++#define D_VERSION 1
++#define D_UCORE_LINK 3
++#define D_UCORE_LINK_ACK 4
++#define D_UCORE_CH 5
++#define D_UCORE_CH_ACK 6
++#define D_MCORE_LINK 9
++#define D_MCORE_LINK_ACK 10
++#define D_MCORE_CH 11
++#define D_MCORE_CH_ACK 12
++#define D_MCORE_SIZE 13
++#define D_MCORE_OFFSET 14
++#define UP 0x0000ffffu
++
++static void barrier(void)
++{
++#if defined(__aarch64__) && defined(KERNEL)
++    __asm__ volatile("dsb sy" ::: "memory");
++#endif
++}
++static void kick(QcomQmp *q) {barrier(); if (q->kick) q->kick(q->context);}
++
++void qcom_qmp_init(QcomQmp *q, volatile uint32_t *ram, uint32_t ram_bytes, void (*k)(void *), void *context)
++{
++    *q = (QcomQmp){ram, ram_bytes, 0, 0, QcomQmpIdle, k, context};
++}
++
++int qcom_qmp_step(QcomQmp *q)
++{
++    volatile uint32_t *r = q->ram;
++    switch (q->state) {
++    case QcomQmpIdle: {
++        if (r[D_MAGIC] != MAGIC || r[D_VERSION] != 1) return q->state = QcomQmpBadDescriptor;
++        const uint32_t box = r[D_MCORE_OFFSET], size = r[D_MCORE_SIZE];
++        if ((box & 3) || size < QCOM_QMP_MESSAGE + 4 || box < 0x3c || box > q->ram_bytes || size > q->ram_bytes - box)
++            return q->state = QcomQmpBadDescriptor;
++        q->box = box;
++        q->box_size = size;
++        /* A channel a boot stage left open is used as it is. */
++        if (r[D_MCORE_LINK] == UP && r[D_MCORE_LINK_ACK] == UP && r[D_MCORE_CH] == UP && r[D_UCORE_CH] == UP && r[D_MCORE_CH_ACK] == UP)
++            return q->state = QcomQmpOpen;
++        r[D_UCORE_LINK_ACK] = r[D_UCORE_LINK];
++        r[D_MCORE_LINK] = UP;
++        kick(q);
++        q->state = QcomQmpLinkWait;
++    }
++        /* fall through: the ack may already be there */
++    case QcomQmpLinkWait:
++        if (r[D_MCORE_LINK_ACK] != UP) return q->state;
++        r[D_MCORE_CH] = UP;
++        kick(q);
++        q->state = QcomQmpChannelWait;
++        /* fall through */
++    case QcomQmpChannelWait:
++        if (r[D_UCORE_CH] != UP) return q->state;
++        r[D_UCORE_CH_ACK] = UP;
++        kick(q);
++        q->state = QcomQmpAckWait;
++        /* fall through */
++    case QcomQmpAckWait:
++        if (r[D_MCORE_CH_ACK] != UP) return q->state;
++        return q->state = QcomQmpOpen;
++    case QcomQmpSending:
++        if (r[q->box / 4] != 0) return q->state;
++        return q->state = QcomQmpOpen;
++    default:
++        return q->state;
++    }
++}
++
++int qcom_qmp_send(QcomQmp *q, const char *text)
++{
++    if (q->state != QcomQmpOpen) return QcomQmpBusy;
++    uint32_t words[QCOM_QMP_MESSAGE / 4] = {0};
++    unsigned n = 0;
++    while (text[n]) {
++        if (n >= QCOM_QMP_MESSAGE - 1) return QcomQmpTooLong;
++        words[n / 4] |= (uint32_t)(uint8_t)text[n] << (8 * (n % 4));
++        ++n;
++    }
++    volatile uint32_t *r = q->ram;
++    if (r[q->box / 4] != 0) return QcomQmpBusy;
++    for (unsigned i = 0; i < QCOM_QMP_MESSAGE / 4; ++i) r[q->box / 4 + 1 + i] = words[i];
++    barrier();
++    r[q->box / 4] = QCOM_QMP_MESSAGE;
++    kick(q);
++    return q->state = QcomQmpSending;
++}
++
++void qcom_qmp_abandon(QcomQmp *q)
++{
++    if (q->state != QcomQmpSending) return;
++    q->ram[q->box / 4] = 0;
++    barrier();
++    q->state = QcomQmpOpen;
++}
+diff --git a/package/HoujiQcomQmp.h b/package/HoujiQcomQmp.h
+new file mode 100644
+index 0000000..e411345
+--- /dev/null
++++ b/package/HoujiQcomQmp.h
+@@ -0,0 +1,47 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* The AOSS QMP mailbox: a message RAM shared with the always-on processor, a link and channel handshake, then one text message at a
++ * time ("{class: image, res: load_state, name: adsp, val: on}"). Written as a state machine stepped on each doorbell from the AOP (or a
++ * timer): qcom_qmp_step never waits, it returns what it is waiting for and the owner calls it again when the AOP rings or the deadline
++ * passes. Ringing the AOP is the owner's kick callback. */
++#ifndef QCOM_QMP_H
++#define QCOM_QMP_H
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define QCOM_QMP_MESSAGE 0x64u  /* message length the AOP takes (padded with zeroes) */
++
++enum {
++    QcomQmpIdle = 0,         /* closed, nothing started */
++    QcomQmpLinkWait = 1,     /* our link is up, waiting for the AOP's ack */
++    QcomQmpChannelWait = 2,  /* our channel is up, waiting for the AOP's channel */
++    QcomQmpAckWait = 3,      /* the AOP's channel acked, waiting for its ack of ours */
++    QcomQmpOpen = 4,
++    QcomQmpSending = 5,      /* a message is in the mailbox, waiting for the AOP to take it */
++    QcomQmpBadDescriptor = -1,
++    QcomQmpBusy = -2,
++    QcomQmpTooLong = -3,
++};
++
++typedef struct {
++    volatile uint32_t *ram;  /* the message RAM (0x400 bytes on SM8550) */
++    uint32_t ram_bytes;
++    uint32_t box, box_size;  /* our mailbox inside it */
++    int state;
++    void (*kick)(void *context);
++    void *context;
++} QcomQmp;
++
++void qcom_qmp_init(QcomQmp *q, volatile uint32_t *ram, uint32_t ram_bytes, void (*kick)(void *), void *context);
++/* Advances the handshake or the pending send; returns the state reached. */
++int qcom_qmp_step(QcomQmp *q);
++/* Puts a message in the mailbox once the channel is open (QcomQmpSending), QcomQmpBusy otherwise. */
++int qcom_qmp_send(QcomQmp *q, const char *text);
++/* Gives up a send the AOP did not take before the owner's deadline: the mailbox is cleared. */
++void qcom_qmp_abandon(QcomQmp *q);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/HoujiQcomScm.h b/package/HoujiQcomScm.h
+new file mode 100644
+index 0000000..53f7eff
+--- /dev/null
++++ b/package/HoujiQcomScm.h
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* Secure channel manager calls of the peripheral authentication service (PAS) in the SMCCC convention: the function id (standard call,
++ * SMC64, SiP owner, service 2) and the argument-type word in x1. The SMC itself lives in the kernel glue; these encoders are what the
++ * host tests check. */
++#ifndef QCOM_SCM_H
++#define QCOM_SCM_H
++#include <stdint.h>
++
++#define QCOM_SCM_SVC_PIL 0x02u
++#define QCOM_SCM_PAS_INIT_IMAGE 0x01u
++#define QCOM_SCM_PAS_MEM_SETUP 0x02u
++#define QCOM_SCM_PAS_AUTH_AND_RESET 0x05u
++#define QCOM_SCM_PAS_SHUTDOWN 0x06u
++#define QCOM_SCM_PAS_IS_SUPPORTED 0x07u
++#define QCOM_SCM_VAL 0u
++#define QCOM_SCM_RO 1u
++#define QCOM_SCM_RW 2u
++#define QCOM_SCM_INTERRUPTED 1    /* x0 of a call the secure world wants resumed (x6 carries its session) */
++#define QCOM_SCM_V2_EBUSY (-12)   /* busy: retry after a pause */
++
++static inline uint32_t qcom_scm_fn(uint32_t svc, uint32_t cmd)
++{
++    return (1u << 30) /* SMC64 */ | (2u << 24) /* SiP */ | ((svc & 0xff) << 8) | (cmd & 0xff);
++}
++/* Argument count in bits 3:0, the type of argument i in bits 5+2i:4+2i. */
++static inline uint32_t qcom_scm_args(unsigned count, unsigned t0, unsigned t1, unsigned t2)
++{
++    return (count & 0xf) | (t0 & 3) << 4 | (t1 & 3) << 6 | (t2 & 3) << 8;
++}
++
++/* IPCC (the inter-processor doorbells): a doorbell id is client << 16 | signal. */
++#define QCOM_IPCC_SEND 0x0cu
++#define QCOM_IPCC_RECV_ID 0x10u
++#define QCOM_IPCC_RECV_ENABLE 0x14u
++#define QCOM_IPCC_RECV_DISABLE 0x18u
++#define QCOM_IPCC_RECV_CLEAR 0x1cu
++#define QCOM_IPCC_NONE 0xffffffffu
++#define QCOM_IPCC_CLIENT_AOP 0u
++#define QCOM_IPCC_CLIENT_LPASS 3u
++#define QCOM_IPCC_SIGNAL_GLINK_QMP 0u
++#define QCOM_IPCC_SIGNAL_SMP2P 2u
++static inline uint32_t qcom_ipcc_id(uint32_t client, uint32_t signal) {return client << 16 | (signal & 0xffff);}
++
++#endif
+diff --git a/package/HoujiQcomSmem.c b/package/HoujiQcomSmem.c
+new file mode 100644
+index 0000000..543ec44
+--- /dev/null
++++ b/package/HoujiQcomSmem.c
+@@ -0,0 +1,112 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "HoujiQcomSmem.h"
++
++#define TOC_MAGIC 0x434f5424u   /* "$TOC" */
++#define PART_MAGIC 0x54525024u  /* "$PRT" */
++#define CANARY 0xa5a5u
++#define TOC_HEADER 32u
++#define TOC_ENTRY 48u
++#define PART_HEADER 32u
++#define ENTRY 16u
++
++uint32_t qcom_smem_read32(const QcomSmem *smem, uint32_t offset) {return *(volatile uint32_t *)(smem->base + offset);}
++void qcom_smem_write32(const QcomSmem *smem, uint32_t offset, uint32_t value)
++{
++    *(volatile uint32_t *)(smem->base + offset) = value;
++#if defined(__aarch64__) && defined(KERNEL)
++    __asm__ volatile("dmb oshst" ::: "memory");
++#endif
++}
++static uint32_t rd(const QcomSmem *s, uint32_t at) {return qcom_smem_read32(s, at);}
++static int fits(uint64_t at, uint64_t length, uint64_t size) {return at <= size && length <= size - at;}
++static uint32_t align_up(uint32_t value, uint32_t to) {return (value + to - 1) & ~(to - 1);}
++
++int qcom_smem_partition(const QcomSmem *smem, uint16_t host, uint16_t remote, QcomSmemPartition *out)
++{
++    if (!smem || !smem->base || smem->size < 0x2000 || (smem->size & 0xfff)) return QcomSmemNoTable;
++    const uint32_t toc = smem->size - 0x1000;
++    if (rd(smem, toc) != TOC_MAGIC || rd(smem, toc + 4) != 1) return QcomSmemNoTable;
++    const uint32_t count = rd(smem, toc + 8);
++    if (count > (0x1000 - TOC_HEADER) / TOC_ENTRY) return QcomSmemNoTable;
++    for (uint32_t i = 0; i < count; ++i) {
++        const uint32_t e = toc + TOC_HEADER + i * TOC_ENTRY;
++        const uint32_t offset = rd(smem, e), size = rd(smem, e + 4), hosts = rd(smem, e + 12), cacheline = rd(smem, e + 16);
++        const uint16_t h0 = (uint16_t)hosts, h1 = (uint16_t)(hosts >> 16);
++        if (!offset || !size) continue;
++        if (!((h0 == host && h1 == remote) || (h0 == remote && h1 == host))) continue;
++        if (!fits(offset, size, toc) || size < PART_HEADER + 2 * ENTRY || (offset & 7)) return QcomSmemBadPartition;
++        if (cacheline & (cacheline - 1)) return QcomSmemBadPartition;
++        if (rd(smem, offset) != PART_MAGIC || rd(smem, offset + 4) != hosts || rd(smem, offset + 8) != size) return QcomSmemBadPartition;
++        const uint32_t free_uncached = rd(smem, offset + 12), free_cached = rd(smem, offset + 16);
++        if (free_uncached < PART_HEADER || free_uncached > free_cached || free_cached > size) return QcomSmemBadPartition;
++        *out = (QcomSmemPartition){offset, size, cacheline ? cacheline : 8u, h0, h1};
++        return QcomSmemOk;
++    }
++    return QcomSmemNoPartition;
++}
++
++/* Walks the uncached list; returns the offset (relative to the partition) where it ends, or the item's entry when found. */
++static int walk_uncached(const QcomSmem *smem, const QcomSmemPartition *p, uint16_t item, uint32_t *at_out, int *found)
++{
++    const uint32_t end = rd(smem, p->offset + 12);
++    uint32_t at = PART_HEADER;
++    *found = 0;
++    while (at < end) {
++        if (!fits(at, ENTRY, end)) return QcomSmemCorrupt;
++        const uint32_t w0 = rd(smem, p->offset + at), size = rd(smem, p->offset + at + 4), pads = rd(smem, p->offset + at + 8);
++        if ((w0 & 0xffff) != CANARY) return QcomSmemCorrupt;
++        const uint32_t padding_header = pads >> 16;
++        if ((uint64_t)at + ENTRY + padding_header + size > end) return QcomSmemCorrupt;
++        if ((w0 >> 16) == item) {*found = 1; *at_out = at; return QcomSmemOk;}
++        at += ENTRY + padding_header + size;
++    }
++    if (at != end) return QcomSmemCorrupt;
++    *at_out = at;
++    return QcomSmemOk;
++}
++
++int qcom_smem_find(const QcomSmem *smem, const QcomSmemPartition *p, uint16_t item, uint32_t *offset, uint32_t *size)
++{
++    uint32_t at;
++    int found, rc = walk_uncached(smem, p, item, &at, &found);
++    if (rc) return rc;
++    if (found) {
++        const uint32_t bytes = rd(smem, p->offset + at + 4), pads = rd(smem, p->offset + at + 8);
++        if ((pads & 0xffff) > bytes) return QcomSmemCorrupt;
++        *offset = p->offset + at + ENTRY + (pads >> 16);
++        *size = bytes - (pads & 0xffff);
++        return QcomSmemOk;
++    }
++    /* Cached items: each entry sits at the end of its cache line slot, its data right below it. */
++    const uint32_t header = align_up(ENTRY, p->cacheline), last = rd(smem, p->offset + 16);
++    if (p->size < header) return QcomSmemCorrupt;
++    uint32_t e = p->size - header;
++    while (e > last) {
++        const uint32_t w0 = rd(smem, p->offset + e), bytes = rd(smem, p->offset + e + 4), pads = rd(smem, p->offset + e + 8);
++        if ((w0 & 0xffff) != CANARY || bytes > e || (pads & 0xffff) > bytes) return QcomSmemCorrupt;
++        if ((w0 >> 16) == item) {*offset = p->offset + e - bytes; *size = bytes - (pads & 0xffff); return QcomSmemOk;}
++        if (e < bytes + header) return QcomSmemCorrupt;
++        e -= bytes + header;
++    }
++    return QcomSmemMissing;
++}
++
++int qcom_smem_alloc(const QcomSmem *smem, const QcomSmemPartition *p, uint16_t item, uint32_t size)
++{
++    uint32_t at;
++    int found, rc = walk_uncached(smem, p, item, &at, &found);
++    if (rc) return rc;
++    if (found) return QcomSmemExists;
++    uint32_t offset, bytes;
++    if (qcom_smem_find(smem, p, item, &offset, &bytes) == QcomSmemOk) return QcomSmemExists;
++    const uint32_t aligned = align_up(size, 8), need = ENTRY + aligned;
++    if (!size || aligned < size || (uint64_t)at + need > rd(smem, p->offset + 16)) return QcomSmemNoSpace;
++    qcom_smem_write32(smem, p->offset + at, CANARY | (uint32_t)item << 16);
++    qcom_smem_write32(smem, p->offset + at + 4, aligned);
++    qcom_smem_write32(smem, p->offset + at + 8, aligned - size);  /* padding_data, padding_header 0 */
++    qcom_smem_write32(smem, p->offset + at + 12, 0);
++    for (uint32_t i = 0; i < aligned; i += 4) qcom_smem_write32(smem, p->offset + at + ENTRY + i, 0);
++    /* The entry is complete before the free mark moves over it. */
++    qcom_smem_write32(smem, p->offset + 12, at + need);
++    return QcomSmemOk;
++}
+diff --git a/package/HoujiQcomSmem.h b/package/HoujiQcomSmem.h
+new file mode 100644
+index 0000000..facab04
+--- /dev/null
++++ b/package/HoujiQcomSmem.h
+@@ -0,0 +1,51 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* Qualcomm shared memory (SMEM): the partition table at the end of the region, the private partitions two processors share, and the
++ * items in them (uncached ones growing up from the partition header, cached ones down from its end). Every access is an aligned 32-bit
++ * one, so the code works on a device mapping. Allocation must run with the hardware mutex held (the caller takes it); nothing here
++ * waits. */
++#ifndef QCOM_SMEM_H
++#define QCOM_SMEM_H
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define QCOM_SMEM_HOST_APPS 0u
++#define QCOM_SMEM_HOST_GLOBAL 0xfffeu
++
++typedef struct {
++    volatile uint8_t *base;
++    uint32_t size;
++} QcomSmem;
++
++typedef struct {
++    uint32_t offset, size, cacheline;  /* offset of the partition header from the SMEM base */
++    uint16_t host0, host1;
++} QcomSmemPartition;
++
++enum {
++    QcomSmemOk = 0,
++    QcomSmemNoTable = -1,
++    QcomSmemNoPartition = -2,
++    QcomSmemBadPartition = -3,
++    QcomSmemCorrupt = -4,
++    QcomSmemExists = -5,
++    QcomSmemNoSpace = -6,
++    QcomSmemMissing = -7,
++};
++
++/* The partition shared by the two hosts (QCOM_SMEM_HOST_GLOBAL twice for the global one). */
++int qcom_smem_partition(const QcomSmem *smem, uint16_t host, uint16_t remote, QcomSmemPartition *out);
++/* Offset of the item's data from the SMEM base and its size; QcomSmemMissing when the item is not there. */
++int qcom_smem_find(const QcomSmem *smem, const QcomSmemPartition *part, uint16_t item, uint32_t *offset, uint32_t *size);
++/* Allocates an uncached item of size bytes (rounded up to 8). QcomSmemExists if it is there already (not an error for callers that
++ * only need it to exist). Hardware mutex held by the caller. */
++int qcom_smem_alloc(const QcomSmem *smem, const QcomSmemPartition *part, uint16_t item, uint32_t size);
++
++uint32_t qcom_smem_read32(const QcomSmem *smem, uint32_t offset);
++void qcom_smem_write32(const QcomSmem *smem, uint32_t offset, uint32_t value);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/HoujiQcomSmp2p.c b/package/HoujiQcomSmp2p.c
+new file mode 100644
+index 0000000..58dfd53
+--- /dev/null
++++ b/package/HoujiQcomSmp2p.c
+@@ -0,0 +1,125 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "HoujiQcomSmp2p.h"
++
++/* Word offsets: 0 magic, 1 version (bits 7:0) and features (31:8), 2 local pid (15:0) and remote pid (31:16), 3 total entries (15:0)
++ * and valid entries (31:16), 4 flags, then 5 words per entry: a 16-byte name and the value. */
++#define W_VERSION 1
++#define W_PIDS 2
++#define W_COUNTS 3
++#define W_FLAGS 4
++#define W_ENTRY(i) (5 + 5 * (i))
++
++static void barrier(void)
++{
++#if defined(__aarch64__) && defined(KERNEL)
++    __asm__ volatile("dmb oshst" ::: "memory");
++#endif
++}
++static int same_name(const volatile uint32_t *entry, const char *name)
++{
++    for (unsigned i = 0; i < 16; ++i) {
++        const char c = (char)(entry[i / 4] >> (8 * (i % 4)));
++        if (c != name[i]) return 0;
++        if (!c) return 1;
++    }
++    return name[16] == 0;
++}
++
++void qcom_smp2p_init_out(QcomSmp2p *s, volatile uint32_t *out, uint16_t local_pid, uint16_t remote_pid)
++{
++    *s = (QcomSmp2p){0};
++    s->out = out;
++    s->local_pid = local_pid;
++    s->remote_pid = remote_pid;
++    for (unsigned i = 0; i < QCOM_SMP2P_ITEM_BYTES / 4; ++i) out[i] = 0;
++    barrier();
++    out[0] = QCOM_SMP2P_MAGIC;
++    out[W_PIDS] = local_pid | (uint32_t)remote_pid << 16;
++    out[W_COUNTS] = QCOM_SMP2P_MAX_ENTRIES;
++    barrier();
++    out[W_VERSION] = QCOM_SMP2P_VERSION | QCOM_SMP2P_FEATURE_SSR_ACK << 8;
++    barrier();
++}
++
++int qcom_smp2p_add_entry(QcomSmp2p *s, const char *name)
++{
++    const uint32_t valid = s->out[W_COUNTS] >> 16;
++    if (valid >= QCOM_SMP2P_MAX_ENTRIES) return -1;
++    uint32_t words[4] = {0};
++    for (unsigned i = 0; i < 16 && name[i]; ++i) words[i / 4] |= (uint32_t)(uint8_t)name[i] << (8 * (i % 4));
++    for (unsigned i = 0; i < 4; ++i) s->out[W_ENTRY(valid) + i] = words[i];
++    s->out[W_ENTRY(valid) + 4] = 0;
++    barrier();
++    s->out[W_COUNTS] = QCOM_SMP2P_MAX_ENTRIES | (valid + 1) << 16;
++    barrier();
++    return (int)valid;
++}
++
++int qcom_smp2p_update(QcomSmp2p *s, int index, uint32_t mask, uint32_t value)
++{
++    volatile uint32_t *v = &s->out[W_ENTRY(index) + 4];
++    const uint32_t old = *v, next = (old & ~mask) | (value & mask);
++    if (next == old) return 0;
++    *v = next;
++    barrier();
++    return 1;
++}
++
++uint32_t qcom_smp2p_out_value(const QcomSmp2p *s, int index) {return s->out[W_ENTRY(index) + 4];}
++
++int qcom_smp2p_check_in(const volatile uint32_t *in, uint16_t local_pid, uint16_t remote_pid)
++{
++    if (!in || in[0] != QCOM_SMP2P_MAGIC) return -1;
++    if ((in[W_VERSION] & 0xff) != QCOM_SMP2P_VERSION) return -2;
++    /* The remote writes its own pid as local. */
++    if (in[W_PIDS] != (remote_pid | (uint32_t)local_pid << 16)) return -3;
++    const uint32_t counts = in[W_COUNTS];
++    if ((counts & 0xffff) > QCOM_SMP2P_MAX_ENTRIES || (counts >> 16) > (counts & 0xffff)) return -4;
++    return 0;
++}
++
++int qcom_smp2p_find_in(const QcomSmp2p *s, const char *name)
++{
++    if (!s->in) return -1;
++    const uint32_t valid = s->in[W_COUNTS] >> 16;
++    for (uint32_t i = 0; i < valid && i < QCOM_SMP2P_MAX_ENTRIES; ++i)
++        if (same_name(&s->in[W_ENTRY(i)], name)) return (int)i;
++    return -1;
++}
++
++uint32_t qcom_smp2p_in_value(const QcomSmp2p *s, int index) {return s->in[W_ENTRY(index) + 4];}
++
++int qcom_smp2p_service(QcomSmp2p *s, const char *entry, uint32_t *value, uint32_t *changed)
++{
++    int ring = 0;
++    *value = 0;
++    *changed = 0;
++    if (qcom_smp2p_check_in(s->in, s->local_pid, s->remote_pid)) return 0;
++    if (!s->negotiated) {
++        const uint32_t ours = s->out[W_VERSION], theirs = s->in[W_VERSION];
++        if ((ours & 0xff) == (theirs & 0xff)) {
++            const uint32_t features = (ours >> 8) & (theirs >> 8);
++            if (features != ours >> 8) {s->out[W_VERSION] = (ours & 0xff) | features << 8; barrier(); ring = 1;}
++            s->ssr_ack_enabled = (features & QCOM_SMP2P_FEATURE_SSR_ACK) != 0;
++            s->negotiated = 1;
++        }
++    }
++    if (s->ssr_ack_enabled) {
++        const uint8_t done = (s->in[W_FLAGS] & QCOM_SMP2P_FLAG_RESTART_DONE) != 0;
++        if (done != s->ssr_acked) {
++            s->ssr_acked = done;
++            const uint32_t flags = s->out[W_FLAGS];
++            s->out[W_FLAGS] = done ? flags | QCOM_SMP2P_FLAG_RESTART_ACK : flags & ~QCOM_SMP2P_FLAG_RESTART_ACK;
++            barrier();
++            ring = 1;
++        }
++    }
++    const int index = qcom_smp2p_find_in(s, entry);
++    if (index >= 0) {
++        const uint32_t now = qcom_smp2p_in_value(s, index);
++        *value = now;
++        *changed = now ^ s->last[index];
++        s->last[index] = now;
++    }
++    return ring;
++}
+diff --git a/package/HoujiQcomSmp2p.h b/package/HoujiQcomSmp2p.h
+new file mode 100644
+index 0000000..947a7d7
+--- /dev/null
++++ b/package/HoujiQcomSmp2p.h
+@@ -0,0 +1,51 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* Shared memory point-to-point state (SMP2P): each side owns one SMEM item holding named 32-bit entries the other side watches; a change
++ * is signalled with a doorbell. This is the item layout and the bookkeeping for both directions: our outbound item (entries we set bits
++ * in) and the remote's inbound item (entries whose bit changes become events). Doorbells and SMEM placement belong to the caller. */
++#ifndef QCOM_SMP2P_H
++#define QCOM_SMP2P_H
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define QCOM_SMP2P_MAGIC 0x504d5324u  /* "$SMP" */
++#define QCOM_SMP2P_VERSION 1u
++#define QCOM_SMP2P_FEATURE_SSR_ACK 1u
++#define QCOM_SMP2P_FLAG_RESTART_DONE 1u
++#define QCOM_SMP2P_FLAG_RESTART_ACK 2u
++#define QCOM_SMP2P_MAX_ENTRIES 16u
++#define QCOM_SMP2P_ITEM_BYTES (20u + 20u * QCOM_SMP2P_MAX_ENTRIES)
++
++/* The two items' storage: 32-bit aligned, possibly device memory. */
++typedef struct {
++    volatile uint32_t *out, *in;  /* in may be null until the remote has made it */
++    uint16_t local_pid, remote_pid;
++    uint8_t negotiated, ssr_ack_enabled, ssr_acked;
++    uint32_t last[QCOM_SMP2P_MAX_ENTRIES];  /* inbound values last seen, by inbound entry index */
++    uint32_t seen_entries;
++} QcomSmp2p;
++
++/* Writes a fresh outbound item (zeroes, header, then the version word last so the remote never sees a half-made item). */
++void qcom_smp2p_init_out(QcomSmp2p *s, volatile uint32_t *out, uint16_t local_pid, uint16_t remote_pid);
++/* Adds a named outbound entry and returns its index, or -1 when full. */
++int qcom_smp2p_add_entry(QcomSmp2p *s, const char *name);
++/* Sets the bits in mask of outbound entry index to value; returns 1 when the value changed (ring the doorbell). */
++int qcom_smp2p_update(QcomSmp2p *s, int index, uint32_t mask, uint32_t value);
++uint32_t qcom_smp2p_out_value(const QcomSmp2p *s, int index);
++
++/* Validates an inbound item (magic, version, the pids seen from the other side); 0 when usable. */
++int qcom_smp2p_check_in(const volatile uint32_t *in, uint16_t local_pid, uint16_t remote_pid);
++/* Index of the named inbound entry, -1 when the remote has not added it. */
++int qcom_smp2p_find_in(const QcomSmp2p *s, const char *name);
++uint32_t qcom_smp2p_in_value(const QcomSmp2p *s, int index);
++
++/* Called on every doorbell from the remote. Agrees on the features once, answers a restart with the restart ack flag, and reports the
++ * bits of the named inbound entry that changed since the last call (changed) and its current value (value). Returns 1 when our item
++ * changed so the remote has to be rung. */
++int qcom_smp2p_service(QcomSmp2p *s, const char *entry, uint32_t *value, uint32_t *changed);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/LegacyDisplayProbe.cpp b/package/LegacyDisplayProbe.cpp
+index d2f318c..30954f4 100644
+--- a/package/LegacyDisplayProbe.cpp
++++ b/package/LegacyDisplayProbe.cpp
+@@ -528,6 +528,7 @@ extern void houji_buttons_start(void);
+ extern "C" void sheng_gpu_pool_probe(void);
+ extern "C" void sheng_gpu_power_probe(void);
+ extern "C" void sheng_wifi_probe(void);
++extern "C" void houji_battery_probe(void);
+ // IOKit's busy services while the registry is not quiet: the network configuration names interfaces only once IOKit is quiet (or after its
+ // 240 s limit), and the TimeSync clock manager waits for quiet too, so a service whose matching never ends holds up the network, TimeSync
+ // and everything waiting on them (macOS run28: en0 named after 240 s, WindowServer waiting on clocksyncd). Every 10 s for 10 minutes, while
+@@ -620,6 +621,7 @@ void native_legacy_display_late_probe(void) {
+     native_hid_input_probe();
+     houji_touch_start();   // HoujiTouch.cpp: the S3910 touch screen (houji_touch=1)
+     houji_buttons_start(); // HoujiButtons.cpp: power and volume keys (houji_buttons=1)
++    houji_battery_probe(); // cumulative opt-in battery=1..5; returns immediately without it
+     // The Adreno 750 (GpuPowerProbe.cpp, sheng's staged bring-up with the houji board deltas): only with gpu-power=<1..9>.
+     {unsigned gpu = 0; if (PE_parse_boot_argn("gpu-power", &gpu, sizeof gpu) && gpu) {sheng_gpu_pool_probe(); sheng_gpu_power_probe();}}
+ #if HOUJI_WIFI_LINK
+diff --git a/scripts/build-houji-kit.py b/scripts/build-houji-kit.py
+index ff56940..af5f36e 100644
+--- a/scripts/build-houji-kit.py
++++ b/scripts/build-houji-kit.py
+@@ -14,7 +14,7 @@ OUT.mkdir(parents=True, exist_ok=True)
+ RECORDS = {'.c': OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json', '.cpp': OBJ / 'iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'}
+ # Sources that need osfmk's Mach-private view (struct processor, recount) compile with osfmk/kern/processor.c's own command.
+ RECORD_OVERRIDES = {'HoujiCpuIdle.c': OBJ / 'osfmk/DEVELOPMENT/processor.o.json'}
+-SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c']
++SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c', 'HoujiQcomMdt.c', 'HoujiQcomSmem.c', 'HoujiQcomSmp2p.c', 'HoujiQcomGlink.c', 'HoujiQcomQmp.c', 'HoujiAdspFirmware.c', 'HoujiBattmgr.c', 'HoujiAdspProbe.cpp', 'HoujiBattery.cpp', 'HoujiBatteryProbe.cpp']
+ 
+ 
+ def command(record, source, obj):
+@@ -45,6 +45,12 @@ for name in SOURCES:
+     record = json.loads(RECORD_OVERRIDES.get(name, RECORDS[source.suffix]).read_text().strip().rstrip(','))
+     obj = OUT / (source.stem + '.o')
+     subprocess.run(command(record, source, obj), cwd=record['directory'], check=True, timeout=180)
++    if name == 'HoujiBattery.cpp':
++        # Register IOPMPowerSource only when the late battery probe asks for it, as sheng's iOS 27 builder does.
++        late = OUT / 'HoujiBattery.late.o'
++        subprocess.run(['xcrun', 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
++                        '--globalize-symbol=__GLOBAL__sub_I_HoujiBattery.cpp', str(obj), str(late)], check=True, timeout=30)
++        obj = late
+     objects.append(str(obj))
+ archive = OUT / 'libHoujiKit.a'
+ archive.unlink(missing_ok=True)
