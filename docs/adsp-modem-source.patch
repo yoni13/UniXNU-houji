@@ -1,59 +1,665 @@
 diff --git a/package/HoujiAdspFirmware.c b/package/HoujiAdspFirmware.c
-index 5cd2207..aa9c255 100644
+index 8e487f2..aa9c255 100644
 --- a/package/HoujiAdspFirmware.c
 +++ b/package/HoujiAdspFirmware.c
-@@ -14,7 +14,6 @@
- 
- #define HOUJI_FW_MAX (64u * 1024u * 1024u)
- 
--static HoujiUfsPartition *gPartition;
- static HoujiFatVolume *gVolume;
- 
- static int mountModem(void)
-@@ -35,7 +34,6 @@ static int mountModem(void)
-         IOFreeType(volume, HoujiFatVolume);
-         return rc;
-     }
--    gPartition = partition;
-     gVolume = volume;
-     return 0;
- }
-@@ -93,13 +91,14 @@ static int openModem(const char *name, struct modem_image **result, uint64_t *si
- 
-     for (unsigned i = 0; !rc && i < image->split.count; ++i) {
-         if (!image->split.piece[i].size) continue;
--        if (i == 0) image->piece[i] = headers;
--        else {
--            snprintf(path, sizeof path, "image/%s.b%02u", name, i);
--            const int found = houji_fat_open(gVolume, path, &image->piece[i]);
--            if (found == HoujiFatNotFound) rc = ENOENT;
--            else if (found) rc = EIO;
+@@ -1,5 +1,5 @@
+ // SPDX-License-Identifier: BSD-2-Clause-Patent
+-// Local houji ADSP images. Firmware is staged on Data; no vendor bytes belong in this repository.
++// ADSP images come either from Data through VFS, or from the phone's split images in modem_a/modem_b through read-only NativeUfs.
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/proc.h>
+@@ -8,10 +8,109 @@
+ #include <sys/fcntl.h>
+ #include <sys/kauth.h>
+ #include <IOKit/IOLib.h>
++#include "HoujiFatVolume.h"
++#include "HoujiQcomMdt.h"
++#include "HoujiUfsPartition.h"
++
++#define HOUJI_FW_MAX (64u * 1024u * 1024u)
++
++static HoujiFatVolume *gVolume;
++
++static int mountModem(void)
++{
++    static const char *const names[] = {"modem_a", "modem_b"};
++    if (gVolume) return 0;
++    HoujiUfsPartition *partition = IOMallocType(HoujiUfsPartition);
++    HoujiFatVolume *volume = IOMallocType(HoujiFatVolume);
++    if (!partition || !volume) {
++        if (partition) IOFreeType(partition, HoujiUfsPartition);
++        if (volume) IOFreeType(volume, HoujiFatVolume);
++        return ENOMEM;
++    }
++    int rc = houji_ufs_partition_open(partition, names, sizeof names / sizeof names[0]);
++    if (!rc && houji_fat_mount(volume, partition->blocks * 4096, houji_ufs_partition_read, partition)) rc = EFTYPE;
++    if (rc) {
++        IOFreeType(partition, HoujiUfsPartition);
++        IOFreeType(volume, HoujiFatVolume);
++        return rc;
++    }
++    gVolume = volume;
++    return 0;
++}
++
++struct modem_image {
++    QcomMdtSplit split;
++    HoujiFatFile piece[QCOM_MDT_MAX_SEGMENTS];
++};
++
++static int pieceRead(void *context, unsigned piece, uint64_t offset, void *to, size_t length)
++{
++    struct modem_image *image = context;
++    return houji_fat_read(gVolume, &image->piece[piece], offset, to, length);
++}
++
++static int validName(const char *name)
++{
++    size_t length = 0;
++    if (!name || !*name) return 0;
++    for (; name[length]; ++length) {
++        const char c = name[length];
++        if (length >= 31 || !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
++                              (c >= '0' && c <= '9') || c == '_' || c == '-')) return 0;
++    }
++    return 1;
++}
++
++static int openModem(const char *name, struct modem_image **result, uint64_t *size)
++{
++    char path[48];
++    if (!validName(name)) return EINVAL;
++    int rc = mountModem();
++    if (rc) return rc;
++    struct modem_image *image = IOMallocType(struct modem_image);
++    if (!image) return ENOMEM;
++    bzero(image, sizeof *image);
++
++    // Qualcomm split images normally carry the compact headers in NAME.mdt. The proven houji image also has usable headers in NAME.b00.
++    HoujiFatFile headers;
++    snprintf(path, sizeof path, "image/%s.mdt", name);
++    rc = houji_fat_open(gVolume, path, &headers);
++    if (rc == HoujiFatNotFound) {
++        snprintf(path, sizeof path, "image/%s.b00", name);
++        rc = houji_fat_open(gVolume, path, &headers);
++    }
++    if (rc == HoujiFatNotFound) rc = ENOENT;
++    else if (rc) rc = EIO;
++    else if (headers.size < 52 || headers.size > 64u * 1024u) rc = EFTYPE;
++    uint8_t *bytes = rc ? NULL : IOMallocData(headers.size);
++    if (!rc && !bytes) rc = ENOMEM;
++    if (!rc && houji_fat_read(gVolume, &headers, 0, bytes, headers.size)) rc = EIO;
++    if (!rc && qcom_mdt_split(&image->split, bytes, headers.size)) rc = EFTYPE;
++    if (bytes) IOFreeData(bytes, headers.size);
++    if (!rc && image->split.size > HOUJI_FW_MAX) rc = EFBIG;
++
++    for (unsigned i = 0; !rc && i < image->split.count; ++i) {
++        if (!image->split.piece[i].size) continue;
 +        snprintf(path, sizeof path, "image/%s.b%02u", name, i);
 +        int found = houji_fat_open(gVolume, path, &image->piece[i]);
 +        if (i == 0 && found == HoujiFatNotFound) {
 +            image->piece[i] = headers;
 +            found = HoujiFatOk;
-         }
++        }
 +        if (found == HoujiFatNotFound) rc = ENOENT;
 +        else if (found) rc = EIO;
-         if (!rc && image->piece[i].size < image->split.piece[i].size) rc = EFTYPE;
++        if (!rc && image->piece[i].size < image->split.piece[i].size) rc = EFTYPE;
++    }
++    if (rc) {IOFreeType(image, struct modem_image); return rc;}
++    *result = image;
++    *size = image->split.size;
++    return 0;
++}
+
+ struct houji_fw {
+     vnode_t vnode;
+     uint64_t size;
++    struct modem_image *modem;
+ };
+
+ int houji_fw_open(const char *path, void **handle, uint64_t *size)
+@@ -20,19 +119,24 @@ int houji_fw_open(const char *path, void **handle, uint64_t *size)
+     struct houji_fw *fw = IOMallocType(struct houji_fw);
+     if (!fw) return ENOMEM;
+     bzero(fw, sizeof *fw);
+-    vfs_context_t ctx = vfs_context_kernel();
+-    int error = vnode_open(path, FREAD, 0, 0, &fw->vnode, ctx);
+-    if (!error) {
+-        struct vnode_attr va;
+-        VATTR_INIT(&va);
+-        VATTR_WANTED(&va, va_data_size);
+-        error = vnode_getattr(fw->vnode, &va, ctx);
+-        if (!error && (vnode_vtype(fw->vnode) != VREG || !VATTR_IS_SUPPORTED(&va, va_data_size) || !va.va_data_size ||
+-                       va.va_data_size > 64u * 1024u * 1024u)) error = EFTYPE;
+-        if (!error) fw->size = va.va_data_size;
++    int error;
++    if (!strncmp(path, "modem:", 6)) {
++        error = openModem(path + 6, &fw->modem, &fw->size);
++    } else {
++        vfs_context_t ctx = vfs_context_kernel();
++        error = vnode_open(path, FREAD, 0, 0, &fw->vnode, ctx);
++        if (!error) {
++            struct vnode_attr va;
++            VATTR_INIT(&va);
++            VATTR_WANTED(&va, va_data_size);
++            error = vnode_getattr(fw->vnode, &va, ctx);
++            if (!error && (vnode_vtype(fw->vnode) != VREG || !VATTR_IS_SUPPORTED(&va, va_data_size) || !va.va_data_size ||
++                           va.va_data_size > HOUJI_FW_MAX)) error = EFTYPE;
++            if (!error) fw->size = va.va_data_size;
++        }
      }
-     if (rc) {IOFreeType(image, struct modem_image); return rc;}
+     if (error) {
+-        if (fw->vnode) vnode_close(fw->vnode, FREAD, ctx);
++        if (fw->vnode) vnode_close(fw->vnode, FREAD, vfs_context_kernel());
+         IOFreeType(fw, struct houji_fw);
+         return error;
+     }
+@@ -45,6 +149,7 @@ int houji_fw_read(void *handle, uint64_t offset, void *to, size_t length)
+ {
+     struct houji_fw *fw = handle;
+     if (!fw || !to || offset > fw->size || length > fw->size - offset) return EINVAL;
++    if (fw->modem) return qcom_mdt_split_read(&fw->modem->split, pieceRead, fw->modem, offset, to, length) ? EIO : 0;
+     vfs_context_t ctx = vfs_context_kernel();
+     uint8_t *out = to;
+     while (length) {
+@@ -64,6 +169,7 @@ void houji_fw_close(void *handle)
+ {
+     struct houji_fw *fw = handle;
+     if (!fw) return;
++    if (fw->modem) IOFreeType(fw->modem, struct modem_image);
+     if (fw->vnode) vnode_close(fw->vnode, FREAD, vfs_context_kernel());
+     IOFreeType(fw, struct houji_fw);
+ }
+diff --git a/package/HoujiFatVolume.c b/package/HoujiFatVolume.c
+new file mode 100644
+index 0000000..fb252a6
+--- /dev/null
++++ b/package/HoujiFatVolume.c
+@@ -0,0 +1,227 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++#include "HoujiFatVolume.h"
++
++static uint16_t le16(const uint8_t *p) {return (uint16_t)(p[0] | (uint16_t)p[1] << 8);}
++static uint32_t le32(const uint8_t *p) {return (uint32_t)le16(p) | (uint32_t)le16(p + 2) << 16;}
++static int fits(uint64_t at, uint64_t length, uint64_t size) {return at <= size && length <= size - at;}
++
++static int vread(HoujiFatVolume *v, uint64_t offset, void *to, size_t length)
++{
++    if (!fits(offset, length, v->size)) return HoujiFatDamaged;
++    return v->read(v->context, offset, to, length) ? HoujiFatReadError : HoujiFatOk;
++}
++
++int houji_fat_mount(HoujiFatVolume *v, uint64_t size, HoujiFatRead read, void *context)
++{
++    uint8_t b[512];
++    if (!v || !read) return HoujiFatReadError;
++    *v = (HoujiFatVolume){0};
++    v->read = read; v->context = context; v->size = size;
++    v->cached_sector = UINT64_MAX;
++    if (size < sizeof b) return HoujiFatNotFat;
++    if (vread(v, 0, b, sizeof b)) return HoujiFatReadError;
++    const uint32_t bps = le16(b + 11), spc = b[13], reserved = le16(b + 14), fats = b[16], root = le16(b + 17);
++    const uint32_t total = le16(b + 19) ? le16(b + 19) : le32(b + 32);
++    const uint32_t fat_sectors = le16(b + 22) ? le16(b + 22) : le32(b + 36);
++    if (b[510] != 0x55 || b[511] != 0xaa) return HoujiFatNotFat;
++    if (bps < 512 || bps > sizeof v->sector || (bps & (bps - 1)) || !spc || (spc & (spc - 1)) || !reserved || !fats || !fat_sectors)
++        return HoujiFatNotFat;
++    const uint64_t root_sectors = ((uint64_t)root * 32 + bps - 1) / bps;
++    const uint64_t data_sector = reserved + (uint64_t)fats * fat_sectors + root_sectors;
++    /* The volume may claim more sectors than its partition holds (houji's 4 MiB bluetooth partition says 64 MiB, and Linux vfat mounts
++     * it): only the tables and the root must fit; every read is still checked against the real size. */
++    if (total <= data_sector || data_sector * bps >= size) return HoujiFatNotFat;
++    const uint64_t clusters = (total - data_sector) / spc;
++    if (clusters < 4085) return HoujiFatNotFat;  /* FAT12 */
++    v->fat32 = clusters >= 65525;
++    if (v->fat32 ? root != 0 : root == 0) return HoujiFatNotFat;
++    /* the table must hold an entry for every cluster */
++    if ((uint64_t)fat_sectors * bps / (v->fat32 ? 4 : 2) < clusters + 2 || clusters > 0x0ffffff0) return HoujiFatNotFat;
++    v->sector_bytes = bps;
++    v->cluster_bytes = bps * spc;
++    v->clusters = (uint32_t)clusters;
++    v->fat_offset = (uint64_t)reserved * bps;
++    v->root_offset = (reserved + (uint64_t)fats * fat_sectors) * bps;
++    v->data_offset = data_sector * bps;
++    v->root_entries = root;
++    v->root_cluster = v->fat32 ? le32(b + 44) & 0x0fffffff : 0;
++    return HoujiFatOk;
++}
++
++static int valid(const HoujiFatVolume *v, uint32_t cluster) {return cluster >= 2 && cluster - 2 < v->clusters;}
++static uint64_t cluster_offset(const HoujiFatVolume *v, uint32_t cluster) {return v->data_offset + (uint64_t)(cluster - 2) * v->cluster_bytes;}
++
++/* The table entry of cluster (valid), through the one-sector cache. */
++static int next_cluster(HoujiFatVolume *v, uint32_t cluster, uint32_t *next)
++{
++    const uint64_t at = v->fat_offset + (uint64_t)cluster * (v->fat32 ? 4 : 2);
++    const uint64_t sector = at / v->sector_bytes;
++    if (sector != v->cached_sector) {
++        v->cached_sector = UINT64_MAX;
++        const int rc = vread(v, sector * v->sector_bytes, v->sector, v->sector_bytes);
++        if (rc) return rc;
++        v->cached_sector = sector;
++    }
++    const uint8_t *e = v->sector + at % v->sector_bytes;
++    *next = v->fat32 ? le32(e) & 0x0fffffff : le16(e);
++    return HoujiFatOk;
++}
++
++static uint8_t upper(char c) {return (uint8_t)(c >= 'a' && c <= 'z' ? c - 32 : c);}
++
++/* The 11-byte directory form of one path component; 0 when it is no 8.3 name. */
++static int short_name(const char *name, size_t length, uint8_t out[11])
++{
++    size_t dot = length;
++    for (size_t i = 0; i < length; ++i) if (name[i] == '.') {if (dot != length) return 0; dot = i;}
++    const size_t ext = dot < length ? length - dot - 1 : 0;
++    if (!dot || dot > 8 || ext > 3 || (dot < length && !ext)) return 0;
++    for (unsigned i = 0; i < 11; ++i) out[i] = ' ';
++    for (size_t i = 0; i < dot; ++i) out[i] = upper(name[i]);
++    for (size_t i = 0; i < ext; ++i) out[8 + i] = upper(name[dot + 1 + i]);
++    return 1;
++}
++
++/* Long names: up to 20 entries of 13 UCS-2 characters each, before the short entry they belong to (checked by its checksum). */
++#define LFN_ENTRIES 20u
++static const uint8_t lfn_slots[13] = {1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30};
++typedef struct {uint16_t text[LFN_ENTRIES * 13]; uint8_t valid, next, sum, count;} LongName;
++
++static uint8_t short_sum(const uint8_t *d)
++{
++    uint8_t sum = 0;
++    for (unsigned i = 0; i < 11; ++i) sum = (uint8_t)(((sum & 1) << 7) + (sum >> 1) + d[i]);
++    return sum;
++}
++
++static void long_part(LongName *l, const uint8_t *d)
++{
++    const unsigned seq = d[0] & 0x1f;
++    if (d[0] & 0x40) {  /* the last part comes first */
++        l->valid = seq >= 1 && seq <= LFN_ENTRIES;
++        l->count = (uint8_t)seq;
++        l->sum = d[13];
++    } else if (!l->valid || seq != l->next - 1u || d[13] != l->sum) {
++        l->valid = 0;
++    }
++    if (!l->valid) return;
++    l->next = (uint8_t)seq;
++    for (unsigned k = 0; k < 13; ++k) l->text[(seq - 1) * 13 + k] = le16(d + lfn_slots[k]);
++}
++
++static int long_matches(const LongName *l, const uint8_t *d, const char *name, size_t length)
++{
++    if (!l->valid || l->next != 1 || short_sum(d) != l->sum) return 0;
++    size_t n = 0;
++    while (n < (size_t)l->count * 13 && l->text[n]) ++n;
++    if (n != length) return 0;
++    for (size_t i = 0; i < n; ++i) if (l->text[i] > 0x7f || upper((char)l->text[i]) != upper(name[i])) return 0;
++    return 1;
++}
++
++/* Looks for a name in a directory (the FAT16 fixed root for cluster 0, else a cluster chain): its long name, or its short name. */
++static int find(HoujiFatVolume *v, uint32_t cluster, const char *name, size_t length, HoujiFatFile *file)
++{
++    uint8_t chunk[512], want[11];
++    LongName l;
++    l.valid = 0;
++    const int has_short = short_name(name, length, want);
++    const int fixed = cluster == 0;
++    if (fixed && v->fat32) cluster = v->root_cluster;
++    uint64_t at = fixed && !v->fat32 ? v->root_offset : 0;
++    uint64_t left = fixed && !v->fat32 ? (uint64_t)v->root_entries * 32 : 0;
++    for (uint32_t walked = 0;;) {
++        if (!(fixed && !v->fat32)) {
++            if (!valid(v, cluster) || walked++ > v->clusters) return HoujiFatDamaged;
++            at = cluster_offset(v, cluster);
++            left = v->cluster_bytes;
++        }
++        while (left) {
++            const size_t n = left < sizeof chunk ? (size_t)left : sizeof chunk;
++            const int rc = vread(v, at, chunk, n);
++            if (rc) return rc;
++            for (size_t e = 0; e + 32 <= n; e += 32) {
++                const uint8_t *d = chunk + e;
++                if (!d[0]) return HoujiFatNotFound;
++                if (d[0] == 0xe5) {l.valid = 0; continue;}
++                if ((d[11] & 0x3f) == 0x0f) {long_part(&l, d); continue;}
++                int same = long_matches(&l, d, name, length);
++                l.valid = 0;
++                if (d[11] & 0x08) continue;  /* the volume label */
++                for (unsigned i = 0; i < 11 && has_short && !same; ++i) {
++                    if (upper((char)d[i]) != want[i]) break;
++                    if (i == 10) same = 1;
++                }
++                if (!same) continue;
++                file->first_cluster = (uint32_t)le16(d + 26) | (v->fat32 ? (uint32_t)le16(d + 20) << 16 : 0);
++                file->size = le32(d + 28);
++                file->directory = (d[11] & 0x10) != 0;
++                return HoujiFatOk;
++            }
++            at += n;
++            left -= n;
++        }
++        if (fixed && !v->fat32) return HoujiFatNotFound;
++        uint32_t next;
++        const int rc = next_cluster(v, cluster, &next);
++        if (rc) return rc;
++        if (!valid(v, next)) return HoujiFatNotFound;  /* the end of the directory */
++        cluster = next;
++    }
++}
++
++int houji_fat_open(HoujiFatVolume *v, const char *path, HoujiFatFile *file)
++{
++    HoujiFatFile at = {0, 0, 1};  /* the root */
++    if (!v || !path || !file) return HoujiFatNotFound;
++    while (*path) {
++        while (*path == '/') ++path;
++        size_t n = 0;
++        while (path[n] && path[n] != '/') ++n;
++        if (!n) break;
++        if (!at.directory) return HoujiFatNotDirectory;
++        const int rc = find(v, at.first_cluster, path, n, &at);
++        if (rc) return rc;
++        path += n;
++    }
++    *file = at;
++    return HoujiFatOk;
++}
++
++int houji_fat_read(HoujiFatVolume *v, const HoujiFatFile *file, uint64_t offset, void *to, size_t length)
++{
++    uint8_t *out = to;
++    if (!v || !file || !to) return HoujiFatReadError;
++    if (file->directory) return HoujiFatIsDirectory;
++    if (!fits(offset, length, file->size)) return HoujiFatRange;
++    if (!length) return HoujiFatOk;
++    uint32_t cluster = file->first_cluster, walked = 0;
++    for (uint64_t skip = offset / v->cluster_bytes; skip; --skip) {
++        if (!valid(v, cluster) || ++walked > v->clusters) return HoujiFatDamaged;
++        const int rc = next_cluster(v, cluster, &cluster);
++        if (rc) return rc;
++    }
++    uint64_t within = offset % v->cluster_bytes;
++    while (length) {
++        if (!valid(v, cluster)) return HoujiFatDamaged;
++        /* a run of consecutive clusters is one read */
++        uint32_t last = cluster, next = 0;
++        uint64_t span = v->cluster_bytes - within;
++        for (;;) {
++            if (++walked > v->clusters) return HoujiFatDamaged;
++            const int rc = next_cluster(v, last, &next);
++            if (rc) return rc;
++            if (span >= length || next != last + 1 || !valid(v, next)) break;
++            last = next;
++            span += v->cluster_bytes;
++        }
++        const size_t take = span < length ? (size_t)span : length;
++        const int rc = vread(v, cluster_offset(v, cluster) + within, out, take);
++        if (rc) return rc;
++        out += take;
++        length -= take;
++        within = 0;
++        cluster = next;
++    }
++    return HoujiFatOk;
++}
+diff --git a/package/HoujiFatVolume.h b/package/HoujiFatVolume.h
+new file mode 100644
+index 0000000..38e5ed4
+--- /dev/null
++++ b/package/HoujiFatVolume.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* A read-only FAT16/FAT32 volume over a byte read callback: enough to find a file by its long or short (8.3) name in a directory path and read
++ * any range of it. Used to take the device's own firmware files from its firmware partition in place. No allocation: the one sector of
++ * the allocation table in use is cached in the volume. The volume's metadata is untrusted: every cluster number and chain is bounds
++ * checked and every chain walk is bounded, so a damaged volume gives an error, never a loop or a read outside the partition. */
++#ifndef HOUJI_FAT_VOLUME_H
++#define HOUJI_FAT_VOLUME_H
++#include <stddef.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Reads length bytes at offset (from the partition start) into to; returns 0 on success. */
++typedef int (*HoujiFatRead)(void *context, uint64_t offset, void *to, size_t length);
++
++enum {
++    HoujiFatOk = 0,
++    HoujiFatReadError = -1,
++    HoujiFatNotFat = -2,     /* no boot sector of a FAT16 or FAT32 volume */
++    HoujiFatNotFound = -3,
++    HoujiFatNotDirectory = -4,
++    HoujiFatIsDirectory = -5,
++    HoujiFatDamaged = -6,    /* a cluster chain leaves the volume, loops or is shorter than the file */
++    HoujiFatRange = -7,      /* the read goes past the end of the file */
++};
++
++typedef struct {
++    HoujiFatRead read;
++    void *context;
++    uint64_t size;                                    /* partition bytes */
++    uint8_t fat32;
++    uint32_t sector_bytes, cluster_bytes, clusters;   /* clusters: data clusters, numbered 2 .. clusters + 1 */
++    uint64_t fat_offset, root_offset, data_offset;    /* bytes from the partition start; root_offset is FAT16 only */
++    uint32_t root_entries, root_cluster;              /* root_entries: FAT16 fixed root; root_cluster: FAT32 */
++    uint64_t cached_sector;                           /* UINT64_MAX: nothing cached */
++    uint8_t sector[4096];
++} HoujiFatVolume;
++
++typedef struct {
++    uint32_t first_cluster, size;
++    uint8_t directory;
++} HoujiFatFile;
++
++int houji_fat_mount(HoujiFatVolume *v, uint64_t size, HoujiFatRead read, void *context);
++/* path: names separated by '/', each matched in any case against the long name, else the 8.3 name ("image/adsp.b00"). */
++int houji_fat_open(HoujiFatVolume *v, const char *path, HoujiFatFile *file);
++int houji_fat_read(HoujiFatVolume *v, const HoujiFatFile *file, uint64_t offset, void *to, size_t length);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/package/HoujiUfsPartition.cpp b/package/HoujiUfsPartition.cpp
+new file mode 100644
+index 0000000..0442dba
+--- /dev/null
++++ b/package/HoujiUfsPartition.cpp
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++#include <sys/errno.h>
++#include <sys/systm.h>
++#include "HoujiUfsPartition.h"
++
++extern "C" int native_ufs_part_find(const char *, uint32_t *, uint64_t *, uint64_t *) __attribute__((weak_import));
++extern "C" int native_ufs_part_read(uint32_t, uint64_t, uint32_t, void *) __attribute__((weak_import));
++
++extern "C" int houji_ufs_partition_open(HoujiUfsPartition *p, const char *const *names, size_t count)
++{
++    if (!p || !names || !count) return EINVAL;
++    if (!native_ufs_part_find || !native_ufs_part_read) return ENXIO;
++    bzero(p, sizeof *p);
++    for (size_t i = 0; i < count; ++i) {
++        uint64_t blocks = 0;
++        if (!names[i]) return EINVAL;
++        if (!native_ufs_part_find(names[i], &p->lun, &p->first_lba, &blocks)) continue;
++        if (!blocks || p->first_lba > UINT32_MAX || blocks - 1 > UINT32_MAX - p->first_lba) return EFTYPE;
++        p->blocks = blocks;
++        p->cached_lba = UINT64_MAX;
++        return 0;
++    }
++    return ENOENT;
++}
++
++extern "C" int houji_ufs_partition_read(void *context, uint64_t offset, void *to, size_t length)
++{
++    HoujiUfsPartition *p = static_cast<HoujiUfsPartition *>(context);
++    uint8_t *out = static_cast<uint8_t *>(to);
++    const uint64_t bytes = p && p->blocks <= UINT64_MAX / 4096 ? p->blocks * 4096 : 0;
++    if (!p || !to || offset > bytes || length > bytes - offset || !native_ufs_part_read) return EINVAL;
++    while (length) {
++        const uint64_t rel = offset / 4096;
++        const size_t within = static_cast<size_t>(offset % 4096);
++        if (!within && length >= 4096) {
++            uint32_t blocks = static_cast<uint32_t>(length / 4096 > 32 ? 32 : length / 4096);
++            if (!native_ufs_part_read(p->lun, p->first_lba + rel, blocks, out)) return EIO;
++            const size_t taken = static_cast<size_t>(blocks) * 4096;
++            out += taken; offset += taken; length -= taken;
++        } else {
++            if (p->cached_lba != rel) {
++                p->cached_lba = UINT64_MAX;
++                if (!native_ufs_part_read(p->lun, p->first_lba + rel, 1, p->block)) return EIO;
++                p->cached_lba = rel;
++            }
++            const size_t taken = 4096 - within < length ? 4096 - within : length;
++            memcpy(out, p->block + within, taken);
++            out += taken; offset += taken; length -= taken;
++        }
++    }
++    return 0;
++}
+diff --git a/package/HoujiUfsPartition.h b/package/HoujiUfsPartition.h
+new file mode 100644
+index 0000000..d51b7fb
+--- /dev/null
++++ b/package/HoujiUfsPartition.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: BSD-2-Clause-Patent */
++/* Read-only byte access to a GPT partition exposed by NativeUfs. */
++#ifndef HOUJI_UFS_PARTITION_H
++#define HOUJI_UFS_PARTITION_H
++#include <stddef.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++    uint32_t lun;
++    uint64_t first_lba, blocks;
++    uint64_t cached_lba;
++    uint8_t block[4096];
++} HoujiUfsPartition;
++
++/* Tries each GPT name in order. Returns 0, ENXIO when NativeUfs is unavailable/not ready, or ENOENT. */
++int houji_ufs_partition_open(HoujiUfsPartition *partition, const char *const *names, size_t count);
++/* Reads partition-relative bytes. Every read is bounded to the partition recorded by open. */
++int houji_ufs_partition_read(void *context, uint64_t offset, void *to, size_t length);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/scripts/build-houji-kit.py b/scripts/build-houji-kit.py
+index af5f36e..75f5118 100644
+--- a/scripts/build-houji-kit.py
++++ b/scripts/build-houji-kit.py
+@@ -14,7 +14,7 @@ OUT.mkdir(parents=True, exist_ok=True)
+ RECORDS = {'.c': OBJ / 'bsd/DEVELOPMENT/kern_exec.o.json', '.cpp': OBJ / 'iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'}
+ # Sources that need osfmk's Mach-private view (struct processor, recount) compile with osfmk/kern/processor.c's own command.
+ RECORD_OVERRIDES = {'HoujiCpuIdle.c': OBJ / 'osfmk/DEVELOPMENT/processor.o.json'}
+-SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c', 'HoujiQcomMdt.c', 'HoujiQcomSmem.c', 'HoujiQcomSmp2p.c', 'HoujiQcomGlink.c', 'HoujiQcomQmp.c', 'HoujiAdspFirmware.c', 'HoujiBattmgr.c', 'HoujiAdspProbe.cpp', 'HoujiBattery.cpp', 'HoujiBatteryProbe.cpp']
++SOURCES = ['HoujiKernelHooks.c', 'HoujiDebugRing.c', 'HoujiUsbConsole.c', 'houji_ram_upload.c', 'HoujiStage0.c', 'HoujiSmmuRoute.cpp', 'HoujiRebootReason.cpp', 'HoujiTouchHid.c', 'HoujiTouch.cpp', 'HoujiButtons.cpp', 'QcomRpmh.c', 'HoujiThermal.cpp', 'HoujiCpuDvfs.cpp', 'HoujiCpuIdle.c', 'HoujiQcomMdt.c', 'HoujiQcomSmem.c', 'HoujiQcomSmp2p.c', 'HoujiQcomGlink.c', 'HoujiQcomQmp.c', 'HoujiFatVolume.c', 'HoujiUfsPartition.cpp', 'HoujiAdspFirmware.c', 'HoujiBattmgr.c', 'HoujiAdspProbe.cpp', 'HoujiBattery.cpp', 'HoujiBatteryProbe.cpp']
+
+
+ def command(record, source, obj):
 diff --git a/scripts/prepare-houji-ufs.py b/scripts/prepare-houji-ufs.py
-index 196f7f4..751dd7c 100644
+index fc09332..bdc5d88 100644
 --- a/scripts/prepare-houji-ufs.py
 +++ b/scripts/prepare-houji-ufs.py
-@@ -112,8 +112,11 @@ def prepare(source, legacy, output):
-         '        for (unsigned g = 0; g < gHoujiPartGrantCount; ++g)\n'
-         '          if (gHoujiPartGrants[g].lun == l && gHoujiPartGrants[g].first == firstLba &&\n'
-         '              gHoujiPartGrants[g].blocks == *blocks) granted = true;\n'
--        '        if (!granted && gHoujiPartGrantCount < 8) gHoujiPartGrants[gHoujiPartGrantCount++] = {l, firstLba, *blocks};\n'
--        '        found = 1;')
+@@ -92,12 +92,44 @@ def prepare(source, legacy, output):
+         'static void houjiStage (const char *stage)\n', 1)
+     commands = (source / 'RootCommands.h').read_text()
+     commands = replace_once(commands, '  *ocs = 15;\n',
+-                            '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
++                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
+     # Also reject the public write entry before it copies or modifies DMA data.
+     commands = replace_once(commands,
+         '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {',
+         '  return kIOReturnNotPermitted; // houji: persistence is not qualified\n'
+         '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {')
++    # The public firmware reader may read only a partition extent first granted by an exact GPT-name lookup. The GPT survey itself is
++    # internal and read-only. This covers all six normal LUNs; on houji modem_a is expected on LUN 4.
++    native = replace_once(native,
++        'extern "C" int native_ufs_part_find (const char *name, uint32_t *lun, uint64_t *first, uint64_t *blocks)\n{',
++        'namespace {\nstruct HoujiPartGrant { uint32_t lun; uint64_t first, blocks; };\n'
++        'HoujiPartGrant gHoujiPartGrants[8] = {};\nunsigned gHoujiPartGrantCount = 0;\n}\n\n'
++        'extern "C" int native_ufs_part_find (const char *name, uint32_t *lun, uint64_t *first, uint64_t *blocks)\n{')
++    native = replace_once(native,
++        '    if (size < 128 || size > 4096 || count > 512) continue;',
++        '    if (entriesLba != 2 || size != 128 || count > 512) continue; /* houji primary GPT entry array: LBA 2..17 */')
++    native = replace_once(native,
++        '        *blocks = lastLba - firstLba + 1;\n        found = 1;',
++        '        *blocks = lastLba - firstLba + 1;\n'
++        '        bool granted = false;\n'
++        '        for (unsigned g = 0; g < gHoujiPartGrantCount; ++g)\n'
++        '          if (gHoujiPartGrants[g].lun == l && gHoujiPartGrants[g].first == firstLba &&\n'
++        '              gHoujiPartGrants[g].blocks == *blocks) granted = true;\n'
 +        '        if (!granted && gHoujiPartGrantCount < 8) {\n'
 +        '          gHoujiPartGrants[gHoujiPartGrantCount++] = {l, firstLba, *blocks};\n'
 +        '          granted = true;\n'
 +        '        }\n'
 +        '        found = granted;')
-     native = replace_once(native,
-         '  if (!gHost.ready || !dst || !blocks || lun > 5) return 0;\n  while (blocks) {',
-         '  if (!gHost.ready || !dst || !blocks || lun > 5 || lba > 0xffffffffULL || blocks - 1 > 0xffffffffULL - lba) return 0;\n'
++    native = replace_once(native,
++        '  if (!gHost.ready || !dst || !blocks || lun > 5) return 0;\n  while (blocks) {',
++        '  if (!gHost.ready || !dst || !blocks || lun > 5 || lba > 0xffffffffULL || blocks - 1 > 0xffffffffULL - lba) return 0;\n'
++        '  bool granted = false;\n'
++        '  for (unsigned i = 0; i < gHoujiPartGrantCount; ++i) {\n'
++        '    const HoujiPartGrant &g = gHoujiPartGrants[i];\n'
++        '    if (g.lun == lun && lba >= g.first && lba - g.first < g.blocks && blocks <= g.blocks - (lba - g.first)) granted = true;\n'
++        '  }\n'
++        '  if (!granted) return 0;\n'
++        '  while (blocks) {')
+     output.mkdir(parents=True, exist_ok=False)
+     for path in source.glob('*.h'):
+         shutil.copyfile(path, output / path.name)
+diff --git a/package/HoujiAdspProbe.cpp b/package/HoujiAdspProbe.cpp
+index a5bb76a..ede9857 100644
+--- a/package/HoujiAdspProbe.cpp
++++ b/package/HoujiAdspProbe.cpp
+@@ -491,30 +491,30 @@ bool attachIrqs() {
+     return true;
+ }
+
+-// Firmware is local-only Data content. houji_adsp_fw=DIR overrides the default directory; both files are validated as MDT images.
+-// The Data volume may not be up when this thread starts, so bounded growing pauses cover its mount.
+-int openPair(Image &dtb, Image &adsp, const char *source, char *path, size_t size) {
+-    const bool modem = false;
+-    snprintf(path, size, modem ? "%sadsp_dtb" : "%s/adsp_dtb.mbn", source);
++// Firmware source: houji_adsp_src=modem|data (default modem). Modem reads the phone's own split image in modem_a/modem_b and falls
++// back to Data. houji_adsp_fw=DIR still overrides the Data directory. The bounded pauses cover either UFS or Data becoming ready.
++int openPair(Image &dtb, Image &adsp, const char *source, bool modem, char *path, size_t size) {
++    snprintf(path, size, modem ? "modem:adsp_dtb" : "%s/adsp_dtb.mbn", source);
+     int rc = openImage(dtb, path);
+     if (rc) return rc;
+-    snprintf(path, size, modem ? "%sadsp" : "%s/adsp.mbn", source);
++    snprintf(path, size, modem ? "modem:adsp" : "%s/adsp.mbn", source);
+     if ((rc = openImage(adsp, path))) release(dtb);
+     return rc;
+ }
+-int openFirmware(Image &dtb, Image &adsp, char *path, size_t size, const char *chosen) {
++int openFirmware(Image &dtb, Image &adsp, char *path, size_t size, const char *chosen, bool dataOnly) {
+     static const uint32_t pauses[] = {1, 2, 4, 8, 16, 30, 30, 30};
+-    const char *sources[1] = {"/private/var/firmware/qcom/sm8650/houji"};
+-    const unsigned count = 1;
+-    if (chosen) sources[0] = chosen;
++    const char *data = chosen ? chosen : "/private/var/firmware/qcom/sm8650/houji";
+     int rc = 0;
+     for (unsigned i = 0;; ++i) {
+         int first = 0;
++        const unsigned count = dataOnly ? 1 : 2;
+         for (unsigned s = 0; s < count; ++s) {
+-            rc = openPair(dtb, adsp, sources[s], path, size);
++            const bool modem = !dataOnly && s == 0;
++            rc = openPair(dtb, adsp, data, modem, path, size);
+             if (!rc) return 0;
+             if (!s) first = rc;
+-            if (rc != ENOENT && rc != ENXIO && rc != EIO) return rc;  // found but unusable: no other source is tried
++            if (s + 1 < count) continue;  // modem is preferred, but every modem failure falls back to Data
++            if (rc != ENOENT && rc != ENXIO && rc != EIO) return rc;
+         }
+         rc = first;  // the reason the first source failed is the one worth reporting
+         if (i == sizeof pauses / sizeof pauses[0]) return rc;

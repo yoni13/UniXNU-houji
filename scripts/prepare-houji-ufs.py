@@ -106,6 +106,9 @@ def prepare(source, legacy, output):
         'HoujiPartGrant gHoujiPartGrants[8] = {};\nunsigned gHoujiPartGrantCount = 0;\n}\n\n'
         'extern "C" int native_ufs_part_find (const char *name, uint32_t *lun, uint64_t *first, uint64_t *blocks)\n{')
     native = replace_once(native,
+        '    if (size < 128 || size > 4096 || count > 512) continue;',
+        '    if (entriesLba != 2 || size != 128 || count > 512) continue; /* houji primary GPT entry array: LBA 2..17 */')
+    native = replace_once(native,
         '        *blocks = lastLba - firstLba + 1;\n        found = 1;',
         '        *blocks = lastLba - firstLba + 1;\n'
         '        bool granted = false;\n'
