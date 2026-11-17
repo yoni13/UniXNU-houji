@@ -466,6 +466,17 @@ static void stackshot_process(const char *name)
     printf("HOUJI HEX: sshot %s %u bytes\n",name,bytes);
     kfree_data(buffer,size);
 }
+extern void sweet_hid_key(int, int);
+extern void IOSleep(unsigned int milliseconds);
+static void key_thread(void *arg,wait_result_t result __unused)
+{
+    const int key=*(const int *)arg;
+    sweet_hid_key(key,1);
+    IOSleep(150);
+    sweet_hid_key(key,0);
+    printf("HOUJI KEY: %s pressed 150 ms\n",key==0?"power":key==1?"volume-up":"volume-down");
+    thread_terminate(current_thread());
+}
 static void readfile_thread(void *arg __unused,wait_result_t result __unused)
 {
     vfs_context_t ctx=vfs_context_kernel();
@@ -804,7 +815,13 @@ static void command_line(void)
     else if (!strcmp(u.command,"buttons")) { extern void houji_buttons_report(void); houji_buttons_report(); }
     else if (!strcmp(u.command,"pon")) { extern void houji_pon_report(void); houji_pon_report(); }
     else if (!strcmp(u.command,"touch")) { houji_touch_report(); houji_touch_driver_report(); }
-    else if (!strcmp(u.command,"key power")) { sweet_hid_key(0,1); delay(120000); sweet_hid_key(0,0); }
+    else if (!strcmp(u.command,"key power") || !strcmp(u.command,"key up") || !strcmp(u.command,"key down")) {
+        /* In a thread that sleeps while the key is held: the buttons sink only records a mask that the HID side reads later, so a press
+           busy-waited inside the console (the old delay(120000)) was released before anyone saw it (fps84b: three presses, no wake). */
+        static int key_index;thread_t t;
+        key_index=u.command[4]=='p'?0:u.command[4]=='u'?1:2;
+        if (kernel_thread_start(key_thread,&key_index,&t)==KERN_SUCCESS) thread_deallocate(t);
+    }
     else if (!strncmp(u.command,"prof ",5)) { extern void houji_prof_command(const char *); houji_prof_command(u.command+5); }
     else if (!strncmp(u.command,"camera ",7)) { extern void houji_camera_command(const char *); houji_camera_command(u.command+7); }
     else if (!strncmp(u.command,"screen ",7)) { extern void houji_screen_command(const char *); houji_screen_command(u.command+7); }
