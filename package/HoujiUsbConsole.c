@@ -396,14 +396,68 @@ static void heartbeat_thread(void *arg,wait_result_t result __unused)
 #include <sys/vnode.h>
 #include <sys/fcntl.h>
 #include <sys/uio.h>
+#include <sys/vnode_if.h>
+#include <sys/dirent.h>
 static char readfile_path[256];
 static int _Atomic readfile_busy;
+static int readfile_mode;   /* 0 readfile (throughput), 1 cat (text lines, at most 48 KiB), 2 ls (directory entries) */
+/* ls PATH: every entry name with its type (d directory, - file, l link, ? other). */
+static void list_directory(vnode_t vp,vfs_context_t ctx)
+{
+    char *buffer=(char *)kalloc_data(16384,Z_WAITOK);
+    if (!buffer) { printf("HOUJI LS: no buffer\n"); return; }
+    unsigned entries=0;int eof=0;off_t offset=0;
+    while (!eof && entries<2000) {
+        uio_t uio=uio_create(1,offset,UIO_SYSSPACE,UIO_READ);
+        if (!uio) break;
+        uio_addiov(uio,CAST_USER_ADDR_T(buffer),16384);
+        int count=0;
+        const int error=VNOP_READDIR(vp,uio,0,&eof,&count,ctx);
+        const size_t got=16384-(size_t)uio_resid(uio);
+        offset=uio_offset(uio);
+        uio_free(uio);
+        if (error) { printf("HOUJI LS: readdir error %d\n",error); break; }
+        if (!got) break;
+        for (size_t at=0;at+8<=got;) {
+            const struct dirent *d=(const struct dirent *)(buffer+at);
+            if (!d->d_reclen) break;
+            if (d->d_ino) {
+                const char type=d->d_type==DT_DIR?'d':d->d_type==DT_REG?'-':d->d_type==DT_LNK?'l':'?';
+                printf("HOUJI LS| %c %.*s\n",type,(int)d->d_namlen,d->d_name);
+                if (!(++entries&31)) delay(20000);
+            }
+            at+=d->d_reclen;
+        }
+    }
+    printf("HOUJI LS: %s %u entries\n",readfile_path,entries);
+    kfree_data(buffer,16384);
+}
 static void readfile_thread(void *arg __unused,wait_result_t result __unused)
 {
     vfs_context_t ctx=vfs_context_kernel();
     vnode_t vp=NULLVP;
     int error=vnode_open(readfile_path,FREAD,0,0,&vp,ctx);
     if (error) { printf("HOUJI READFILE: open %s error %d\n",readfile_path,error); goto out; }
+    if (readfile_mode==2) { list_directory(vp,ctx); vnode_close(vp,FREAD,ctx); goto out; }
+    if (readfile_mode==1) {
+        char *text=(char *)kalloc_data(49152,Z_WAITOK);
+        int resid=0;
+        if (text && !vn_rdwr(UIO_READ,vp,text,49152,0,UIO_SYSSPACE,0,vfs_context_ucred(ctx),&resid,vfs_context_proc(ctx))) {
+            const size_t got=49152-(size_t)resid;char line[200];unsigned n=0,lines=0;
+            for (size_t i=0;i<got;++i) {
+                const char c=text[i];
+                if (c>=32 && c<127 && n<sizeof(line)-1) line[n++]=c;
+                if (c=='\n' || n==sizeof(line)-1 || i+1==got) {
+                    line[n]=0;printf("HOUJI CAT| %s\n",line);n=0;
+                    if (!(++lines&31)) delay(20000);
+                }
+            }
+            printf("HOUJI CAT: %s %zu bytes shown\n",readfile_path,got);
+        } else printf("HOUJI CAT: read failed\n");
+        if (text) kfree_data(text,49152);
+        vnode_close(vp,FREAD,ctx);
+        goto out;
+    }
     const size_t chunk=1u<<20;
     char *buffer=(char *)kalloc_data(chunk,Z_WAITOK);
     if (!buffer) { printf("HOUJI READFILE: no buffer\n"); vnode_close(vp,FREAD,ctx); goto out; }
@@ -655,11 +709,12 @@ static void command_line(void)
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
-    else if (!strncmp(u.command,"readfile ",9)) {
+    else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3)) {
         int expected=0;thread_t th;
         if (!os_atomic_cmpxchg(&readfile_busy,expected,1,acq_rel)) printf("HOUJI READFILE: busy\n");
         else {
-            strlcpy(readfile_path,u.command+9,sizeof(readfile_path));
+            readfile_mode=u.command[0]=='c'?1:u.command[0]=='l'?2:0;
+            strlcpy(readfile_path,u.command+(readfile_mode==1?4:readfile_mode==2?3:9),sizeof(readfile_path));
             if (kernel_thread_start(readfile_thread,NULL,&th)==KERN_SUCCESS) thread_deallocate(th);
             else os_atomic_store(&readfile_busy,0,release);
         }
@@ -737,7 +792,7 @@ static void command_line(void)
             __DATE__,__TIME__,u.events,u.tx_bytes,u.rx_bytes,houji_debug_total(),houji_debug_dropped());
     else if (!strcmp(u.command,"replay")) {
         u.cursor=0;printf("HOUJI DEBUG: replay retained RAM log\n");
-    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt\n");
+    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt ls cat readfile\n");
     u.command_n=0;u.command_overflow=false;
 }
 static void receive_done(unsigned length)
