@@ -344,6 +344,19 @@ int authenticateHeader(Image &image, uint32_t pas, uint64_t base) {
     {char what[64]; snprintf(what, sizeof what, "pas %u mem_setup done span %#llx", pas, qcom_mdt_span(&image.mdt)); step(what);}
     return 0;
 }
+// The region is mapped write-combined, which xnu maps as Device-GRE: memcpy's unaligned tail stores and bzero's DC ZVA are not allowed
+// there (root80: the SoC reset while the first ADSP segment, 21032 bytes + a 3544-byte zero tail, was written; the DTB's 64576-byte
+// segment, a multiple of 64 with no tail, had loaded). Aligned 8-byte stores, single bytes only for an unaligned head or tail.
+void deviceCopy(volatile uint8_t *to, const uint8_t *from, size_t n) {
+    while (n && ((uintptr_t)to & 7)) {*to++ = *from++; --n;}
+    for (; n >= 8; n -= 8, to += 8, from += 8) {uint64_t v; memcpy(&v, from, 8); *reinterpret_cast<volatile uint64_t *>(to) = v;}
+    while (n) {*to++ = *from++; --n;}
+}
+void deviceZero(volatile uint8_t *to, size_t n) {
+    while (n && ((uintptr_t)to & 7)) {*to++ = 0; --n;}
+    for (; n >= 8; n -= 8, to += 8) *reinterpret_cast<volatile uint64_t *>(to) = 0;
+    while (n) {*to++ = 0; --n;}
+}
 int loadSegments(Image &image, uint64_t base, uint64_t size) {
     Window region = {};
     if (!mapWindow(region, base, size, kIOMapWriteCombineCache)) return -12;
@@ -360,10 +373,11 @@ int loadSegments(Image &image, uint64_t base, uint64_t size) {
         for (uint64_t done = 0; !rc && done < s.file_size;) {
             const size_t n = s.file_size - done < kChunk ? (size_t)(s.file_size - done) : kChunk;
             if (houji_fw_read(image.file, s.file_offset + done, bounce, n)) {rc = -5; break;}
-            memcpy(to + done, bounce, n);
+            deviceCopy(to + done, bounce, n);
             done += n;
         }
-        if (!rc && s.memory_size > s.file_size) bzero(to + s.file_size, (size_t)(s.memory_size - s.file_size));
+        if (!rc && s.memory_size > s.file_size) deviceZero(to + s.file_size, (size_t)(s.memory_size - s.file_size));
+        if (i < 3) step(rc ? "seg copy failed" : "seg written");
     }
     __asm__ volatile("dsb sy" ::: "memory");
     if (bounce) IOFreeData(bounce, kChunk);

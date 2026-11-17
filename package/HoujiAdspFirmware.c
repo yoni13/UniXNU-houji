@@ -14,7 +14,6 @@
 
 #define HOUJI_FW_MAX (64u * 1024u * 1024u)
 
-static HoujiUfsPartition *gPartition;
 static HoujiFatVolume *gVolume;
 
 static int mountModem(void)
@@ -35,7 +34,6 @@ static int mountModem(void)
         IOFreeType(volume, HoujiFatVolume);
         return rc;
     }
-    gPartition = partition;
     gVolume = volume;
     return 0;
 }
@@ -93,13 +91,14 @@ static int openModem(const char *name, struct modem_image **result, uint64_t *si
 
     for (unsigned i = 0; !rc && i < image->split.count; ++i) {
         if (!image->split.piece[i].size) continue;
-        if (i == 0) image->piece[i] = headers;
-        else {
-            snprintf(path, sizeof path, "image/%s.b%02u", name, i);
-            const int found = houji_fat_open(gVolume, path, &image->piece[i]);
-            if (found == HoujiFatNotFound) rc = ENOENT;
-            else if (found) rc = EIO;
+        snprintf(path, sizeof path, "image/%s.b%02u", name, i);
+        int found = houji_fat_open(gVolume, path, &image->piece[i]);
+        if (i == 0 && found == HoujiFatNotFound) {
+            image->piece[i] = headers;
+            found = HoujiFatOk;
         }
+        if (found == HoujiFatNotFound) rc = ENOENT;
+        else if (found) rc = EIO;
         if (!rc && image->piece[i].size < image->split.piece[i].size) rc = EFTYPE;
     }
     if (rc) {IOFreeType(image, struct modem_image); return rc;}

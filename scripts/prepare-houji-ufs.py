@@ -112,8 +112,11 @@ def prepare(source, legacy, output):
         '        for (unsigned g = 0; g < gHoujiPartGrantCount; ++g)\n'
         '          if (gHoujiPartGrants[g].lun == l && gHoujiPartGrants[g].first == firstLba &&\n'
         '              gHoujiPartGrants[g].blocks == *blocks) granted = true;\n'
-        '        if (!granted && gHoujiPartGrantCount < 8) gHoujiPartGrants[gHoujiPartGrantCount++] = {l, firstLba, *blocks};\n'
-        '        found = 1;')
+        '        if (!granted && gHoujiPartGrantCount < 8) {\n'
+        '          gHoujiPartGrants[gHoujiPartGrantCount++] = {l, firstLba, *blocks};\n'
+        '          granted = true;\n'
+        '        }\n'
+        '        found = granted;')
     native = replace_once(native,
         '  if (!gHost.ready || !dst || !blocks || lun > 5) return 0;\n  while (blocks) {',
         '  if (!gHost.ready || !dst || !blocks || lun > 5 || lba > 0xffffffffULL || blocks - 1 > 0xffffffffULL - lba) return 0;\n'
