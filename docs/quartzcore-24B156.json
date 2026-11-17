@@ -28,5 +28,91 @@
     "Verified independently: framebuffer_pixel_format directly loads _ca_debug_options+0x81 at 0x18434d080 and +0x9f at 0x18434d08c, each followed by a branch to the RGhA return path.",
     "Verified: local symbol __ZN2CA12WindowServer12IOMFBDisplay24framebuffer_pixel_formatEv is 0x18434cff4; disassembly shows RGhA loaded into w19 and the headroom decision tbnz at 0x18434d078 targeting its return block.",
     "Verified: local symbol CADeviceIsVirtualized::is_virtualized is 0x1edf390c1; CADeviceIsVirtualized_block_invoke stores its result to that byte, and framebuffer_pixel_format reads it."
-  ]
+  ],
+  "rgha_paths": {
+    "normal_uncompressed_format": {
+      "constant_hex": "0x42475241",
+      "fourcc": "BGRA",
+      "selection_address": "0x18434d130",
+      "note": "The ordinary non-deep candidate is loaded by mov/movk into w21. this+0x2b0 bit 3 instead selects 0x62336138 (b3a8); subsequent code may replace either candidate with a compressed FourCC."
+    },
+    "headroom_panel_already_patched": {
+      "branch_address": "0x18434d078",
+      "original_word": "0x37000b48",
+      "instruction": "tbnz w8, #0, 0x18434d1e0",
+      "condition": "Display EDR headroom exceeds CA_FP16_MIN_HEADROOM and the panel headroom exceeds 8.",
+      "minimal_change": "NOP (0xd503201f); already applied.",
+      "note": "This is not the 24A446 +0xf0 virtualized branch."
+    },
+    "force_fp16": {
+      "branch_address": "0x18434d084",
+      "original_word": "0x37000ae8",
+      "instruction": "tbnz w8, #0, 0x18434d1e0",
+      "condition": "_ca_debug_options+0x81 (CA_FORCE_FP16_FRAMEBUFFER) is nonzero.",
+      "minimal_change": "NOP (0xd503201f), allowing normal BGRA/compression selection; runtime value is already zero."
+    },
+    "allow_edr_mirroring": {
+      "branch_address": "0x18434d090",
+      "original_word": "0x37000a88",
+      "instruction": "tbnz w8, #0, 0x18434d1e0",
+      "condition": "_ca_debug_options+0x9f (CA_ALLOW_EDR_MIRRORING) is nonzero.",
+      "minimal_change": "NOP (0xd503201f), allowing normal BGRA/compression selection; runtime value is already zero."
+    },
+    "display_own_fp16_flag": {
+      "display_offset": "0x68c8",
+      "load_address": "0x18434d094",
+      "branch_address": "0x18434d098",
+      "original_word": "0x37000a48",
+      "instruction": "tbnz w8, #0, 0x18434d1e0",
+      "condition": "The byte at this+0x68c8 is nonzero. This is the 24B156 equivalent of the 24A446 this+0x6840 flag.",
+      "minimal_change": "NOP (0xd503201f), allowing the later normal BGRA/compression selector to run."
+    },
+    "precompression_display_gate": {
+      "branch_address": "0x18434d0c8",
+      "original_word": "0x370006e8",
+      "instruction": "tbnz w8, #0, 0x18434d1a4",
+      "condition": "After this+0x75bf equals 1, this+0x6b88 is non-null with the accepted encoded type range, the byte at this+0x75e6 is nonzero.",
+      "effect": "Skips the normal selector while w19 still holds RGhA; later code returns/preserves that candidate.",
+      "minimal_change": "NOP (0xd503201f), allowing CADeviceIsVirtualized and then the normal selector to be evaluated. This path was not identified by a named local symbol."
+    },
+    "virtualized": {
+      "byte_address": "0x1edf390c1",
+      "load_address": "0x18434d0e0",
+      "branch_address": "0x18434d0e4",
+      "original_word": "0x37000608",
+      "instruction": "tbnz w8, #0, 0x18434d1a4",
+      "condition": "CADeviceIsVirtualized::is_virtualized is nonzero.",
+      "effect": "Bypasses the ordinary BGRA/compressed-format selector while w19 still contains RGhA.",
+      "minimal_change": "NOP (0xd503201f). This affects only this decision and falls through to the ordinary selector.",
+      "is_exact_24A446_equivalent": true,
+      "evidence": "Both builds use framebuffer_pixel_format+0xf0 and the identical word 0x37000608."
+    },
+    "post_selection_early_return": {
+      "branch_address": "0x18434d1a8",
+      "original_word": "0x370001c8",
+      "instruction": "tbnz w8, #0, 0x18434d1e0",
+      "condition": "The byte at this+0x75d4 is nonzero.",
+      "effect": "Returns the current candidate unchanged. It can preserve RGhA delivered by the precompression or virtualized bypass, but does not itself select RGhA.",
+      "minimal_change": "No patch recommended; remove the upstream RGhA selector instead."
+    },
+    "virtualized_initialization": {
+      "writer_function": "CADeviceIsVirtualized_block_invoke",
+      "writer_address": "0x18442e290",
+      "call": "MGGetBoolAnswer",
+      "call_target": "0x1881507c0 stub -> 0x1afeafe70",
+      "cfstring_address": "0x1e2280290",
+      "cfstring_key": "IsVirtualDevice",
+      "store_address": "0x18442e2ac",
+      "store_instruction": "strb w0, [x8, #0xc1] with x8 page 0x1edf39000",
+      "once_token": "0x1edf3a908",
+      "read_each_call": true,
+      "write_zero_behavior": "framebuffer_pixel_format executes ldrb from 0x1edf390c1 on every call. If the once initializer has already run, a plugin write of zero persists; if written before first initialization, MGGetBoolAnswer may overwrite it later. The observed nonzero value confirms initialization occurred in this process."
+    },
+    "recommended_patch": {
+      "address": "0x18434d0e4",
+      "expected_word": "0x37000608",
+      "replacement_word": "0xd503201f",
+      "reason": "Exact old-build semantic equivalent and narrowly disables only QuartzCore framebuffer selection based on virtualization. It avoids changing the global CADeviceIsVirtualized result used by many unrelated QuartzCore paths."
+    }
+  }
 }

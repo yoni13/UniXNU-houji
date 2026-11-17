@@ -1,5 +1,5 @@
 diff --git a/NativeAdrenoMetalPlugin.mm b/NativeAdrenoMetalPlugin.mm
-index ffa797d..97e06d1 100644
+index ffa797d..7f797ae 100644
 --- a/NativeAdrenoMetalPlugin.mm
 +++ b/NativeAdrenoMetalPlugin.mm
 @@ -125,11 +125,11 @@ static bool bootArgSet(const char *key) {
@@ -16,7 +16,7 @@ index ffa797d..97e06d1 100644
      const vm_address_t page = site & ~(uintptr_t)(vm_page_size - 1);
      if (vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) return 0x6E51;
      const uint32_t nop = 0xd503201f;
-@@ -469,15 +469,30 @@ static id deviceForPort(unsigned port) {
+@@ -469,15 +469,35 @@ static id deviceForPort(unsigned port) {
          setenv("CA_FP16_MIN_HEADROOM", "1e30", 1);
          setenv("CA_ALLOW_EDR_MIRRORING", "0", 1);
  #if !TARGET_OS_OSX
@@ -27,11 +27,13 @@ index ffa797d..97e06d1 100644
 +        // chosen by CARenderServerStart's low 14 bits (the shared cache slides by whole 16 KiB pages); an unknown QuartzCore gets no write.
 +        // 24A446: iPadOS 27 (as before). 24B156: iOS 27.2.1, from the build's own init_debug option tables, debug_values / _ca_debug_options
 +        // local symbols and IOMFBDisplay::framebuffer_pixel_format (the bool options moved: force 129, mirroring 159).
++        // branch2: a second framebuffer_pixel_format branch to NOP (24B156: the IsVirtualDevice test, which reloads the virtualized byte on
++        // every call and keeps RGhA; root59 read the byte set and still got half-float swaps with only the headroom branch patched).
 +        struct QcLayout {uintptr_t start, edr, fp16Min, options; unsigned force, mirroring; uintptr_t branch; uint32_t branchWord;
-+                         uintptr_t virtualized, virtualizedKey;};
++                         uintptr_t virtualized, virtualizedKey, branch2; uint32_t branch2Word;};
 +        static const QcLayout kLayouts[] = {
-+            {0x1846dce88, 0x1e7021014, 0x1e7021104, 0x1e702116c, 128, 156, 0x184461928, 0x37000608, 0x1e701bdd9, 0x1e9021680},
-+            {0x1845ce544, 0x1edf3e474, 0x1edf3e564, 0x1edf3e5cc, 129, 159, 0x18434d078, 0x37000b48, 0x1edf390c1, 0},
++            {0x1846dce88, 0x1e7021014, 0x1e7021104, 0x1e702116c, 128, 156, 0x184461928, 0x37000608, 0x1e701bdd9, 0x1e9021680, 0, 0},
++            {0x1845ce544, 0x1edf3e474, 0x1edf3e564, 0x1edf3e5cc, 129, 159, 0x18434d078, 0x37000b48, 0x1edf390c1, 0, 0x18434d0e4, 0x37000608},
 +        };
 +        void *start = dlsym(RTLD_DEFAULT, "CARenderServerStart");
 +        static const QcLayout *gLayout;
@@ -50,11 +52,14 @@ index ffa797d..97e06d1 100644
 -            gpu->mark(writeTask(0x1e702116c + 156 + slide, &off, sizeof off) ? 0x6E03 : 0x6EF3);
 -            if (!strcmp(getprogname(), "backboardd") && bootArgSet("fb-bgra=1")) gpu->mark(patchFramebufferBranch(0x184461928 + slide));
 +            gpu->mark(writeTask(L->options + L->mirroring + slide, &off, sizeof off) ? 0x6E03 : 0x6EF3);
-+            if (!strcmp(getprogname(), "backboardd") && bootArgSet("fb-bgra=1")) gpu->mark(patchFramebufferBranch(L->branch + slide, L->branchWord));
++            if (!strcmp(getprogname(), "backboardd") && bootArgSet("fb-bgra=1")) {
++                gpu->mark(patchFramebufferBranch(L->branch + slide, L->branchWord));
++                if (L->branch2) gpu->mark(patchFramebufferBranch(L->branch2 + slide, L->branch2Word) | 0x100);   // 0x6F4x: the second branch
++            }
              // What framebuffer_pixel_format reads in the render server, once the desktop has started (other processes draw no
              // framebuffer): 0x6E20 | 1 headroom override 1, 2 threshold above 1, 4 CA_FORCE_FP16_FRAMEBUFFER (_ca_debug_options
              // 0x1e702116c + 128), 8 CA_ALLOW_EDR_MIRRORING (+ 156), 0x10 the device-is-virtualized byte (0x1e701bdd9).
-@@ -490,15 +505,16 @@ static id deviceForPort(unsigned port) {
+@@ -490,15 +510,16 @@ static id deviceForPort(unsigned port) {
              pthread_t reader;
              if (!strcmp(getprogname(), "backboardd") && pthread_create(&reader, nullptr, [](void *arg) -> void * {
                  sleep(30);

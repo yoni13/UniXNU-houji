@@ -47,6 +47,10 @@ def prepare(source, legacy, output):
                           'if (PE_parse_boot_argn ("wifi", &wifi, sizeof (wifi)) && wifi >= 2) { /* houji: wifi>=2 */')
     native = replace_once(native, 'PE_parse_boot_argn ("sheng-wifi-attr", &attr, sizeof (attr));',
                           'PE_parse_boot_argn ("wifi-attr", &attr, sizeof (attr));')
+    # 64 MiB instead of 48: houji's ath12k peaked at 49.9 MB and failed its REO destination ring on a 69632-byte allocation (root61,
+    # 'dma window full: want 69632 free 438976 largest 61440'). The stage 1 table maps 2 MiB blocks at IOVA 0x10000000 upward.
+    native = replace_once(native, 'kExtraIova = 0x10000000U, kExtraBlocks = 24, kBlock = 2U << 20;',
+                          'kExtraIova = 0x10000000U, kExtraBlocks = 32, kBlock = 2U << 20;   /* houji: 64 MiB */')
     native = replace_once(native, 'extraReport, 0x9c900000ULL, 8ULL << 20);',
                           'extraReport, 0x9c900000ULL, 8ULL << 20, gHost.hc);')
     native = replace_once(native, 'if (dpu >= 2 || scanout) {',
