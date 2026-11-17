@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// One explicit cumulative gate: 1 survey, 2 PAS boot, 3 GLINK channel, 4 reads, 5 IOPMPowerSource.
+// One explicit cumulative gate: 1 survey, 2 PAS boot, 3 GLINK channel, 4 reads, 5 IOPMPowerSource, 6 charger control.
 #include <IOKit/IOService.h>
 #include <libkern/OSKextLib.h>
 #include <mach/kmod.h>
@@ -30,7 +30,7 @@ static void houji_battery_report(void *, wait_result_t)
 extern "C" void houji_battery_probe(void)
 {
     unsigned mode=0;
-    if(!PE_parse_boot_argn("battery",&mode,sizeof mode)||mode<1||mode>5)return;
+    if(!PE_parse_boot_argn("battery",&mode,sizeof mode)||mode<1||mode>6)return;
     thread_t reporter;
     if(kernel_thread_start(houji_battery_report,nullptr,&reporter)==KERN_SUCCESS)thread_deallocate(reporter);
     houji_adsp_probe(mode);

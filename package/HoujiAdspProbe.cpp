@@ -710,7 +710,7 @@ extern "C" int houji_adsp_send(HoujiAdspChannel *c, const void *data, uint32_t l
 }
 
 extern "C" void houji_adsp_probe(unsigned mode) {
-    if (mode < 1 || mode > 5 || native_adsp_stats[0]) return;
+    if (mode < 1 || mode > 6 || native_adsp_stats[0]) return;
     gClientLock = IOLockAlloc();
     thread_t thread = nullptr;
     if (!gClientLock || kernel_thread_start(adspThread, (void *)(uintptr_t)mode, &thread) != KERN_SUCCESS) {fail(StMapped, -7); return;}
