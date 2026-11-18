@@ -1370,6 +1370,11 @@ static void command_line(void)
     else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
     else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"io")) io_command();
+    else if (!strcmp(u.command,"mt")) {
+        /* The render server's Metal bridge telemetry table (diag=1; NativeAdrenoPublish.cpp): its memory pools, purge and cache rows. */
+        extern char native_adreno_metal_rows[48][96];
+        for (int r=0;r<48;r++) if (native_adreno_metal_rows[r][0]) printf("HOUJI MT %02d %.95s\n",r,native_adreno_metal_rows[r]);
+    }
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
