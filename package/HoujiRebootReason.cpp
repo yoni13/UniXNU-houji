@@ -59,6 +59,32 @@ void houji_reboot_reason_at_reset(void) {
 // peripherals PON_PBS (SID 0 0x0800; on PMIC5 Gen3 the PON, warm-reset, power-off and fault reason registers) and PON_HLOS (0x1300),
 // read through this EE's observer channel. Read only. Compared between a known restart (console "reboot bootloader") and an unexplained
 // one, it tells a PS_HOLD/software reset from a watchdog bite or a PMIC fault.
+// The PMK8550 real-time clock (PMIC SID 0, peripheral 0x61, as Linux rtc-pm8xxx's pmk8350 layout: control 0x46 bit 7 enabled, count
+// 0x48..0x4b little-endian seconds). Read only, twice so a carry between the byte reads shows. 0 on success.
+extern "C" int houji_rtc_read(uint32_t *seconds, uint8_t *control);
+extern "C" int houji_rtc_read(uint32_t *seconds, uint8_t *control) {
+  int rc = houji_reboot_reason_prepare(0);
+  if (rc) return 100 + rc;
+  const uint32_t apids = spmiCore[BR_FEATURES / 4] & BR_FEATURES_APIDS_MASK;
+  int apid = -1;
+  for (uint32_t i = 0; i < apids; ++i) {
+    const uint32_t map = spmiCore[(BR_APID_MAP + 4 * i) / 4];
+    if (map && ((map >> 8) & 0xfff) == 0x061) {apid = (int)i; break;}
+  }
+  if (apid < 0) return 200;
+  if (br_read8(spmiObs, &arb, apid, 0x46, control)) return 201;
+  uint32_t value[2] = {0, 0};
+  for (int pass = 0; pass < 2; ++pass) {
+    for (int b = 0; b < 4; ++b) {
+      uint8_t v = 0;
+      if (br_read8(spmiObs, &arb, apid, (uint8_t)(0x48 + b), &v)) return 202;
+      value[pass] |= (uint32_t)v << (8 * b);
+    }
+  }
+  // A carry between bytes: the second read is consistent unless it also straddled one, which the difference shows.
+  *seconds = value[1] - value[0] <= 1 ? value[1] : 0;
+  return *seconds ? 0 : 203;
+}
 extern "C" void houji_pon_report(void);
 extern "C" void houji_pon_report(void) {
   int rc = houji_reboot_reason_prepare(0);

@@ -1001,6 +1001,14 @@ void publishMac() {
     if (!boardMac(m)) return;
     if (IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane)) {
         if (!chosen->getProperty("mac-address-wifi0")) chosen->setProperty("mac-address-wifi0", m, sizeof m);
+        // bt-mac=1: the Bluetooth address beside it (the Wi-Fi one + 1 in the last byte, still locally administered), which MobileGestalt
+        // and bluetoothd read as the boot loader's record; root90 showed no Bluetooth row without any of these addresses.
+        unsigned btMac = 0;
+        if (PE_parse_boot_argn("bt-mac", &btMac, sizeof btMac) && btMac == 1 && !chosen->getProperty("mac-address-bluetooth0")) {
+            uint8_t b[6]; memcpy(b, m, sizeof b); b[5] = (uint8_t)(b[5] + 1);
+            chosen->setProperty("mac-address-bluetooth0", b, sizeof b);
+            IOLog("HOUJI WIFI: /chosen mac-address-bluetooth0 published (local address)\n");
+        }
         chosen->release();
     }
     if (IORegistryEntry *wlan = IORegistryEntry::fromPath("/arm-io/wlan", gIODTPlane)) {

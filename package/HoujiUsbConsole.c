@@ -793,6 +793,15 @@ static void fi_command(const char *cmd)
         native_legacy_frameinfo_override,native_legacy_frameinfo[0],native_legacy_frameinfo[1],native_legacy_frameinfo[2],
         native_legacy_frameinfo[3],native_legacy_frameinfo[4],native_legacy_frameinfo[5],native_legacy_frameinfo[6]);
 }
+extern int houji_rtc_read(uint32_t *seconds, uint8_t *control);
+static void rtc_command(void)
+{
+    /* The PMIC RTC's raw count next to the kernel calendar: their difference is the offset a clock driver would apply. */
+    uint32_t secs=0;uint8_t control=0;int rc=houji_rtc_read(&secs,&control);
+    clock_sec_t now=0;clock_usec_t us=0;clock_get_calendar_microtime(&now,&us);
+    printf("HOUJI RTC: rc=%d raw=%u control=%02x enabled=%u calendar=%lu calendar-minus-raw=%lld\n",rc,secs,control,(control>>7)&1,
+        (unsigned long)now,(long long)now-(long long)secs);
+}
 static void gop_command(void)
 {
 #define GOPV(x) (&(x)?(unsigned long long)(x):~0ull)
@@ -1019,6 +1028,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"swaps")) swaps_command();
     else if (!strcmp(u.command,"gop")) gop_command();
     else if (!strcmp(u.command,"disp") || !strcmp(u.command,"disp reset")) disp_command(u.command);
+    else if (!strcmp(u.command,"rtc")) rtc_command();
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
