@@ -874,6 +874,48 @@ static void vm_command(void)
            native_adreno_client_bytes[4][0],native_adreno_client_bytes[4][1],native_adreno_client_stats[0][2],native_adreno_client_stats[1][2],
            native_adreno_client_stats[2][2],native_adreno_client_stats[3][2]);
 }
+/* houji_no_posters=1 (opt-in): the wallpaper gallery's poster extensions are refused at exec (a MAC policy's vnode exec check).
+ * Data is a fresh RAM seed on every boot, so PosterBoard builds its gallery again each time: seven such extensions held about
+ * 1.3 GB (houji root151) on a 4 GiB phone whose wired memory leaves ~0.5 GB pageable, and every swipe stalled in page faults.
+ * The current wallpaper's provider is refused too (its poster may stay empty). Counted in houji_posters_refused. */
+#include <security/mac_policy.h>
+#include <sys/vnode.h>
+volatile uint32_t houji_posters_refused;
+static const char *const poster_names[]={"AegirPoster","RhizomePoster","MercuryPosterExtension","KaleidoscopePoster",
+    "PhotosPosterProvider","GradientPosterExtension","CollectionsPoster"};
+static int posters_check_exec(kauth_cred_t cred __unused,struct vnode *vp,struct vnode *scriptvp __unused,struct label *vl __unused,
+    struct label *sl __unused,struct label *el __unused,struct componentname *cnp __unused,u_int *csflags __unused,void *attr __unused,
+    size_t attrlen __unused)
+{
+    const char *name=vp?vnode_getname(vp):NULL;
+    int refuse=0;
+    if (name) {
+        for (unsigned i=0;i<sizeof poster_names/sizeof poster_names[0];i++) if (!strcmp(name,poster_names[i])) { refuse=1;break; }
+        vnode_putname(name);
+    }
+    if (refuse) { houji_posters_refused=houji_posters_refused+1; return EPERM; }
+    return 0;
+}
+static struct mac_policy_ops posters_ops;
+static struct mac_policy_conf posters_conf;
+static mac_policy_handle_t posters_handle;
+static void posters_register(void *arg __unused,wait_result_t result __unused)
+{
+    gesture_sleep_ms(5000);
+    posters_ops.mpo_vnode_check_exec=posters_check_exec;
+    posters_conf.mpc_name="houji_no_posters";posters_conf.mpc_fullname="houji: no wallpaper gallery extensions";
+    posters_conf.mpc_ops=&posters_ops;posters_conf.mpc_loadtime_flags=0;
+    const int error=mac_policy_register(&posters_conf,&posters_handle,NULL);
+    printf("HOUJI POSTERS: exec refusal policy registered, error %d\n",error);
+    thread_terminate(current_thread());
+}
+/* Registered by a thread the console starts, 5 s later: the MAC framework is up long before, and no poster runs before SpringBoard. */
+static void posters_arm(void)
+{
+    unsigned v=0;thread_t t;
+    if (!PE_parse_boot_argn("houji_no_posters",&v,sizeof v) || v!=1) return;
+    if (kernel_thread_start(posters_register,NULL,&t)==KERN_SUCCESS) thread_deallocate(t);
+}
 static void qos_command(const char *args)
 {
     static struct qos_request r;
@@ -1674,6 +1716,7 @@ static void reset_after_thread(void *arg,wait_result_t result __unused)
 void houji_usb_debug_start(void)
 {
     static bool attempted;
+    { static bool posters_armed; if (!posters_armed) { posters_armed=true; posters_arm(); } }
     {
         static bool armed;unsigned seconds=0;thread_t t;
         if (!armed && PE_parse_boot_argn("houji_reset_after_s",&seconds,sizeof(seconds)) && seconds>=5) {
