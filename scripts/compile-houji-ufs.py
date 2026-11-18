@@ -59,8 +59,13 @@ OSDefineAbstractStructors(IOBlockStorageDevice, IOService)
 OSDefineOperatorMethods(IOBlockStorageDevice)
 '''))
         package = Path(__file__).resolve().parents[1] / 'package'
-        # The Data RAM disk; its two hooks this kernel lacks have weak fallbacks in package/SourceStorage.cpp.
-        sources = [base, ufs / 'NativeUfs.cpp', framework / 'drivers/RamBlock/NativeRamBlock.cpp']
+        # Select the houji hooks/metadata in the separately patched RamBlock checkout.
+        ram_block = framework / 'drivers/RamBlock/NativeRamBlock.cpp'
+        if 'HOUJI_PERSISTENT_DATA' not in ram_block.read_text():
+            raise SystemExit('Apply scripts/unixnu-persistent-data.patch to the UniXNU checkout first')
+        if '#include "HoujiUfsDataStore.h"' not in (ufs / 'NativeUfs.cpp').read_text():
+            raise SystemExit('Regenerate the houji UFS sources with the patched prepare-houji-ufs.py')
+        sources = [base, ufs / 'NativeUfs.cpp', ram_block]
         sources += [package / name for name in ('SourceStorage.cpp', 'SourceRootPolicies.cpp', 'SourceRootBinding.cpp',
                                                 'BootWatchdogPolicy.c')]
         sources += [framework / 'kits/VerifiedRoot/src/verified_root.c', framework / 'kits/VerifiedRoot/adapters/xnu_crypto.c']
@@ -78,6 +83,8 @@ OSDefineOperatorMethods(IOBlockStorageDevice)
         obj = out / (source.stem + '.o')
         selected = (bsd_record if source.name == 'BootWatchdogPolicy.c' else c_record) if source.suffix == '.c' else record
         command = build.compile_command(selected, source, obj, includes, flags)
+        if source.name == 'NativeRamBlock.cpp':
+            command.append('-DHOUJI_PERSISTENT_DATA=1')
         if source.name == 'IOBlockStorageDevice.cpp':
             command.append('-Wno-error')  # Same public-source compatibility as the archive builder.
         (out / (source.stem + '.command.json')).write_text(json.dumps(command, indent=2) + '\n')

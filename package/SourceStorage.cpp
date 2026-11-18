@@ -14,11 +14,10 @@ extern "C" void source_storage_base_init(void) __asm__("__GLOBAL__sub_I_IOBlockS
 extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs.cpp");
 extern "C" IOService *native_ufs_source_create(void);
 extern "C" void source_storage_ram_init(void) __asm__("__GLOBAL__sub_I_NativeRamBlock.cpp");
-// The Data RAM disk's optional hooks this kernel does not have: keep the loader's seed pages (no release of loader memory),
-// and no write-back cache path to UFS (storage writes are prohibited in this port). Ordinary definitions: neither exists
-// elsewhere in this kernel, and a weak definition would leave a weak binding that the prelink cannot resolve.
+// Keep the loader's seed pages: this kernel has no release hook. NativeUfs supplies the store hooks.
 extern "C" bool ml_static_mfree_prepare(vm_offset_t, vm_size_t) { return false; }
-extern "C" int native_ufs_store_write_cached(uint64_t, uint32_t, const void *) { return -1; }
+extern "C" unsigned native_ufs_store_mode(void);
+extern "C" volatile uint32_t native_data_persist_state;
 extern "C" bool native_source_root_policies_load(void);
 extern "C" void native_source_storage_start(void);
 extern "C" int houji_usb_connected(void);
@@ -78,7 +77,8 @@ extern "C" void native_source_storage_start(void)
     if (!driver->attach(provider)) panic("HoujiStorage: UFS attach failed");
     step("UFS attached; starting (hardware access)");
     if (!driver->start(provider)) panic("HoujiStorage: UFS start failed");
-    printf("HoujiStorage: source UFS started (storage writes prohibited)\n");
+    printf("HoujiStorage: source UFS started (%s)\n",
+           native_ufs_store_mode() ? "bounded Data overlay requested" : "storage writes prohibited");
     // The Data seed the loader placed in /chosen/memory-map (PackedRAMDisk): a RAM disk below the platform root.
     IORegistryEntry *map = IORegistryEntry::fromPath("/chosen/memory-map", gIODTPlane);
     const bool seed = map && (map->getProperty("PackedRAMDisk") || map->getProperty("RAMDisk"));
@@ -86,6 +86,6 @@ extern "C" void native_source_storage_start(void)
     if (seed) {
         IOService *disk = OSDynamicCast(IOService, OSMetaClass::allocClassWithName("NativeRamBlock"));
         if (!disk || !disk->init() || !disk->attach(provider) || !disk->start(provider)) panic("HoujiStorage: Data disk start failed");
-        printf("HoujiStorage: Data disk started (RAM only)\n");
+        printf("HoujiStorage: Data disk started (overlay state %u)\n", native_data_persist_state);
     }
 }

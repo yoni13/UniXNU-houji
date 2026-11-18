@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a local, read-only houji adaptation of pinned ShengUfs sources.
+"""Prepare a houji adaptation of pinned ShengUfs, with an opt-in Data store.
 
 Does not select a kernel archive or claim storage ABI/runtime qualification.
 The proven houji SMMU planner is supplied from the legacy source checkout.
@@ -18,6 +18,12 @@ def replace_once(text, old, new):
     if text.count(old) != 1:
         raise ValueError(f'upstream interface changed: {old[:80]}')
     return text.replace(old, new)
+
+
+def replace_section(text, start, end, new):
+    if text.count(start) != 1 or text.count(end) != 1 or text.index(start) >= text.index(end):
+        raise ValueError(f'upstream section changed: {start}')
+    return text[:text.index(start)] + new + text[text.index(end):]
 
 
 def prepare(source, legacy, output):
@@ -90,14 +96,48 @@ def prepare(source, legacy, output):
     native = native.replace('static void houjiStage (const char *stage)\n',
         '#define houjiReport(...) do { IOLog (__VA_ARGS__); IOLog ("\\n"); IOSleep (2000); panic (__VA_ARGS__); } while (0)\n'
         'static void houjiStage (const char *stage)\n', 1)
+    native = replace_once(native, '#include <pexpert/pexpert.h>', '#include <pexpert/pexpert.h>\n'
+                          '#include <pexpert/boot.h>\n#include "PersistentDataCore.h"')
+    native = replace_once(native, '#include "RootCommands.h"',
+                          'static bool houjiDataArmed ()\n{\n'
+                          '  return houji_data::optedIn (PE_boot_args (), BOOT_LINE_LENGTH);\n}\n\n'
+                          '#include "RootCommands.h"')
+    native = replace_section(native, '// ---- Persistent Data store window', '// ---- Read-only access to other partitions',
+                             '#include "HoujiUfsDataStore.h"\n\n')
+    # No Sheng log/export window or emergency unlocked panic submissions on this board.
+    native = replace_section(native, '// ---- Diagnostic log window', '// One read-only window of the root image', '')
+    # The legacy probe uses another doorbell path. Keep it read-only regardless of the Data flag.
+    command = 'unsigned cdbLength, bool toHost, uint32_t length) -> UfsResult {\n'
+    native = replace_once(native, command, command +
+        '    if ((length && !toHost) || (cdb[0] != 0x00 && cdb[0] != 0x1b && cdb[0] != 0x12 &&\n'
+        '        cdb[0] != 0x25 && cdb[0] != 0x28)) panic ("HOUJI UFS: legacy probe command refused");\n'
+    )
+    native = replace_once(native,
+        '// Nothing here writes to the storage: only INQUIRY-class and READ(10) commands are built, plus\n'
+        '// the single START STOP UNIT that wakes the device from the power-down the firmware left.',
+        '// Root I/O stays read-only. Only an explicitly opened houji Data store can submit WRITE(10).')
     commands = (source / 'RootCommands.h').read_text()
-    commands = replace_once(commands, '  *ocs = 15;\n',
-                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
-    # Also reject the public write entry before it copies or modifies DMA data.
-    commands = replace_once(commands,
-        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {',
-        '  return kIOReturnNotPermitted; // houji: persistence is not qualified\n'
-        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {')
+    commands = replace_once(commands, 'struct HardwareTransferPort {',
+        'static bool houjiCommandAllowed (const uint8_t *, uint32_t, uint32_t);\n\nstruct HardwareTransferPort {')
+    commands = replace_once(commands, '  if (gHost.poisoned) return kIOReturnNotReady;\n',
+        '  if (gHost.poisoned) return kIOReturnNotReady;\n'
+        '  if (!houjiCommandAllowed (gHost.virt + kUcdOffset, direction, dataBytes))\n'
+        '    return kIOReturnNotPermitted;\n')
+    commands = replace_once(commands, 'if (!gHost.ready || !dst || !blocks', 'if (!dst || !blocks')
+    commands = replace_once(commands, '  IOLockLock (gHost.lock);\n  gRootDiagnostic.lba = lba;',
+        '  IOLockLock (gHost.lock);\n'
+        '  if (!gHost.ready || gHost.poisoned) {\n'
+        '    IOLockUnlock (gHost.lock);\n'
+        '    return kIOReturnNotReady;\n'
+        '  }\n  gRootDiagnostic.lba = lba;')
+    tail = '// ---- Persistent store and log windows'
+    if commands.count(tail) != 1:
+        raise ValueError('upstream persistent command section changed')
+    commands = commands[:commands.index(tail)] + (
+        '#include "HoujiUfsWriteCommands.h"\n\n'
+        'static bool houjiCommandAllowed (const uint8_t *ucd, uint32_t dir, uint32_t bytes)\n{\n'
+        '  const bool armed = ucd[0] == 1 && (ucd[16] == 0x2a || ucd[16] == 0x35) && houjiDataArmed ();\n'
+        '  return houji_data::commandAllowed (armed, gHoujiStoreWindow, ucd, dir, bytes);\n}\n')
     # The public firmware reader may read only a partition extent first granted by an exact GPT-name lookup. The GPT survey itself is
     # internal and read-only. This covers all six normal LUNs; on houji modem_a is expected on LUN 4.
     native = replace_once(native,
@@ -133,16 +173,19 @@ def prepare(source, legacy, output):
     output.mkdir(parents=True, exist_ok=False)
     for path in source.glob('*.h'):
         shutil.copyfile(path, output / path.name)
+    package = Path(__file__).resolve().parents[1] / 'package'
+    for name in ('PersistentDataCore.h', 'HoujiUfsDataStore.h', 'HoujiUfsWriteCommands.h'):
+        shutil.copyfile(package / name, output / name)
     shutil.copyfile(legacy / 'GiuliaSmmuTakeover.h', output / 'GiuliaSmmuTakeover.h')
     (output / 'NativeUfs.cpp').write_text(native)
     (output / 'RootCommands.h').write_text(commands)
-    report = dict(upstream_revision=revision, writes_enabled=False, storage_abi_qualified=False,
+    report = dict(upstream_revision=revision, write_opt_in='native-data=userdata', storage_abi_qualified=False,
                   hardware_tested=False, sources={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                                   for p in sorted(output.iterdir()) if p.is_file()})
     (output / 'houji-adaptation.json').write_text(json.dumps(report, indent=2) + '\n')
     print('PASS: pinned ShengUfs adapted with houji quiescent SMMU retargeting')
-    print('PASS: hostWrite4k and hostSubmit(direction=1) reject writes')
-    print('NOT QUALIFIED: arm64e 24B156 ABI, compilation, hardware block reads')
+    print('PASS: Data-only write policy installed at hostWrite4k and hostSubmit; Sheng disk logging removed')
+    print('NOT QUALIFIED: arm64e 24B156 compile/link/ABI or hardware I/O')
 
 
 if __name__ == '__main__':

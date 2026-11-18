@@ -1,0 +1,357 @@
+diff --git a/drivers/RamBlock/NativeRamBlock.cpp b/drivers/RamBlock/NativeRamBlock.cpp
+--- a/drivers/RamBlock/NativeRamBlock.cpp
++++ b/drivers/RamBlock/NativeRamBlock.cpp
+@@ -36,16 +36,23 @@
+ volatile uint32_t native_ram_block_sparse = 0;
+ volatile uint32_t native_ram_block_seed_released = 0;   // pages of the loader's packed seed returned to the VM
+ uint8_t native_ram_block_seed_sha256[32];
+-// Optional persistence of the changed pages through a board-provided store window (see PersistOverlay.h). All weak: a build
+-// without the provider keeps the volatile disk.
+-unsigned native_ufs_store_mode(void) __attribute__((weak_import));
+-int native_ufs_store_open(uint64_t, uint64_t *, const char **) __attribute__((weak_import));
+-int native_ufs_store_read(uint64_t, uint32_t, void *) __attribute__((weak_import));
+-int native_ufs_store_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
++// The houji archive carries all callbacks and must not leave weak imports for prelink.
++#if defined(HOUJI_PERSISTENT_DATA)
++#define RAM_STORE_IMPORT
++bool native_ufs_store_reset_requested(void);
++void native_ufs_store_close(void);
++#else
++#define RAM_STORE_IMPORT __attribute__((weak_import))
++#endif
++unsigned native_ufs_store_mode(void) RAM_STORE_IMPORT;
++int native_ufs_store_open(uint64_t, uint64_t *, const char **) RAM_STORE_IMPORT;
++int native_ufs_store_read(uint64_t, uint32_t, void *) RAM_STORE_IMPORT;
++int native_ufs_store_write(uint64_t, uint32_t, const void *) RAM_STORE_IMPORT;
+ // Write without forced unit access (the device's write cache may hold it until native_ufs_store_sync). Present: write back.
+-int native_ufs_store_write_cached(uint64_t, uint32_t, const void *) __attribute__((weak_import));
+-int native_ufs_store_sync(void) __attribute__((weak_import));
+-unsigned native_ufs_store_gpt_check(void) __attribute__((weak_import));
++int native_ufs_store_write_cached(uint64_t, uint32_t, const void *) RAM_STORE_IMPORT;
++int native_ufs_store_sync(void) RAM_STORE_IMPORT;
++unsigned native_ufs_store_gpt_check(void) RAM_STORE_IMPORT;
++#undef RAM_STORE_IMPORT
+ // Diagnostics. state: 0 off, 1 blank (read-only probe), 2 resumed, 3 fresh (Install and boot), 4 refused/failed, 5 degraded after an I/O
+ // error, 6 resumed read-only (probe), 7 kept: the store holds no Data of this seed and no reset was asked, so it is left untouched and
+ // this boot's Data runs from the seed alone (header: why). header: persist::checkHeader result.
+@@ -131,6 +138,9 @@
+       native_data_persist_present = overlay.present;
+       if (!ok) {
+         __atomic_store_n(&directFailed, true, __ATOMIC_RELEASE);
++#if defined(HOUJI_PERSISTENT_DATA)
++        native_ufs_store_close();
++#endif
+         native_data_persist_state = 5;
+         __atomic_fetch_add(&native_data_persist_errors, 1, __ATOMIC_RELAXED);
+       } else {
+@@ -204,30 +214,49 @@
+   IOReturn directReadWrite(IOMemoryDescriptor *buffer, uint64_t offset, uint64_t bytes, uint64_t *actual, uint64_t *waited);
+   void persistFailed() { overlay.active = false; native_data_persist_state = 5; __atomic_fetch_add(&native_data_persist_errors, 1, __ATOMIC_RELAXED); }
+ public:
+-  // Called once, before the Data volume is mounted (native_ram_block_volume_seed): open the store window, put the pages that
+-  // earlier boots changed back into the sparse disk, and from then on write changed pages through. The seed identity
+-  // (seedHash) is not affected. Any refusal or error leaves the disk volatile, exactly as without persistence.
+-  // data-reset=1 or 2 (the boot menu's Install and boot) starts the overlay over (the old pages are dropped, not applied); 2 also
+-  // asks for Setup (BootWatchdogPolicy.c). It is the only way the store is made anew: a store of another seed, a blank or a damaged one
+-  // is kept as it is on any other boot.
+-  static bool discardRequested() { uint32_t v = 0; return PE_parse_boot_argn("data-reset", &v, sizeof v) && (v == 1 || v == 2); }
++  // Open once, before publication on houji, otherwise at volume selection. In read-write mode only
++  // the overlay answers for previously changed pages. The seed identity stays unchanged.
++  // A blank, damaged, or foreign store is not replaced without an explicit board-approved reset.
++  static bool discardRequested() {
++#if defined(HOUJI_PERSISTENT_DATA)
++    return native_ufs_store_reset_requested();
++#else
++    uint32_t v = 0; return PE_parse_boot_argn("data-reset", &v, sizeof v) && (v == 1 || v == 2);
++#endif
++  }
+   void attachStore() {
+     if (!gate) return;
+     IOLockLock(gate);
+     if (storeAttached) { IOLockUnlock(gate); return; }
+     storeAttached = true;
++#if defined(HOUJI_PERSISTENT_DATA)
++    const unsigned mode = native_ufs_store_mode();
++    const bool cachedWriter = true;
++    if (mode == 2 && sparse.pages && sparse.bytes == 0x80000000ULL) {
++#else
+     unsigned mode = &native_ufs_store_mode ? native_ufs_store_mode() : 0;
++    const bool cachedWriter = &native_ufs_store_write_cached;
+     if (mode && (sparse.pages || isBig) && &native_ufs_store_open && &native_ufs_store_read && &native_ufs_store_write &&
+         &native_ufs_store_sync && &native_ufs_store_gpt_check) {
++#endif
+       uint64_t pages = (isBig ? big.bytes : sparse.bytes) / 4096, first = 0;
+       const char *why = "";
+       native_data_persist_pages = pages;
+       native_data_persist_gpt = native_ufs_store_gpt_check();
++#if defined(HOUJI_PERSISTENT_DATA)
++      if (native_data_persist_gpt) why = "LUN 0 capacity/GPT refused";
++      if (native_data_persist_gpt || !native_ufs_store_open(persist::windowBlocks(pages), &first, &why)) {
++#else
+       if (!native_ufs_store_open(persist::windowBlocks(pages), &first, &why)) {
++#endif
+         native_data_persist_state = 4;
+         IOLog("NativeRamBlock: persistent store refused: %s\n", why);
+       } else {
+         native_data_persist_first_lba = first;
++#if defined(HOUJI_PERSISTENT_DATA)
++        IOLog("NativeRamBlock: Data overlay candidate LUN 0 LBA %llu + %llu blocks\n",
++              (unsigned long long) first, (unsigned long long) persist::windowBlocks(pages));
++#endif
+         uint64_t bb = persist::bitmapBlocks(pages);
+         overlayBits = static_cast<uint8_t *>(IOMallocZero(bb * persist::kBlock));
+         stage = static_cast<uint8_t *>(IOMallocZero(kStagePages * persist::kBlock));
+@@ -278,8 +307,16 @@
+             overlay.active = false;
+           }
+         }
++        native_data_persist_gpt_after = native_ufs_store_gpt_check();
++#if defined(HOUJI_PERSISTENT_DATA)
++        if (native_data_persist_gpt_after) {
++          direct = overlay.active = false;
++          native_data_persist_state = 4;
++        }
++        if (!direct) native_ufs_store_close();
++#endif
+         // Direct and read-write: write back when the store offers cached writes and data-fua=1 does not ask for write through.
+-        if (direct && overlay.active && !overlay.readOnly && &native_ufs_store_write_cached && !fuaRequested()) {
++        if (direct && overlay.active && !overlay.readOnly && cachedWriter && !fuaRequested()) {
+           dirtyBytes = persist::bitmapBlocks(pages);
+           dirtyBits = static_cast<uint8_t *>(IOMallocZero(dirtyBytes));
+           flushCall = dirtyBits ? thread_call_allocate(flushTimer, this) : nullptr;
+@@ -305,9 +342,14 @@
+           stageFree = (1u << stageCount) - 1;
+         }
+         native_data_persist_present = overlay.present;
+-        native_data_persist_gpt_after = native_ufs_store_gpt_check();
+       }
+     }
++#if defined(HOUJI_PERSISTENT_DATA)
++    else if (mode) {
++      native_data_persist_state = 4;
++      IOLog("NativeRamBlock: persistent store needs a packed 2 GiB seed\n");
++    }
++#endif
+     IOLockUnlock(gate);
+   }
+ 
+@@ -338,6 +380,7 @@
+   IOReturn reportWriteProtection(bool *value) override { *value = false; return kIOReturnSuccess; }
+   IOReturn doSynchronizeCache() override {
+     if (!online) return kIOReturnNotReady;
++    if (__atomic_load_n(&directFailed, __ATOMIC_ACQUIRE)) return kIOReturnIOError;
+     // Write through: every changed page is on the medium, with its bitmap bit, before its write completed (PersistOverlay.h).
+     if (!writeBack) return kIOReturnSuccess;
+     // Write back: the pages written so far, then their bitmap blocks. Barrier and full requests are both served as a full flush.
+@@ -428,6 +471,10 @@
+   }
+   OSSafeReleaseNULL(medium);
+   OSSafeReleaseNULL(characteristics);
++#if defined(HOUJI_PERSISTENT_DATA)
++  // APFS can probe as soon as we publish. Never switch a live/cached seed device to overlay data.
++  attachStore();
++#endif
+   online = true;
+   native_ram_block_ready = 1;
+   registerService();
+@@ -571,7 +618,12 @@
+   *actual = isBig ? directDiskIO(big, overlay, store, buf, kStagePages, write, offset, bytes, bops, &storeError, commit)
+                   : directDiskIO(sparse, overlay, store, buf, kStagePages, write, offset, bytes, bops, &storeError, commit);
+   if (storeError) {
++#if defined(HOUJI_PERSISTENT_DATA)
++    __atomic_store_n(&directFailed, true, __ATOMIC_RELEASE);
++    native_ufs_store_close();
++#else
+     if (write) __atomic_store_n(&directFailed, true, __ATOMIC_RELEASE);
++#endif
+     native_data_persist_state = 5;
+     __atomic_fetch_add(&native_data_persist_errors, 1, __ATOMIC_RELAXED);
+   }
+@@ -589,14 +641,17 @@
+ 
+ void NativeRamBlock::stop(IOService *provider)
+ {
+-  if (flushCall) thread_call_cancel_wait(flushCall);
+   // No new request starts; the direct requests still running finish first. Then what is still unflushed reaches the medium.
+   if (gate) {
+     IOLockLock(gate);
+     online = false;
+     while (inflight) IOLockSleep(gate, &inflight, THREAD_UNINT);
+     IOLockUnlock(gate);
++    if (flushCall) thread_call_cancel_wait(flushCall);
+     if (bitLock && flushMutex && flushRw) flushStore(false);
++#if defined(HOUJI_PERSISTENT_DATA)
++    if (direct) native_ufs_store_close();
++#endif
+   }
+   IOBlockStorageDevice::stop(provider);
+ }
+diff --git a/drivers/RamBlock/PersistOverlay.h b/drivers/RamBlock/PersistOverlay.h
+--- a/drivers/RamBlock/PersistOverlay.h
++++ b/drivers/RamBlock/PersistOverlay.h
+@@ -4,8 +4,8 @@
+ // pages a running system changes are stored in a window of 4096-byte blocks on some other medium and put back on the next boot.
+ //
+ // Window layout (block = 4096 bytes, all integers little endian):
+-//   block 0                 header: "SHNGDATA", version 1, header bytes 64, page count, SHA-256 of the seed, generation (32 bit), crc32
+-//   blocks 1 .. B           presence bitmap, one bit per page of the disk, B = ceil(pages / 32768)
++//   block 0                 header: "SHNGDATA", version, header bytes 64, page count, SHA-256 of the seed, generation (32 bit), crc32
++//   blocks 1 .. B           presence bitmap, one bit per page of the disk (32,768 bits/block in v1, 32,736 in v2)
+ //   blocks B+1 .. B+pages   page i at B+1+i, valid only when its bit is set
+ // Two write modes; in both a bit on the medium never promises a page that did not reach the medium.
+ // Write through (dirty == nullptr): write() returns only when the blocks are on the medium (the UFS store uses WRITE(10) with FUA). A
+@@ -28,10 +28,17 @@
+ namespace persist {
+ constexpr uint32_t kBlock = 4096;
+ constexpr uint32_t kHeaderBytes = 64;
+-
+-inline uint32_t crc32 (const uint8_t *data, size_t bytes)
++#if defined(HOUJI_PERSISTENT_DATA)
++// v2: reserve the last word of every bitmap block for its CRC. v1 is not accepted.
++constexpr uint32_t kVersion = 2, kBitmapBytes = kBlock - 4;
++#else
++constexpr uint32_t kVersion = 1, kBitmapBytes = kBlock;
++#endif
++constexpr uint32_t kBitsPerBlock = 8 * kBitmapBytes;
++
++inline uint32_t crc32 (const uint8_t *data, size_t bytes, uint32_t initial = 0)
+ {
+-  uint32_t crc = 0xffffffffU;
++  uint32_t crc = ~initial;
+   for (size_t i = 0; i < bytes; ++i) {
+     crc ^= data[i];
+     for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1)));
+@@ -43,7 +50,7 @@
+ inline uint32_t get32 (const uint8_t *p) { uint32_t v = 0; for (int i = 3; i >= 0; --i) v = (v << 8) | p[i]; return v; }
+ inline uint64_t get64 (const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; --i) v = (v << 8) | p[i]; return v; }
+ 
+-inline uint64_t bitmapBlocks (uint64_t pages) { return (pages + 8ULL * kBlock - 1) / (8ULL * kBlock); }
++inline uint64_t bitmapBlocks (uint64_t pages) { return pages / kBitsPerBlock + (pages % kBitsPerBlock != 0); }
+ inline uint64_t windowBlocks (uint64_t pages) { return 1 + bitmapBlocks (pages) + pages; }
+ inline uint64_t pageBlock (uint64_t pages, uint64_t index) { return 1 + bitmapBlocks (pages) + index; }
+ 
+@@ -51,7 +58,7 @@
+ {
+   memset (block, 0, kBlock);
+   memcpy (block, "SHNGDATA", 8);
+-  put32 (block + 8, 1);
++  put32 (block + 8, kVersion);
+   put32 (block + 12, kHeaderBytes);
+   put64 (block + 16, pages);
+   memcpy (block + 24, seed, 32);
+@@ -63,7 +70,7 @@
+ inline int checkHeader (const uint8_t block[kBlock], uint64_t pages, const uint8_t seed[32], uint64_t *generation)
+ {
+   if (memcmp (block, "SHNGDATA", 8)) return 1;
+-  if (get32 (block + 8) != 1 || get32 (block + 12) != kHeaderBytes || get32 (block + 60) != crc32 (block, 60)) return 2;
++  if (get32 (block + 8) != kVersion || get32 (block + 12) != kHeaderBytes || get32 (block + 60) != crc32 (block, 60)) return 2;
+   if (generation) *generation = get32 (block + 56);
+   if (get64 (block + 16) != pages || memcmp (block + 24, seed, 32)) return 3;
+   return 0;
+@@ -81,8 +88,29 @@
+   bool readOnly = true, active = false;
+   int header = -1;                 // checkHeader result at open
+ 
++  static uint64_t bitByte (uint64_t i) { return i / kBitsPerBlock * kBlock + (i % kBitsPerBlock) / 8; }
++#if defined(HOUJI_PERSISTENT_DATA)
++  uint32_t bitmapCrc (const uint8_t *block, uint64_t b) const
++  {
++    uint8_t identity[8];
++    put32 (identity, uint32_t (generation));
++    put32 (identity + 4, uint32_t (b));
++    return crc32 (block, kBitmapBytes, crc32 (identity, sizeof(identity)));
++  }
++#endif
++  template <class Ops> bool writeBitmap (Ops &ops, uint64_t b, uint32_t count)
++  {
++#if defined(HOUJI_PERSISTENT_DATA)
++    for (uint32_t k = 0; k < count; ++k) {
++      auto *block = bitmap + (b + k) * kBlock;
++      put32 (block + kBitmapBytes, bitmapCrc (block, b + k));
++    }
++#endif
++    return ops.write (1 + b, count, bitmap + b * kBlock);
++  }
++
+   // Readers may test bits while a writer commits others (commitRun under the caller's lock), so bytes are read and set atomically.
+-  bool has (uint64_t i) const { return __atomic_load_n (&bitmap[i >> 3], __ATOMIC_ACQUIRE) >> (i & 7) & 1; }
++  bool has (uint64_t i) const { return __atomic_load_n (&bitmap[bitByte (i)], __ATOMIC_ACQUIRE) >> (i & 7) & 1; }
+ 
+   // `readOnly`: never write; a stale or blank window is reported (Blank) and left alone. Otherwise a window without this seed's
+   // overlay is initialised only with `reset` (bitmap first, header last, so a tear leaves no valid header), and kept as it is
+@@ -94,13 +122,19 @@
+     dirtyBlocks = 0;
+     if (dirty) memset (dirty, 0, bb);
+     uint8_t block[kBlock];
+-    if (!pages || !ops.read (0, 1, block)) return Open::Failed;
++    if (!pages || !bitmap || bb > UINT32_MAX || !ops.read (0, 1, block)) return Open::Failed;
+     header = checkHeader (block, pages, seed, &generation);
+     if (header == 0 && reset && !ro) header = 3;   // the caller asked to start over: handled like a stale overlay
+     if (header == 0) {
+-      for (uint64_t b = 0; b < bb; ++b) if (!ops.read (1 + b, 1, bitmap + b * kBlock)) return Open::Failed;
++      for (uint64_t b = 0; b < bb; ++b) {
++        auto *bitsBlock = bitmap + b * kBlock;
++        if (!ops.read (1 + b, 1, bitsBlock)) return Open::Failed;
++#if defined(HOUJI_PERSISTENT_DATA)
++        if (get32 (bitsBlock + kBitmapBytes) != bitmapCrc (bitsBlock, b)) return Open::Failed;
++#endif
++      }
+       // Bits past the last page must be clear, or the loader would read blocks outside the window.
+-      for (uint64_t i = pages; i < bb * 8ULL * kBlock; ++i) if (has (i)) return Open::Failed;
++      for (uint64_t i = pages; i < bb * kBitsPerBlock; ++i) if (has (i)) return Open::Failed;
+       for (uint64_t i = 0; i < pages; ++i) present += has (i);
+       active = true;
+       return Open::Resumed;
+@@ -108,12 +142,18 @@
+     memset (bitmap, 0, bb * kBlock);
+     if (ro) return Open::Blank;
+     if (!reset) return Open::Kept;
++    generation = (header == 3 || header == 2) ? uint32_t (generation + 1) : 1;
++#if defined(HOUJI_PERSISTENT_DATA)
++    // Invalidate the old header durably before replacing the bitmap, so an interrupted reset
++    // cannot resume from the old header with a mixture of old and cleared bitmap blocks.
++    memset (block, 0, kBlock);
++    if (!ops.write (0, 1, block) || !ops.sync ()) return Open::Failed;
++#endif
+     // The cleared bitmap goes out in one write (the store splits it into its largest transfers), not one command per block: a 210 GiB
+     // disk has 1680 bitmap blocks, and that many forced-unit-access writes held the medium long enough for the root volumes that
+     // share it to miss their publication deadline.
+-    if (!ops.write (1, static_cast<uint32_t> (bb), bitmap)) return Open::Failed;
++    if (!writeBitmap (ops, 0, static_cast<uint32_t> (bb))) return Open::Failed;
+     if (!ops.sync ()) return Open::Failed;
+-    generation = (header == 3 || header == 2) ? generation + 1 : 1;
+     encodeHeader (block, pages, seed, generation);
+     if (!ops.write (0, 1, block) || !ops.sync ()) return Open::Failed;
+     active = true;
+@@ -159,19 +199,19 @@
+     uint64_t firstBlock = ~0ULL, lastBlock = 0;
+     for (uint64_t i = index; i < index + count; ++i) {
+       if (has (i)) continue;
+-      uint64_t b = i / (8ULL * kBlock);
++      uint64_t b = i / kBitsPerBlock;
+       if (firstBlock == ~0ULL) firstBlock = b;
+       lastBlock = b;
+     }
+     // Set the bits only after the pages are written; in write through the bitmap blocks follow before this call returns.
+     for (uint64_t i = index; i < index + count; ++i)
+-      if (!has (i)) { __atomic_fetch_or (&bitmap[i >> 3], uint8_t (1 << (i & 7)), __ATOMIC_RELEASE); ++present; }
++      if (!has (i)) { __atomic_fetch_or (&bitmap[bitByte (i)], uint8_t (1 << (i & 7)), __ATOMIC_RELEASE); ++present; }
+     if (firstBlock == ~0ULL) return true;
+     if (dirty) {
+       for (uint64_t b = firstBlock; b <= lastBlock; ++b) if (!dirty[b]) { dirty[b] = 1; ++dirtyBlocks; }
+       return true;
+     }
+-    for (uint64_t b = firstBlock; b <= lastBlock; ++b) if (!ops.write (1 + b, 1, bitmap + b * kBlock)) return false;
++    for (uint64_t b = firstBlock; b <= lastBlock; ++b) if (!writeBitmap (ops, b, 1)) return false;
+     return true;
+   }
+ 
+@@ -188,7 +228,7 @@
+     uint64_t written = 0;
+     for (uint64_t b = 0; b < bb; ++b) {
+       if (!dirty[b]) continue;
+-      if (!ops.write (1 + b, 1, bitmap + b * kBlock)) return false;
++      if (!writeBitmap (ops, b, 1)) return false;
+       ++written;
+     }
+     if (!ops.sync ()) return false;
