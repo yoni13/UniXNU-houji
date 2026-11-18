@@ -91,7 +91,8 @@ void houji_pm_report(void) { ABSENT("pm"); }
 void houji_batt_command(const char *s __unused) { ABSENT("batt"); }
 void native_adreno_client_report(void) { ABSENT("gpu clients"); }
 void houji_cpu_hotplug(unsigned a __unused, int b __unused) { ABSENT("cpu on/off"); }
-void houji_bt_command(const char *s __unused) { ABSENT("bt"); }
+/* Weak: HoujiBluetooth.cpp (linked with the Wi-Fi objects, HOUJI_WIFI_LINK=1) replaces it. */
+__attribute__((weak)) void houji_bt_command(const char *s __unused) { ABSENT("bt"); }
 void houji_wifi_command(const char *s __unused) { ABSENT("wifi"); }
 void houji_power_start(void) {}
 void houji_ram_upload_bind_test_target(void) {}

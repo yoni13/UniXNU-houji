@@ -555,6 +555,9 @@ WIFI_LINK = os.environ.get('HOUJI_WIFI_LINK') == '1'
 if WIFI_LINK:
     compile_cpp(ROOT / 'kits/houji/WifiProbe.cpp', OUT / 'WifiProbe.o', WIFI_INCLUDES)
     wifi_objects.append(OUT / 'WifiProbe.o')
+    # Bluetooth over UART14 (console "bt probe"), on the shared WCN7850 power vote of WifiProbe.cpp.
+    compile_cpp(ROOT / 'kits/houji/HoujiBluetooth.cpp', OUT / 'HoujiBluetooth.o', WIFI_INCLUDES)
+    wifi_objects.append(OUT / 'HoujiBluetooth.o')
     compile_cpp(ROOT / 'kits/houji/WifiNet.cpp', OUT / 'WifiNet.o', WIFI_INCLUDES)
     run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', '--globalize-symbol=__GLOBAL__sub_I_WifiNet.cpp',
          OUT / 'WifiNet.o', OUT / 'WifiNet.late.o'])
