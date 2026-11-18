@@ -1,0 +1,39 @@
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -364,6 +364,19 @@
+         // same image. Read by the bridge as the device opens.
+         if (bootArgSet("gpu-purge=0")) setenv("NATIVE_METAL_PURGE", "0", 1);
+         else unsetenv("NATIVE_METAL_PURGE");
++        {
++            // gpu-purge-age-s=<s>: the age an idle Volatile resource is discarded at (NativeMetalPurge.rs Purge::age); without it the
++            // runtime's 10 s spare block age, which discarded the home screen's caches between two swipes 15 s apart.
++            char args[1100] = {}, age[16] = "";
++            size_t size = sizeof args - 1;
++            if (sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0)
++                if (const char *at = bootArgToken(args, "gpu-purge-age-s=")) {
++                    strlcpy(age, at + strlen("gpu-purge-age-s="), sizeof age);
++                    age[strcspn(age, " ")] = 0;
++                }
++            if (age[0]) setenv("NATIVE_METAL_PURGE_AGE_S", age, 1);
++            else unsetenv("NATIVE_METAL_PURGE_AGE_S");
++        }
+         // gpu-ycbcr-planes=0: every two-plane YCbCr surface texture is made with its converted image, as before bridge patch 0035,
+         // for a comparison on the same image. Read by the bridge at the first such texture.
+         if (bootArgSet("gpu-ycbcr-planes=0")) setenv("NATIVE_METAL_YCBCR_PLANES", "0", 1);
+--- a/bridge/NativeMetalPurge.rs
++++ b/bridge/NativeMetalPurge.rs
+@@ -118,8 +118,13 @@
+ 
+     /// The age an idle Volatile or Empty resource goes at: the runtime's spare block age, so a resource and the block it emptied
+     /// go on one clock.
++    /// `NATIVE_METAL_PURGE_AGE_S` (the plugin's gpu-purge-age-s=, 1 to 3600) replaces it: a user interface's caches idle for
++    /// the 10 s spare block age were discarded between two gestures and made again on the next one's first frame.
+     pub fn age() -> Duration {
+-        Device::spare_age()
++        match std::env::var("NATIVE_METAL_PURGE_AGE_S").ok().and_then(|v| v.parse::<u64>().ok()) {
++            Some(s) if (1..=3600).contains(&s) => Duration::from_secs(s),
++            _ => Device::spare_age(),
++        }
+     }
+ 
+     fn now_ms(&self) -> u64 {
