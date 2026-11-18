@@ -31,7 +31,7 @@
  // macOS reads the display's modes from its timing and color elements (CoreDisplay, WindowServer): IOAVFamily's constructors, bound
  // by the build (IOAVVideoTimingElement::withData, ::setColorElements, IOAVVideoColorElement::withCapabilities). The enumerations
  // are passed as their integer values.
-@@ -283,6 +296,29 @@
+@@ -283,6 +296,35 @@
      // client queue (kLegacyVsyncClients) never changes while the sender walks it.
      IOTimerEventSource *vsyncTimer=nullptr;
      uint64_t vsyncInterval=0,vsyncNext=0;
@@ -43,15 +43,21 @@
 +    uint64_t frameInfoCompleteAt=0,frameInfoEarlyRequested=0;
 +    uint32_t frameInfoEarlySwapID=0;
 +    bool frameInfoEarlyPending=false;
++    // The keys the render server enabled through slot 214 (bit i = selector-74 key i), for type 3.
++    uint32_t frameInfoMask=0;
 +    void sendFrameInfo(uint32_t swapID,uint64_t requested,uint64_t completed) {
-+        if(nativeLegacyFrameInfoLevel()<2 || !swapID || !completed)return;
-+        io_user_reference_t args[5]={7,swapID,completed,requested,completed};
++        const uint32_t mask=frameInfoMask&7;
++        if(nativeLegacyFrameInfoLevel()<2 || !mask || !swapID || !completed)return;
++        // {mask, swap ID, then one value per set bit in bit order}: Presentation_time, Requested_presentation, Vbl_FrameTime.
++        const uint64_t values[3]={completed,requested,completed};
++        io_user_reference_t args[5]={mask,swapID};unsigned argc=2;
++        for(unsigned i=0;i<3;i++)if(mask&(1u<<i))args[argc++]=values[i];
 +        void *node=nullptr;memcpy(&node,reinterpret_cast<unsigned char *>(this)+kFrameInfoClients,sizeof(node));
 +        unsigned clients=0;IOReturn last=kIOReturnNotFound;
 +        while(node && clients<64) {
 +            void *next=nullptr;memcpy(&next,node,sizeof(next));
 +            last=nativeSendAsyncResult(reinterpret_cast<io_user_reference_t *>(static_cast<unsigned char *>(node)+0x18),
-+                                       kIOReturnSuccess,args,5,kIOUserNotifyOptionCanDrop);
++                                       kIOReturnSuccess,args,argc,kIOUserNotifyOptionCanDrop);
 +            ++clients;node=next;
 +        }
 +        const uint64_t n=countFrameInfo(clients?2:3);
@@ -61,7 +67,7 @@
      unsigned vsyncHz=0;
      bool vsyncArmed=false;
      // Direct scanout state, used on the work loop only. DPU 9.2 inside the MDP block (0xae01000): VIG 0 and 1 at 0x4000 and 0x6000 (source
-@@ -486,6 +522,7 @@
+@@ -486,6 +528,7 @@
  public:
      // Called by the GPU client's completion (any thread): the swap is finished on the framebuffer's work loop.
      void gpuComplete(int status) {
@@ -69,7 +75,7 @@
          // houji (gop-status-ok=1): the GPU client's copy finished (its wait returned) but its command buffer status read as not completed
          // (root98 frames.trace: every swap result 4, kGpuFailed, in about 1 ms). Counted as a failure, each frame sent the next one down the
          // CPU path, whose end does not release the queue without a vsync tick (hz 0 here): an animation's last frame waited for the next
-@@ -493,12 +530,12 @@
+@@ -493,12 +536,12 @@
          static int statusOk=-1;
          if(statusOk<0){unsigned v=0;PE_parse_boot_argn("gop-status-ok",&v,sizeof(v));statusOk=v==1;}
          if(statusOk && status){native_legacy_gop_status_overrides=native_legacy_gop_status_overrides+1;native_legacy_gop_status_last=(uint32_t)status;status=0;}
@@ -85,7 +91,7 @@
      }
      void free() override {stopVsync();if(logicalPM){PMstop();logicalPM=false;}primary=false;OSSafeReleaseNULL(bootMapping);IOMobileFramebufferLegacy::free();}
      void stop(IOService *provider) override {
-@@ -786,7 +823,7 @@
+@@ -786,7 +829,7 @@
          finishTransfer(request);
      }
      // The GPU client reported its copy (status 0) or lost it. Success retires the swap like a finished copy; anything else uses the CPU copy.
@@ -94,7 +100,7 @@
          const OriginalLegacySwapRequest *request=gpuRequest;
          if(!request)return;
          gpuRequest=nullptr;
-@@ -794,13 +831,21 @@
+@@ -794,13 +837,21 @@
              // The swap retired when the client took it; its copy ending only releases the next frame. A failed copy loses this frame
              // (the next one takes the CPU copy).
              gpuRetired=false;
@@ -119,7 +125,7 @@
          }
          native_legacy_gpu_fallback_observed(status);
          transferred=false;gpuBypass=true;kickSwapQueue();
-@@ -814,12 +859,15 @@
+@@ -814,12 +865,15 @@
          if(!activateOnlyPendingSwap(request))return false;
          stat(11);note(6,-1,request);
          removeValidated(request);
@@ -135,7 +141,7 @@
          // Only after the real copy and store barrier: select the actual pending head and let the unchanged family release it and wake
          // waiters. This reports memory scanout completion, not a panel vblank or hardware fence.
          if(!retireSwap(request,force))return;
-@@ -907,11 +955,19 @@
+@@ -907,11 +961,19 @@
      IOReturn setFrameInfoNotificationState(void *,bool) override {return kIOReturnSuccess;}
      IOReturn notifyCrcReady(uint32_t) override {return kIOReturnSuccess;}
  #else
@@ -159,7 +165,7 @@
      }
  #endif
  #if defined(NATIVE_LEGACY_MACOS) && NATIVE_LEGACY_MACOS
-@@ -995,10 +1051,31 @@
+@@ -995,10 +1057,34 @@
      }
      // Selector 74 enumerates optional frame-info trace keys, not display
      // modes. This backend implements no trace-key subscription contract.
@@ -181,20 +187,23 @@
 +        return kIOReturnSuccess;
      }
 +#if defined(NATIVE_LEGACY_FRAME_INFO_QUERY)
-+    // Slot 214, the family's gated FrameInfo query (24B156: 0xfffffff00a1d8da4 runs it as (this, a, p, b); the IOReturn goes back to the
-+    // user client). Pure in the family; it was a leaf guard, and the render server's first call after registering for type 3 panicked
-+    // (root108: leaf=214 right after hook 324). No current-frame snapshot is kept here, so the query is answered unsupported.
-+    IOReturn frameInfo(uint32_t a,void *p,uint32_t b) override {
++    // Slot 214, the family's gated FrameInfo key change (24B156: 0xfffffff00a1d8da4 runs it as (this, type, request, mask); the IOReturn
++    // goes back to the user client). Pure in the family; it was a leaf guard, and the render server's first call after registering for
++    // type 3 panicked (root108: leaf=214 right after hook 324). root109 showed type 3 with the mask growing 0, 1, 3, 7 as the render
++    // server enabled the three selector-74 keys one by one: the enabled set is kept for sendFrameInfo.
++    IOReturn frameInfo(uint32_t type,void *request,uint32_t mask) override {
 +        if(!nativeLegacyFrameInfo())native_legacy_backend_guard(214,this,__builtin_return_address(0));
 +        const uint64_t n=countFrameInfo(6);
-+        if(logFrameInfo(n))IOLog("HOUJI FRAMEINFO: query214 calls=%llu a=%u p=%d b=%u\n",n,a,p!=nullptr,b);
-+        return kIOReturnUnsupported;
++        if(logFrameInfo(n))IOLog("HOUJI FRAMEINFO: keys214 calls=%llu type=%u request=%d mask=%u\n",n,type,request!=nullptr,mask);
++        if(type!=3)return kIOReturnUnsupported;
++        frameInfoMask=mask&7;
++        return kIOReturnSuccess;
 +    }
 +#endif
      IOReturn newUserClient(task_t task,void *security,UInt32 type,IOUserClient **client) override {
          native_legacy_client_enter(task,type);
          IOReturn status=IOMobileFramebufferLegacy::newUserClient(task,security,type,client);
-@@ -1236,7 +1313,20 @@
+@@ -1236,7 +1322,20 @@
      // No color matrix hardware either; the compositor's matrix is accepted, as the virtual-machine display accepts it.
      IOReturn swapSetColorMatrix(void *,uint32_t,uint32_t) override {return kIOReturnSuccess;}
  #endif
