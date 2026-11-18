@@ -800,6 +800,8 @@ static void ustack_command(const char *args)
  * decompressions a stall in a page fault shows as rising counts between two calls. */
 extern kern_return_t host_statistics64(host_t,host_flavor_t,host_info64_t,mach_msg_type_number_t *);
 extern host_t host_self(void);
+extern volatile uint64_t native_ram_block_resident_bytes,native_ram_block_bytes,native_ram_block_writes;
+extern volatile uint64_t native_ram_block_unmapped_pages,native_ram_block_unmaps;
 static void vm_command(void)
 {
     vm_statistics64_data_t s;
@@ -810,6 +812,9 @@ static void vm_command(void)
            "pageouts %llu decompressions %llu compressions %llu reactivations %llu swapins %llu\n",kr,s.free_count,s.active_count,
            s.inactive_count,s.speculative_count,s.wire_count,s.external_page_count,s.internal_page_count,s.compressor_page_count,
            s.total_uncompressed_pages_in_compressor,s.faults,s.pageins,s.pageouts,s.decompressions,s.compressions,s.reactivations,s.swapins);
+    printf("HOUJI VM: Data RAM disk resident %llu MiB of %llu MiB, writes %llu, unmaps %llu freeing %llu pages\n",
+           native_ram_block_resident_bytes>>20,native_ram_block_bytes>>20,native_ram_block_writes,native_ram_block_unmaps,
+           native_ram_block_unmapped_pages);
 }
 static void qos_command(const char *args)
 {
