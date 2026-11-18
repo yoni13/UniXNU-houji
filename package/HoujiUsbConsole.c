@@ -7,6 +7,8 @@
  */
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/proc_internal.h>
+#include <sys/bsdtask_info.h>
 #include <kern/clock.h>
 #include <kern/thread.h>
 #include <kern/task.h>
@@ -31,7 +33,6 @@ extern int reboot_kernel(int, char *);
 #include <pexpert/pexpert.h>
 static int houji_restart(char *message)
 {
-    extern struct proc *initproc;
     if (initproc) return reboot_kernel(RB_AUTOBOOT,message);
     printf("HOUJI RESTART: %s (no init process: platform restart)\n",message);
     extern void native_houji_reset_hook(void);
@@ -621,20 +622,14 @@ static uint64_t top_task_cpu(task_t task)
 }
 /* Threads through the accessors proc_pidinfo uses (osfmk/kern/bsd_kern.c): they take the task lock themselves, so this file needs
  * neither struct task nor struct thread. Thread times are in nanoseconds; the layout below is bsd/sys/bsdtask_info.h's. */
-struct top_threadinfo {
-    uint64_t user_ns,system_ns;
-    int32_t cpu_usage,policy,run_state,flags,sleep_time,curpri,priority,maxpriority;
-    char name[64];
-};
 extern int get_task_numacts(task_t);
 extern int fill_taskthreadlist(task_t,void *,int,bool);
-extern int fill_taskthreadinfo(task_t,uint64_t,bool,struct top_threadinfo *,void *,int *);
 static bool top_thread_ns(task_t task,uint64_t tid,uint64_t *ns,char *name,size_t size)
 {
-    struct top_threadinfo info={0};
+    struct proc_threadinfo_internal info={0};
     if (fill_taskthreadinfo(task,tid,true,&info,NULL,NULL)) return false;
-    *ns=info.user_ns+info.system_ns;
-    if (name) { strlcpy(name,info.name,size); }
+    *ns=info.pth_user_time+info.pth_system_time;
+    if (name) { strlcpy(name,info.pth_name,size); }
     return true;
 }
 static uint64_t top_permille(uint64_t cpu,uint64_t elapsed)
