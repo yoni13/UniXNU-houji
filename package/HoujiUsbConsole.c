@@ -692,7 +692,7 @@ extern kern_return_t copyinmap(vm_map_t,vm_map_offset_t,void *,vm_size_t);
 #define USTACK_SLOTS 512
 struct ustack_slot { uint64_t pc[USTACK_DEPTH]; uint32_t count, running; };
 /* The slots are allocated per run: a static table this size does not fit the kernel's __DATA beside the retained segments. */
-static struct { int pid; uint64_t tid; unsigned ms; struct ustack_slot *slots; } ustack;
+static struct { int pid; uint64_t tid; unsigned ms; char name[32]; struct ustack_slot *slots; } ustack;
 static int _Atomic ustack_busy;
 static uint64_t ustack_strip(uint64_t a) { return a & 0xffffffffffull; }
 static void ustack_thread(void *arg __unused,wait_result_t result __unused)
@@ -706,7 +706,14 @@ static void ustack_thread(void *arg __unused,wait_result_t result __unused)
         if (tids) {
             int n=get_task_numacts(task);if (n>512) n=512;
             const int got=n>0?fill_taskthreadlist(task,tids,n,true)/(int)sizeof(uint64_t):0;
-            for (int i=0;i<got;i++) if (tids[i] && (!ustack.tid || tids[i]<ustack.tid)) ustack.tid=tids[i];
+            for (int i=0;i<got;i++) {
+                if (!tids[i]) continue;
+                if (ustack.name[0]) {   /* a thread name prefix: its first thread of that name */
+                    struct proc_threadinfo_internal info={0};
+                    if (fill_taskthreadinfo(task,tids[i],true,&info,NULL,NULL) || strncmp(info.pth_name,ustack.name,strlen(ustack.name))) continue;
+                    if (!ustack.tid || tids[i]<ustack.tid) ustack.tid=tids[i];
+                } else if (!ustack.tid || tids[i]<ustack.tid) ustack.tid=tids[i];
+            }
             kfree_data(tids,sizeof(uint64_t)*512);
         }
     }
@@ -771,10 +778,19 @@ static void ustack_thread(void *arg __unused,wait_result_t result __unused)
 static void ustack_command(const char *args)
 {
     long long v[3]={0,0,1500};int n=0;const char *s=args;
-    while (*s && n<3) { while (*s==' ') s++; if (!*s) break; char *e=NULL;v[n]=strtoq(s,&e,10);if (e==s) break;n++;s=e; }
-    if (n<2 || v[0]<=0 || v[1]<0 || v[2]<2 || v[2]>10000) { printf("HOUJI USTACK: syntax ustack PID TID [MS 2..10000] (TID 0: the main thread)\n");return; }
+    char name[32]={0};
+    while (*s && n<3) {
+        while (*s==' ') s++; if (!*s) break;
+        char *e=NULL;v[n]=strtoq(s,&e,10);
+        if (e==s && n==1) {   /* TID given as a thread name prefix */
+            size_t i=0;while (*s && *s!=' ' && i<sizeof(name)-1) name[i++]=*s++;
+            v[1]=0;n++;continue;
+        }
+        if (e==s) break;n++;s=e;
+    }
+    if (n<2 || v[0]<=0 || v[1]<0 || v[2]<2 || v[2]>10000) { printf("HOUJI USTACK: syntax ustack PID TID [MS 2..10000] (TID 0: the main thread; or a thread name prefix)\n");return; }
     if (!os_atomic_cmpxchg(&ustack_busy,0,1,acquire)) { printf("HOUJI USTACK: busy\n");return; }
-    ustack.pid=(int)v[0];ustack.tid=(uint64_t)v[1];ustack.ms=(unsigned)v[2];
+    ustack.pid=(int)v[0];ustack.tid=(uint64_t)v[1];ustack.ms=(unsigned)v[2];strlcpy(ustack.name,name,sizeof ustack.name);
     thread_t t;
     if (kernel_thread_start(ustack_thread,NULL,&t)!=KERN_SUCCESS) { os_atomic_store(&ustack_busy,0,release);return; }
     thread_deallocate(t);
