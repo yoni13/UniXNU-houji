@@ -1,15 +1,13 @@
-diff --git a/scripts/prepare-houji-ufs.py b/scripts/prepare-houji-ufs.py
-index 0000000..1111111 100755
 --- a/scripts/prepare-houji-ufs.py
 +++ b/scripts/prepare-houji-ufs.py
 @@ -1,5 +1,5 @@
  #!/usr/bin/env python3
 -"""Prepare a local, read-only houji adaptation of pinned ShengUfs sources.
 +"""Prepare a houji adaptation of pinned ShengUfs sources.
- 
+
  Does not select a kernel archive or claim storage ABI/runtime qualification.
  The proven houji SMMU planner is supplied from the legacy source checkout.
-@@ -90,14 +90,35 @@ def prepare(source, legacy, output):
+@@ -90,14 +90,41 @@
      native = native.replace('static void houjiStage (const char *stage)\n',
          '#define houjiReport(...) do { IOLog (__VA_ARGS__); IOLog ("\\n"); IOSleep (2000); panic (__VA_ARGS__); } while (0)\n'
          'static void houjiStage (const char *stage)\n', 1)
@@ -41,14 +39,24 @@ index 0000000..1111111 100755
 +        '}\n\n' + marker)
      commands = (source / 'RootCommands.h').read_text()
 -    commands = replace_once(commands, '  *ocs = 15;\n',
--                              '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
+-                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
++    # Even an accidentally enabled upstream writer cannot submit a command without the exact houji opt-in.
++    commands = replace_once(commands, '  *ocs = 15;\n',
++        '  *ocs = 15;\n'
++        '  char houjiDataTarget[16] = {};\n'
++        '  if (direction == 1 && (!PE_parse_boot_arg_str ("native-data", houjiDataTarget, sizeof (houjiDataTarget)) ||\n'
++        '      strcmp (houjiDataTarget, "userdata"))) return kIOReturnNotPermitted;\n')
 -    # Also reject the public write entry before it copies or modifies DMA data.
 -    commands = replace_once(commands,
 -        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {',
 -        '  return kIOReturnNotPermitted; // houji: persistence is not qualified\n'
 -        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {')
 +    # Keep upstream hostStoreOpen/hostInWindow as the final command-level write allowlist.
-@@ -136,12 +157,12 @@ def prepare(source, legacy, output):
+     # The public firmware reader may read only a partition extent first granted by an exact GPT-name lookup. The GPT survey itself is
+     # internal and read-only. This covers all six normal LUNs; on houji modem_a is expected on LUN 4.
+     native = replace_once(native,
+@@ -136,12 +163,12 @@
+     shutil.copyfile(legacy / 'GiuliaSmmuTakeover.h', output / 'GiuliaSmmuTakeover.h')
      (output / 'NativeUfs.cpp').write_text(native)
      (output / 'RootCommands.h').write_text(commands)
 -    report = dict(upstream_revision=revision, writes_enabled=False, storage_abi_qualified=False,
@@ -60,11 +68,12 @@ index 0000000..1111111 100755
 -    print('PASS: hostWrite4k and hostSubmit(direction=1) reject writes')
 +    print('PASS: writes remain off except native-data=userdata and bounded userdata store windows')
      print('NOT QUALIFIED: arm64e 24B156 ABI, compilation, hardware block reads')
-diff --git a/package/SourceStorage.cpp b/package/SourceStorage.cpp
-index 2222222..3333333 100644
+
+
 --- a/package/SourceStorage.cpp
 +++ b/package/SourceStorage.cpp
-@@ -14,11 +14,9 @@ extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs.cpp");
+@@ -14,11 +14,8 @@
+ extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs.cpp");
  extern "C" IOService *native_ufs_source_create(void);
  extern "C" void source_storage_ram_init(void) __asm__("__GLOBAL__sub_I_NativeRamBlock.cpp");
 -// The Data RAM disk's optional hooks this kernel does not have: keep the loader's seed pages (no release of loader memory),
@@ -76,7 +85,8 @@ index 2222222..3333333 100644
  extern "C" bool native_source_root_policies_load(void);
  extern "C" void native_source_storage_start(void);
  extern "C" int houji_usb_connected(void);
-@@ -78,7 +76,7 @@ extern "C" void native_source_storage_start(void)
+@@ -78,7 +75,7 @@
+     if (!driver->attach(provider)) panic("HoujiStorage: UFS attach failed");
      step("UFS attached; starting (hardware access)");
      if (!driver->start(provider)) panic("HoujiStorage: UFS start failed");
 -    printf("HoujiStorage: source UFS started (storage writes prohibited)\n");

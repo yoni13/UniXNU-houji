@@ -1,0 +1,24 @@
+--- a/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
++++ b/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+@@ -101,6 +101,7 @@
+ extern "C" void native_legacy_gpu_fallback_observed(int status);
+ // Swaps retired when the GPU client took the frame (before its copy finished), and copies that then failed after such a retirement.
+ extern "C" {volatile uint64_t native_legacy_early_retires,native_legacy_early_failures;}
++extern "C" {volatile uint64_t native_legacy_gop_status_overrides;volatile uint32_t native_legacy_gop_status_last;}
+ // Swaps the family gave up on after waiting 5 s for them (cancelSwapsAfterTimeout).
+ extern "C" {volatile uint64_t native_legacy_swap_timeouts;}
+ // Display refresh tick (boot-arg vsync=<Hz>, 0 or absent: off). The original family sends the compositor's vsync message (type 5)
+@@ -480,6 +481,13 @@
+ public:
+     // Called by the GPU client's completion (any thread): the swap is finished on the framebuffer's work loop.
+     void gpuComplete(int status) {
++        // houji (gop-status-ok=1): the GPU client's copy finished (its wait returned) but its command buffer status read as not completed
++        // (root98 frames.trace: every swap result 4, kGpuFailed, in about 1 ms). Counted as a failure, each frame sent the next one down the
++        // CPU path, whose end does not release the queue without a vsync tick (hz 0 here): an animation's last frame waited for the next
++        // swap (root98: 11.4 s). Opt-in: take the completion as success, keep the client's status for the record.
++        static int statusOk=-1;
++        if(statusOk<0){unsigned v=0;PE_parse_boot_argn("gop-status-ok",&v,sizeof(v));statusOk=v==1;}
++        if(statusOk && status){native_legacy_gop_status_overrides=native_legacy_gop_status_overrides+1;native_legacy_gop_status_last=(uint32_t)status;status=0;}
+         struct Args {NativeLegacyDisplay *display;int status;} args={this,status};
+         IOWorkLoop *loop=getWorkLoop();
+         auto action=[](OSObject *,void *a0,void *,void *,void *)->IOReturn {

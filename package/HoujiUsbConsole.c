@@ -758,6 +758,18 @@ static void top_command(const char *cmd)
     } else { os_atomic_store(&top_busy,0,release);printf("HOUJI TOP: thread start failed\n"); }
 }
 extern unsigned native_legacy_swap_timeline(char *out,unsigned cap) __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_offers __attribute__((weak_import)),native_gop_gpu_completions __attribute__((weak_import)),
+    native_gop_gpu_failures __attribute__((weak_import)),native_legacy_early_retires __attribute__((weak_import)),
+    native_legacy_early_failures __attribute__((weak_import)),native_legacy_gop_status_overrides __attribute__((weak_import));
+extern volatile uint32_t native_legacy_gop_status_last __attribute__((weak_import));
+static void gop_command(void)
+{
+#define GOPV(x) (&(x)?(unsigned long long)(x):~0ull)
+    printf("HOUJI GOP: offers %llu completions %llu failures %llu early-retires %llu early-failures %llu status-overrides %llu last %#x\n",
+        GOPV(native_gop_gpu_offers),GOPV(native_gop_gpu_completions),GOPV(native_gop_gpu_failures),GOPV(native_legacy_early_retires),
+        GOPV(native_legacy_early_failures),GOPV(native_legacy_gop_status_overrides),&native_legacy_gop_status_last?native_legacy_gop_status_last:~0u);
+#undef GOPV
+}
 static void swaps_command(void)
 {
     /* The display driver's last 40 swaps (submitted, offered to the copy, done), same clock as HOUJI GESTURE AT. */
@@ -974,6 +986,7 @@ static void command_line(void)
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
     else if (!strcmp(u.command,"swaps")) swaps_command();
+    else if (!strcmp(u.command,"gop")) gop_command();
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
         int expected=0;thread_t th;
