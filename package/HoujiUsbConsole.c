@@ -699,7 +699,16 @@ static void ustack_thread(void *arg __unused,wait_result_t result __unused)
     task_t task=p?proc_task(p):TASK_NULL;
     if (task!=TASK_NULL) task_reference(task);
     if (p) proc_rele(p);
-    thread_t th=task!=TASK_NULL?task_findtid(task,ustack.tid):THREAD_NULL;
+    if (task!=TASK_NULL && !ustack.tid) {   /* TID 0: the main thread, the process's lowest thread id */
+        uint64_t *tids=kalloc_data(sizeof(uint64_t)*512,Z_WAITOK|Z_ZERO);
+        if (tids) {
+            int n=get_task_numacts(task);if (n>512) n=512;
+            const int got=n>0?fill_taskthreadlist(task,tids,n,true)/(int)sizeof(uint64_t):0;
+            for (int i=0;i<got;i++) if (tids[i] && (!ustack.tid || tids[i]<ustack.tid)) ustack.tid=tids[i];
+            kfree_data(tids,sizeof(uint64_t)*512);
+        }
+    }
+    thread_t th=task!=TASK_NULL&&ustack.tid?task_findtid(task,ustack.tid):THREAD_NULL;
     if (th==THREAD_NULL) {
         printf("HOUJI USTACK: no thread %llu in pid %d\n",(unsigned long long)ustack.tid,ustack.pid);
         if (task!=TASK_NULL) task_deallocate(task);
@@ -761,7 +770,7 @@ static void ustack_command(const char *args)
 {
     long long v[3]={0,0,1500};int n=0;const char *s=args;
     while (*s && n<3) { while (*s==' ') s++; if (!*s) break; char *e=NULL;v[n]=strtoq(s,&e,10);if (e==s) break;n++;s=e; }
-    if (n<2 || v[0]<=0 || v[1]<=0 || v[2]<2 || v[2]>10000) { printf("HOUJI USTACK: syntax ustack PID TID [MS 2..10000]\n");return; }
+    if (n<2 || v[0]<=0 || v[1]<0 || v[2]<2 || v[2]>10000) { printf("HOUJI USTACK: syntax ustack PID TID [MS 2..10000] (TID 0: the main thread)\n");return; }
     if (!os_atomic_cmpxchg(&ustack_busy,0,1,acquire)) { printf("HOUJI USTACK: busy\n");return; }
     ustack.pid=(int)v[0];ustack.tid=(uint64_t)v[1];ustack.ms=(unsigned)v[2];
     thread_t t;

@@ -9,12 +9,25 @@
  #include <stdint.h>
  #include <string.h>
  #include <atomic>
-@@ -55,6 +57,18 @@
+@@ -47,6 +49,7 @@
+ // share of 60 Hz frames fell from 58% to 28%). Only Error fails; a buffer still in flight is waited for in 100 us steps, at most 20 ms.
+ // The last failed copy's state for the kernel's report: MTLCommandBufferStatus << 8 | the low byte of its error code.
+ inline std::atomic<uint32_t> gLastCopyDetail{0};
++inline std::atomic<uint32_t> gRecoveries{0};
+ static inline Result finishCopy(id<MTLCommandBuffer> commands) {
+     [commands waitUntilCompleted];
+     for (unsigned i = 0; i < 200 && commands.status != MTLCommandBufferStatusCompleted && commands.status != MTLCommandBufferStatusError; ++i) {
+@@ -55,6 +58,23 @@
      }
      if (commands.status == MTLCommandBufferStatusCompleted) return kOk;
      gLastCopyDetail.store((uint32_t)commands.status << 8 | ((uint32_t)commands.error.code & 0xff), std::memory_order_relaxed);
 +    // The failure's own text (status 5 with code -1 says only that the runtime refused it): the first 8 and every 64th after go to
 +    // copy-errors.txt beside frames.trace, which the console can read.
++    // After a GPU recovery the runtime refuses every object made before it (NotImplemented(MadeBeforeRecovery)): the presenter's
++    // pipelines, its scanout and source buffers. Kept, they failed every copy from then on and the panel froze (houji root142: 561 of
++    // 992, root144: 224 of 532). The presenter makes them again on its next frame (gRecoveries).
++    NSString *why = commands.error.localizedDescription;
++    if (why && [why rangeOfString:@"Recovery"].location != NSNotFound) gRecoveries.fetch_add(1, std::memory_order_relaxed);
 +    static std::atomic<uint32_t> failures{0};
 +    const uint32_t n = failures.fetch_add(1, std::memory_order_relaxed);
 +    if (n < 8 || !(n % 64)) {
@@ -28,3 +41,37 @@
      return kGpuFailed;
  }
  
+@@ -66,8 +86,25 @@
+         target_ = [device newBufferWithBytesNoCopy:scanout.base length:scanout.bytes options:MTLResourceStorageModeShared deallocator:nil];
+     }
+     bool ready() const { return target_ != nil; }
++    void remakeAfterRecovery() {
++        const uint32_t seen = gRecoveries.load(std::memory_order_relaxed);
++        if (seen == recoveriesSeen_) return;
++        recoveriesSeen_ = seen;
++        queue_ = [device_ newCommandQueue];
++        target_ = validScanout() && queue_ ? [device_ newBufferWithBytesNoCopy:scanout_.base length:scanout_.bytes
++                                                                       options:MTLResourceStorageModeShared deallocator:nil] : nil;
++        convert_ = nil; opaque_ = nil; convertFailed_ = false; opaqueFailed_ = false;
++        tables_[0] = nil; tables_[1] = nil;
++        for (Source &s : sources_) s = Source{};
++        if (FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/copy-errors.txt", "a")) {
++            fprintf(f, "presenter remade after GPU recovery %u at %.3f s: target %s\n", seen, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9,
++                    target_ ? "ok" : "missing");
++            fclose(f);
++        }
++    }
+     // One frame: encodes the GPU copy, commits, waits for the GPU. Rows are copied as whole rows of width*4 bytes.
+     Result present(const Frame &frame) {
++        remakeAfterRecovery();
+         if (!ready()) return kBadScanout;
+         if (frame.format == NGP_RGBA16F_LINEAR || frame.format == NGP_RGBA16F_ENCODED) return convert(frame);
+         if (frame.format != NGP_BGRX8888) return kBadFrame;
+@@ -204,6 +241,7 @@
+     id<MTLBuffer> tables_[2] = {nil, nil};
+     Source sources_[kSources] = {};
+     uint64_t uses_ = 0;
++    uint32_t recoveriesSeen_ = 0;
+ };
+ 
+ }  // namespace gpupresent
