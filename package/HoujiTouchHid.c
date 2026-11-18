@@ -9,6 +9,7 @@
 #include <sys/systm.h>
 #include <kern/clock.h>
 #include <pexpert/pexpert.h>
+#include <kern/thread_call.h>
 
 #define CONTACTS 12
 #define CORE_X 30480
@@ -60,6 +61,35 @@ static unsigned panel_height(void)
 	return PE_current_console(&video) || !video.v_height ? 2670 : (unsigned)video.v_height;
 }
 
+/* A lift is the last change of a gesture: if NativeHidInput's work loop lost the wakeup of that publication (its copy and the next
+ * change raced), iOS kept the finger down and took every later gesture for the same touch until a new touch came (root139: two swipe
+ * pairs drew 1 and 0 frames, after one tap 30 and 114). So 30 ms after a lift the table is published once more, unless
+ * houji_touch_republish=0. Counted in houji_touch_republished. */
+volatile uint32_t houji_touch_republished;
+static thread_call_t republish_call;
+static void republish(thread_call_param_t p0 __unused, thread_call_param_t p1 __unused)
+{
+	void (*sink)(void *) = touch_sink;
+	if (sink && !(native_touch_seq & 1)) { sink(touch_context); houji_touch_republished = houji_touch_republished + 1; }
+}
+static void republish_after_lift(void)
+{
+	static int enabled = -1;
+	if (enabled < 0) { unsigned v = 1; PE_parse_boot_argn("houji_touch_republish", &v, sizeof v); enabled = v != 0; }
+	if (!enabled) return;
+	if (!republish_call) {
+		thread_call_t call = thread_call_allocate_with_options(republish, NULL, THREAD_CALL_PRIORITY_HIGH, THREAD_CALL_OPTIONS_ONCE);
+		if (!call || !__atomic_compare_exchange_n(&republish_call, &(thread_call_t){NULL}, call, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+			if (call) thread_call_free(call);
+		}
+	}
+	if (republish_call) {
+		uint64_t deadline = 0;
+		clock_interval_to_deadline(30, NSEC_PER_MSEC, &deadline);
+		thread_call_enter_delayed(republish_call, deadline);
+	}
+}
+
 /* One contact goes down, moves or lifts (panel pixels); the whole table is published after each change. */
 void houji_touch_contact(int finger, int down, int x, int y);
 void houji_touch_contact(int finger, int down, int x, int y)
@@ -93,6 +123,7 @@ void houji_touch_contact(int finger, int down, int x, int y)
 	native_touch_seq = (seq | 1) + 1;
 	void (*sink)(void *) = touch_sink;
 	if (sink) sink(touch_context);
+	if (!down) republish_after_lift();
 }
 
 /* The console's tap/swipe. */
