@@ -203,10 +203,15 @@ void native_legacy_frame_colors_observed(const uint32_t *colors,const uint64_t *
 // and retired. Times are microseconds since boot; the last 64 are kept.
 struct SwapEvent {uint64_t submitted,offered,done;uint32_t number;};
 static SwapEvent swapEvents[64];static uint32_t swapEventCount;
+static uint64_t houjiCpuFrameCounter;
+extern "C" uint64_t houji_cpu_frame_activity(void) {
+    return __atomic_load_n(&houjiCpuFrameCounter,__ATOMIC_RELAXED);
+}
 extern "C" void native_legacy_swap_stage(unsigned stage) {
     const uint64_t now=probeNowUs();
     uint32_t total=swapEventCount;
     if(stage==0) {
+        __atomic_fetch_add(&houjiCpuFrameCounter,1ULL,__ATOMIC_RELAXED);
         SwapEvent &e=swapEvents[total%64];e={now,0,0,total+1};swapEventCount=total+1;return;
     }
     uint32_t first=total>64?total-64:0;

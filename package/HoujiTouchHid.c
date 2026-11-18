@@ -7,6 +7,7 @@
 // axis maxima (30480 x 20320) to the HID range, so panel pixels are converted to that space here.
 #include <sys/types.h>
 #include <sys/systm.h>
+#include <kern/clock.h>
 #include <pexpert/pexpert.h>
 
 #define CONTACTS 12
@@ -22,6 +23,14 @@ static void *touch_context;
 static void (*buttons_sink)(void *, uint32_t);
 static void *buttons_context;
 static uint32_t buttons_mask;
+static uint64_t cpu_touch_time;
+
+/* Read by HoujiCpuDvfs.cpp. C definitions already have the C linkage used by its extern "C" declaration. */
+uint64_t houji_cpu_touch_time(void);
+uint64_t houji_cpu_touch_time(void)
+{
+	return __atomic_load_n(&cpu_touch_time, __ATOMIC_RELAXED);
+}
 
 void native_touch_set_sink(void (*sink)(void *), void *context);
 void native_touch_set_sink(void (*sink)(void *), void *context)
@@ -55,6 +64,8 @@ static unsigned panel_height(void)
 void houji_touch_contact(int finger, int down, int x, int y);
 void houji_touch_contact(int finger, int down, int x, int y)
 {
+	/* Keep the input hot path lock-free; moves extend the same interaction window as fresh contacts. */
+	if (down) __atomic_store_n(&cpu_touch_time, mach_absolute_time(), __ATOMIC_RELAXED);
 	const unsigned width = panel_width(), height = panel_height();
 	if (x < 0) x = 0;
 	if (y < 0) y = 0;

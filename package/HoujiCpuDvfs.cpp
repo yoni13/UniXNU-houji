@@ -14,6 +14,8 @@
 
 extern "C" int houji_thermal_hottest(void);   // HoujiThermal.cpp: deci-C, -1000 without a reading
 extern "C" uint64_t houji_cpu_idle_mach(int cpu);   // HoujiCpuIdle.c: accumulated idle time, 0 for a CPU not started
+extern "C" uint64_t houji_cpu_touch_time(void);   // HoujiTouchHid.c: latest down/move contact
+extern "C" uint64_t houji_cpu_frame_activity(void);   // LegacyDisplayProbe.cpp: accepted frame swaps
 
 namespace {
 constexpr unsigned kDomains = 4, kRows = 40;
@@ -37,6 +39,8 @@ unsigned gMaxPct = 70;
 uint64_t gLastIdle[8], gLastTime;
 unsigned gLoad[kDomains];   // permille: the busiest started core of the domain over the last period
 volatile unsigned gLevel, gHottest, gStarted;
+bool gInteractive;
+unsigned gSampleMs = 200, gFramePct = 45, gTouchPct = 65, gTouchMs = 300;
 
 uint32_t rd(Domain &w, unsigned off) {return *(volatile uint32_t *)(w.va + off);}
 
@@ -104,7 +108,7 @@ unsigned nextLevel(unsigned cur, int hottest) {
     return cur;
 }
 
-void apply(unsigned level) {
+void apply(unsigned level, bool framing, bool touching) {
     for (unsigned id = 0; id < kDomains; id++) {
         Domain &w = d[id];
         if (!w.ok || w.bad) continue;
@@ -118,6 +122,16 @@ void apply(unsigned level) {
             at = 0;
             while (at < cap && w.khz[at] < want) ++at;
         }
+        if (gInteractive) {
+            unsigned floorPct = framing ? gFramePct : 0;
+            if (id && touching && floorPct < gTouchPct) floorPct = gTouchPct;
+            if (floorPct > gMaxPct) floorPct = gMaxPct;
+            unsigned floor = 0;
+            while (floor + 1 < w.n && (uint64_t)w.khz[floor] * 100 < (uint64_t)w.khz[w.n - 1] * floorPct) ++floor;
+            // Both the user cap and thermal cap are represented by cap; interaction can never override either.
+            if (floor > cap) floor = cap;
+            if (at < floor) at = floor;
+        }
         if (at != w.cur && !vote(id, at)) {
             w.bad = true;
             IOLog("HOUJI CPU DVFS FAIL: domain=%u request/readback mismatch; domain writes disabled\n", id);
@@ -128,6 +142,15 @@ void apply(unsigned level) {
 void worker(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "houji-cpu-dvfs");
     unsigned ticks = 0;
+    const unsigned validateTicks = gInteractive ? (1000 / gSampleMs ? 1000 / gSampleMs : 1) : 5;
+    const unsigned reportTicks = gInteractive ? (5000 / gSampleMs ? 5000 / gSampleMs : 1) : 25;
+    uint64_t touchWindow = 0, frameWindow = 0, frameUntil = 0;
+    uint64_t frames = gInteractive ? houji_cpu_frame_activity() : 0;
+    unsigned recentFrames = 0;
+    if (gInteractive) {
+        nanoseconds_to_absolutetime((uint64_t)gTouchMs * 1000000ULL, &touchWindow);
+        nanoseconds_to_absolutetime(300000000ULL, &frameWindow);
+    }
     for (;;) {
         const int hottest = houji_thermal_hottest();
         // Without a reading, hold level 2 (big cores at half), as the iOS 16 governor did.
@@ -155,25 +178,42 @@ void worker(void *, wait_result_t) {
             }
             gLastTime = now;
         }
+        bool framing = false, touching = false;
+        if (gInteractive) {
+            const uint64_t now = mach_absolute_time(), nextFrames = houji_cpu_frame_activity();
+            recentFrames = ((recentFrames << 1) | (nextFrames != frames)) & 15;
+            frames = nextFrames;
+            if (__builtin_popcount(recentFrames) >= 2) frameUntil = now + frameWindow;
+            framing = now < frameUntil;
+            const uint64_t touch = houji_cpu_touch_time();
+            touching = touch && now >= touch && now - touch < touchWindow;
+        }
         // A cluster brought up later (smp=1 starts the secondary cores after this governor) enables its EPSS domain then.
-        if (ticks % 5 == 0) {
+        if (ticks % validateTicks == 0) {
             for (unsigned id = 0; id < kDomains; id++) {
                 if (d[id].ok || !d[id].va || !(rd(d[id], 0) & 1)) continue;
                 if (init(id)) IOLog("HOUJI CPU DVFS: domain=%u validated after its cluster started\n", id);
             }
         }
-        apply(level);
-        if (++ticks % 25 == 0) {   // every 5 s
+        apply(level, framing, touching);
+        if (++ticks % reportTicks == 0) {   // every 5 s
             uint32_t req[kDomains], state[kDomains];
             for (unsigned id = 0; id < kDomains; id++) {
                 req[id] = d[id].ok ? d[id].khz[d[id].cur] : 0;
                 state[id] = d[id].ok ? (rd(d[id], 0x20) & 255) * 19200 : 0;
             }
-            IOLog("HOUJI CPU DVFS: hottest %d.%d C level %u load %u,%u,%u,%u req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
-                  hottest / 10, hottest % 10, level, gLoad[0], gLoad[1], gLoad[2], gLoad[3], req[0], req[1], req[2], req[3],
-                  state[0], state[1], state[2], state[3], d[0].changes, d[1].changes, d[2].changes, d[3].changes);
+            if (gInteractive) {
+                const char *floor = touching ? "touch" : (framing ? "frame" : "none");
+                IOLog("HOUJI CPU DVFS: hottest %d.%d C level %u load %u,%u,%u,%u floor %s req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
+                      hottest / 10, hottest % 10, level, gLoad[0], gLoad[1], gLoad[2], gLoad[3], floor, req[0], req[1], req[2], req[3],
+                      state[0], state[1], state[2], state[3], d[0].changes, d[1].changes, d[2].changes, d[3].changes);
+            } else {
+                IOLog("HOUJI CPU DVFS: hottest %d.%d C level %u load %u,%u,%u,%u req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
+                      hottest / 10, hottest % 10, level, gLoad[0], gLoad[1], gLoad[2], gLoad[3], req[0], req[1], req[2], req[3],
+                      state[0], state[1], state[2], state[3], d[0].changes, d[1].changes, d[2].changes, d[3].changes);
+            }
         }
-        IOSleep(200);
+        IOSleep(gSampleMs);
     }
 }
 }  // namespace
@@ -184,6 +224,19 @@ extern "C" void houji_cpu_dvfs_start(void) {
     gStarted = 1;
     unsigned pct = 0;
     if (PE_parse_boot_argn("houji_cpu_max_pct", &pct, sizeof(pct)) && pct >= 10 && pct <= 100) gMaxPct = pct;
+    unsigned interactive = 0;
+    if (PE_parse_boot_argn("houji_cpu_interactive", &interactive, sizeof(interactive)) && interactive) {
+        gInteractive = true; gSampleMs = 40;
+        unsigned value = 0;
+        if (PE_parse_boot_argn("houji_cpu_sample_ms", &value, sizeof(value)) && value >= 10 && value <= 1000) gSampleMs = value;
+        if (PE_parse_boot_argn("houji_cpu_frame_pct", &value, sizeof(value)) && value <= 100) gFramePct = value;
+        if (PE_parse_boot_argn("houji_cpu_touch_pct", &value, sizeof(value)) && value <= 100) gTouchPct = value;
+        if (PE_parse_boot_argn("houji_cpu_touch_ms", &value, sizeof(value)) && value >= 50 && value <= 1500) gTouchMs = value;
+        if (gFramePct > gMaxPct) gFramePct = gMaxPct;
+        if (gTouchPct > gMaxPct) gTouchPct = gMaxPct;
+        IOLog("HOUJI CPU DVFS: interactive sample %u ms frame %u%% touch %u%%/%u ms (max %u%%; thermal caps override floors)\n",
+              gSampleMs, gFramePct, gTouchPct, gTouchMs, gMaxPct);
+    }
     unsigned first = 0;
     if (PE_parse_boot_argn("houji_thermal_trigger_c", &first, sizeof(first)) && first >= 40 && first <= 80)
         for (unsigned n = 1; n < kLevels; n++) kTrigger[n] = (int)(first * 10 + 50 * (n - 1));
@@ -195,7 +248,7 @@ extern "C" void houji_cpu_dvfs_start(void) {
     }
     if (!usable) return;
     gLevel = 2;
-    apply(gLevel);
+    apply(gLevel, false, false);
     IOLog("HOUJI CPU DVFS: started, max %u%%, initial level 2\n", gMaxPct);
     thread_t t = nullptr;
     if (kernel_thread_start(worker, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
