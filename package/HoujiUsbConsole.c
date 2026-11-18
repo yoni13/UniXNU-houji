@@ -802,6 +802,53 @@ extern kern_return_t host_statistics64(host_t,host_flavor_t,host_info64_t,mach_m
 extern host_t host_self(void);
 extern volatile uint64_t native_ram_block_resident_bytes,native_ram_block_bytes,native_ram_block_writes;
 extern volatile uint64_t native_ram_block_unmapped_pages,native_ram_block_unmaps;
+/* "io": the processes that wrote the most to disk (rusage ri_diskio_byteswritten, MiB, lifetime) and those with the largest
+ * physical footprint (MiB): on this phone Data is a RAM disk, so a file written is memory taken. */
+#include <sys/resource.h>
+extern void gather_rusage_info(proc_t,rusage_info_current *,int);
+struct io_entry { int pid; uint32_t written, footprint; char name[24]; };
+/* Allocated per call: tables this size do not fit the kernel's __DATA beside the retained segments. */
+struct io_table { struct io_entry e[512]; struct io_entry copy[512]; unsigned n; rusage_info_current ru; };
+static struct io_table *io_t;
+static int io_proc(proc_t p,void *arg __unused)
+{
+    if (io_t->n>=512 || !p->p_stats) return PROC_RETURNED;
+    gather_rusage_info(p,&io_t->ru,RUSAGE_INFO_V4);
+    struct io_entry *e=&io_t->e[io_t->n++];
+    e->pid=proc_pid(p);e->written=(uint32_t)(io_t->ru.ri_diskio_byteswritten>>20);e->footprint=(uint32_t)(io_t->ru.ri_phys_footprint>>20);
+    strlcpy(e->name,proc_best_name(p),sizeof e->name);
+    return PROC_RETURNED;
+}
+static void io_print(int by_footprint)
+{
+    for (int r=0;r<14;r++) {
+        int best=-1;
+        for (unsigned i=0;i<io_t->n;i++) {
+            const uint32_t v=by_footprint?io_t->e[i].footprint:io_t->e[i].written;
+            if (v && (best<0 || v>(by_footprint?io_t->e[best].footprint:io_t->e[best].written))) best=(int)i;
+        }
+        if (best<0) break;
+        struct io_entry *e=&io_t->e[best];
+        printf("HOUJI IO: %s %d %s written %u MiB footprint %u MiB\n",by_footprint?"mem":"disk",e->pid,e->name,e->written,e->footprint);
+        if (by_footprint) e->footprint=0; else e->written=0;
+    }
+}
+static void io_command(void)
+{
+    static int _Atomic busy;
+    if (!os_atomic_cmpxchg(&busy,0,1,acquire)) return;
+    io_t=kalloc_data(sizeof *io_t,Z_WAITOK|Z_ZERO);
+    if (!io_t) { os_atomic_store(&busy,0,release);return; }
+    proc_iterate(PROC_ALLPROCLIST,io_proc,NULL,NULL,NULL);
+    memcpy(io_t->copy,io_t->e,sizeof io_t->copy);
+    io_print(0);
+    memcpy(io_t->e,io_t->copy,sizeof io_t->copy);
+    io_print(1);
+    printf("HOUJI IO: %u processes\n",io_t->n);
+    kfree_data(io_t,sizeof *io_t);io_t=NULL;
+    os_atomic_store(&busy,0,release);
+}
+extern volatile uint32_t native_adreno_client_bytes[5][2],native_adreno_client_stats[5][6];
 static void vm_command(void)
 {
     vm_statistics64_data_t s;
@@ -815,6 +862,11 @@ static void vm_command(void)
     printf("HOUJI VM: Data RAM disk resident %llu MiB of %llu MiB, writes %llu, unmaps %llu freeing %llu pages\n",
            native_ram_block_resident_bytes>>20,native_ram_block_bytes>>20,native_ram_block_writes,native_ram_block_unmaps,
            native_ram_block_unmapped_pages);
+    printf("HOUJI VM: GPU BOs MiB live/peak per client slot %u/%u %u/%u %u/%u %u/%u kernel %u/%u; refused %u %u %u %u\n",
+           native_adreno_client_bytes[0][0],native_adreno_client_bytes[0][1],native_adreno_client_bytes[1][0],native_adreno_client_bytes[1][1],
+           native_adreno_client_bytes[2][0],native_adreno_client_bytes[2][1],native_adreno_client_bytes[3][0],native_adreno_client_bytes[3][1],
+           native_adreno_client_bytes[4][0],native_adreno_client_bytes[4][1],native_adreno_client_stats[0][2],native_adreno_client_stats[1][2],
+           native_adreno_client_stats[2][2],native_adreno_client_stats[3][2]);
 }
 static void qos_command(const char *args)
 {
@@ -1276,6 +1328,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"cores ",6)) cores_command(u.command+6);
     else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
     else if (!strcmp(u.command,"vm")) vm_command();
+    else if (!strcmp(u.command,"io")) io_command();
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
