@@ -643,6 +643,52 @@ static void top_clean_name(char *name,size_t size,const char *fallback)
     for (size_t i=0;name[i];++i)
         if ((unsigned char)name[i]<32 || (unsigned char)name[i]>126) name[i]='?';
 }
+/* "qos PROC PREFIX [QOS]": every thread of the processes named PROC whose name starts with PREFIX gets the requested QoS class QOS (default
+ * 6, user-interactive), as pthread's own class change sets it (proc_set_thread_policy_ext, TASK_POLICY_ATTRIBUTE / QOS_AND_RELPRIO).
+ * For the render server's metal2vulkan threads, which start at the default class (priority 37) under the render thread's 55. */
+extern thread_t task_findtid(task_t task,uint64_t tid);
+extern void proc_set_thread_policy_ext(thread_t thread,int category,int flavor,int value,int value2);
+struct qos_request { char proc[32]; char prefix[32]; int qos; unsigned matched, set; };
+static int qos_proc(proc_t p,void *arg)
+{
+    struct qos_request *r=arg;
+    if (strcmp(proc_best_name(p),r->proc)) return PROC_RETURNED;
+    task_t task=proc_task(p);
+    if (task==TASK_NULL) return PROC_RETURNED;
+    static uint64_t tids[256];
+    int n=get_task_numacts(task);
+    if (n<=0) return PROC_RETURNED;
+    if (n>256) n=256;
+    const int got=fill_taskthreadlist(task,tids,n,true)/(int)sizeof(uint64_t);
+    for (int i=0;i<got;++i) {
+        struct proc_threadinfo_internal info={0};
+        if (fill_taskthreadinfo(task,tids[i],true,&info,NULL,NULL)) continue;
+        if (strncmp(info.pth_name,r->prefix,strlen(r->prefix))) continue;
+        r->matched++;
+        thread_t th=task_findtid(task,tids[i]);
+        if (th==THREAD_NULL) continue;
+        proc_set_thread_policy_ext(th,0x2 /* TASK_POLICY_ATTRIBUTE */,0x38 /* TASK_POLICY_QOS_AND_RELPRIO */,r->qos,0);
+        thread_deallocate(th);
+        r->set++;
+        printf("HOUJI QOS: %s[%d] thread %llu '%s' -> qos %d\n",r->proc,proc_pid(p),(unsigned long long)tids[i],info.pth_name,r->qos);
+    }
+    return PROC_RETURNED;
+}
+static void qos_command(const char *args)
+{
+    static struct qos_request r;
+    bzero(&r,sizeof r);r.qos=6;
+    const char *s=args;size_t i=0;
+    while (*s && *s!=' ' && i<sizeof(r.proc)-1) r.proc[i++]=*s++;
+    while (*s==' ') s++;
+    i=0;
+    while (*s && *s!=' ' && i<sizeof(r.prefix)-1) r.prefix[i++]=*s++;
+    while (*s==' ') s++;
+    if (*s) r.qos=(int)strtoq(s,NULL,10);
+    if (!r.proc[0] || !r.prefix[0] || r.qos<1 || r.qos>6) { printf("HOUJI QOS: syntax qos PROC PREFIX [QOS 1..6]\n");return; }
+    proc_iterate(PROC_ALLPROCLIST,qos_proc,&r,NULL,NULL);
+    printf("HOUJI QOS: %s threads '%s*': %u matched, %u set to qos %d\n",r.proc,r.prefix,r.matched,r.set,r.qos);
+}
 static int top_collect_proc(proc_t p,void *arg)
 {
     struct top_context *c=arg;
@@ -1032,6 +1078,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"gop")) gop_command();
     else if (!strcmp(u.command,"disp") || !strcmp(u.command,"disp reset")) disp_command(u.command);
     else if (!strcmp(u.command,"rtc")) rtc_command();
+    else if (!strncmp(u.command,"qos ",4)) qos_command(u.command+4);
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
