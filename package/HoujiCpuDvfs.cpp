@@ -16,6 +16,7 @@ extern "C" int houji_thermal_hottest(void);   // HoujiThermal.cpp: deci-C, -1000
 extern "C" uint64_t houji_cpu_idle_mach(int cpu);   // HoujiCpuIdle.c: accumulated idle time, 0 for a CPU not started
 extern "C" uint64_t houji_cpu_touch_time(void);   // HoujiTouchHid.c: latest down/move contact
 extern "C" uint64_t houji_cpu_frame_activity(void);   // LegacyDisplayProbe.cpp: accepted frame swaps
+extern "C" volatile int32_t native_houji_battery_stats[16];   // HoujiBattery.cpp; temperature [4] is in centi-C
 
 namespace {
 constexpr unsigned kDomains = 4, kRows = 40;
@@ -23,6 +24,22 @@ constexpr unsigned kCounts[kDomains] = {2, 2, 1, 3};
 constexpr unsigned kCpuDomain[8] = {0, 0, 3, 3, 3, 1, 1, 2};   // the iOS 16 governor's map (this phone's FDT clusters)
 constexpr uint32_t kCaps[kDomains] = {2265600, 2956800, 3052800, 3148800};
 constexpr uint32_t kMinima[kDomains] = {364800, 499200, 480000, 499200};
+struct StockStep { int trigger; uint32_t khz; };   // trigger is deci-C
+constexpr StockStep kStockCpu0[] = {{250,2035200},{390,1689600},{400,1459200},{450,1344000},{480,1017600}};
+constexpr StockStep kStockCpu2[] = {{250,2630400},{340,2323200},{370,2188800},{390,2035200},{410,1824000},{420,1612800},
+    {430,1612800},{440,1286400},{450,1286400},{460,1286400},{470,1190400},{480,1190400},{490,1075200},{500,960000}};
+constexpr StockStep kStockCpu5[] = {{250,2630400},{340,2323200},{370,2188800},{390,1824000},{410,1497600},{415,1401600},
+    {420,1286400},{430,1286400},{450,1286400},{460,1286400},{470,1190400},{480,1190400},{490,1075200},{500,960000}};
+constexpr StockStep kStockCpu7[] = {{250,2630400},{320,2169600},{340,1939200},{370,1824000},{390,1708800},{400,1363200},
+    {410,1248000},{415,1248000},{420,1248000},{430,1248000},{440,1248000},{450,1132800},{460,1132800},
+    {470,1017600},{480,1017600},{490,1017600},{500,1017600}};
+struct StockTable { const StockStep *step; unsigned n; };
+#define STOCK_TABLE(a) {a, sizeof(a) / sizeof((a)[0])}
+// EPSS/log domains 0,1,2,3 contain CPUs 0-1,5-6,7,2-4 respectively.
+constexpr StockTable kStockByDomain[kDomains] = {
+    STOCK_TABLE(kStockCpu0), STOCK_TABLE(kStockCpu5), STOCK_TABLE(kStockCpu7), STOCK_TABLE(kStockCpu2)
+};
+#undef STOCK_TABLE
 // Level triggers in deci-C: level n starts at first + 50 * (n - 1). The iOS 16 governor began at 70 C with a load-driven floor;
 // without load input yet the iOS 27 one begins at houji_thermal_trigger_c (default 55 C), so all-core boot load is throttled early.
 int kTrigger[] = {0, 550, 600, 650, 700, 750};
@@ -40,6 +57,9 @@ uint64_t gLastIdle[8], gLastTime;
 unsigned gLoad[kDomains];   // permille: the busiest started core of the domain over the last period
 volatile unsigned gLevel, gHottest, gStarted;
 bool gInteractive;
+bool gStock, gEmergency, gSkinFallbackLogged;
+unsigned gBatteryMode, gStockState[kDomains], gStockCaps[kDomains];
+int gSkinOffsetC, gSkinDeci;
 unsigned gSampleMs = 200, gFramePct = 45, gTouchPct = 65, gTouchMs = 300;
 
 uint32_t rd(Domain &w, unsigned off) {return *(volatile uint32_t *)(w.va + off);}
@@ -108,13 +128,52 @@ unsigned nextLevel(unsigned cur, int hottest) {
     return cur;
 }
 
+unsigned stockState(const StockTable &table, unsigned cur, int skin) {
+    // cur is the number of active entries: zero means skin is below the first trigger.
+    while (cur < table.n && skin >= table.step[cur].trigger) ++cur;
+    while (cur && skin < table.step[cur - 1].trigger - 20) --cur;
+    return cur;
+}
+
+unsigned khzCapIndex(const Domain &w, uint32_t khz) {
+    unsigned at = 0;
+    while (at + 1 < w.n && w.khz[at + 1] <= khz) ++at;
+    return at;
+}
+
+int stockSkin(int hottest) {
+    const int temp = native_houji_battery_stats[4];
+    const bool battery = gBatteryMode >= 4 && native_houji_battery_stats[6] > 0 && temp != 0 && temp >= -4000 && temp <= 9000;
+    if (battery) return temp / 10 + gSkinOffsetC * 10;
+    if (!gSkinFallbackLogged) {
+        gSkinFallbackLogged = true;
+        IOLog("HOUJI CPU DVFS: stock battery temperature unavailable; skin falls back to hottest TSENS - 25 C\n");
+    }
+    return hottest > -1000 ? hottest - 250 : hottest;
+}
+
+void updateStockCaps(int hottest) {
+    gSkinDeci = stockSkin(hottest);
+    for (unsigned id = 0; id < kDomains; ++id)
+        gStockState[id] = stockState(kStockByDomain[id], gStockState[id], gSkinDeci);
+}
+
 void apply(unsigned level, bool framing, bool touching) {
     for (unsigned id = 0; id < kDomains; id++) {
         Domain &w = d[id];
         if (!w.ok || w.bad) continue;
         unsigned pct = id ? kBigPct[level] : kLittlePct[level];
         if (pct > gMaxPct) pct = gMaxPct;
-        const unsigned cap = capIndex(w, pct);
+        unsigned cap = capIndex(w, pct);
+        if (gStock) {
+            const StockTable &table = kStockByDomain[id];
+            if (gStockState[id]) {
+                const unsigned stockCap = khzCapIndex(w, table.step[gStockState[id] - 1].khz);
+                if (stockCap < cap) cap = stockCap;
+            }
+            if (gEmergency) cap = 0;
+            gStockCaps[id] = w.khz[cap];
+        }
         // Load: above 90 % straight to the cap; otherwise the lowest row that keeps the busiest core near 75 % at the current speed.
         unsigned at = cap;
         if (gLoad[id] < 900) {
@@ -157,6 +216,10 @@ void worker(void *, wait_result_t) {
         const unsigned level = hottest > -1000 ? nextLevel(gLevel, hottest) : (gLevel < 2 ? 2 : gLevel);
         if (level != gLevel) IOLog("HOUJI CPU DVFS: thermal level %u -> %u at %d.%d C\n", gLevel, level, hottest / 10, hottest % 10);
         gLevel = level; gHottest = (unsigned)hottest;
+        if (gStock) {
+            gEmergency = hottest >= 750;
+            updateStockCaps(hottest);
+        }
         {
             const uint64_t now = mach_absolute_time();
             unsigned load[kDomains] = {};
@@ -198,11 +261,24 @@ void worker(void *, wait_result_t) {
         apply(level, framing, touching);
         if (++ticks % reportTicks == 0) {   // every 5 s
             uint32_t req[kDomains], state[kDomains];
+            const unsigned skinAbs = gSkinDeci < 0 ? (unsigned)-gSkinDeci : (unsigned)gSkinDeci;
+            const char *skinSign = gSkinDeci < 0 ? "-" : "";
             for (unsigned id = 0; id < kDomains; id++) {
                 req[id] = d[id].ok ? d[id].khz[d[id].cur] : 0;
                 state[id] = d[id].ok ? (rd(d[id], 0x20) & 255) * 19200 : 0;
             }
-            if (gInteractive) {
+            if (gStock && gInteractive) {
+                const char *floor = touching ? "touch" : (framing ? "frame" : "none");
+                IOLog("HOUJI CPU DVFS: policy stock skin %s%u.%u C caps %u,%u,%u,%u hottest %d.%d C level %u load %u,%u,%u,%u floor %s req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
+                      skinSign, skinAbs / 10, skinAbs % 10, gStockCaps[0], gStockCaps[1], gStockCaps[2], gStockCaps[3],
+                      hottest / 10, hottest % 10, level, gLoad[0], gLoad[1], gLoad[2], gLoad[3], floor, req[0], req[1], req[2], req[3],
+                      state[0], state[1], state[2], state[3], d[0].changes, d[1].changes, d[2].changes, d[3].changes);
+            } else if (gStock) {
+                IOLog("HOUJI CPU DVFS: policy stock skin %s%u.%u C caps %u,%u,%u,%u hottest %d.%d C level %u load %u,%u,%u,%u req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
+                      skinSign, skinAbs / 10, skinAbs % 10, gStockCaps[0], gStockCaps[1], gStockCaps[2], gStockCaps[3],
+                      hottest / 10, hottest % 10, level, gLoad[0], gLoad[1], gLoad[2], gLoad[3], req[0], req[1], req[2], req[3],
+                      state[0], state[1], state[2], state[3], d[0].changes, d[1].changes, d[2].changes, d[3].changes);
+            } else if (gInteractive) {
                 const char *floor = touching ? "touch" : (framing ? "frame" : "none");
                 IOLog("HOUJI CPU DVFS: hottest %d.%d C level %u load %u,%u,%u,%u floor %s req-kHz %u,%u,%u,%u state-kHz %u,%u,%u,%u changes %u,%u,%u,%u\n",
                       hottest / 10, hottest % 10, level, gLoad[0], gLoad[1], gLoad[2], gLoad[3], floor, req[0], req[1], req[2], req[3],
@@ -222,6 +298,9 @@ extern "C" void houji_cpu_dvfs_start(void) {
     unsigned enabled = 0;
     if (gStarted || !PE_parse_boot_argn("houji_dvfs", &enabled, sizeof(enabled)) || !(enabled & 1)) return;
     gStarted = 1;
+    char policy[16] = {};
+    gStock = PE_parse_boot_argn("houji_cpu_policy", policy, sizeof(policy)) && !strcmp(policy, "stock");
+    if (gStock) gMaxPct = 100;
     unsigned pct = 0;
     if (PE_parse_boot_argn("houji_cpu_max_pct", &pct, sizeof(pct)) && pct >= 10 && pct <= 100) gMaxPct = pct;
     unsigned interactive = 0;
@@ -237,9 +316,17 @@ extern "C" void houji_cpu_dvfs_start(void) {
         IOLog("HOUJI CPU DVFS: interactive sample %u ms frame %u%% touch %u%%/%u ms (max %u%%; thermal caps override floors)\n",
               gSampleMs, gFramePct, gTouchPct, gTouchMs, gMaxPct);
     }
-    unsigned first = 0;
-    if (PE_parse_boot_argn("houji_thermal_trigger_c", &first, sizeof(first)) && first >= 40 && first <= 80)
-        for (unsigned n = 1; n < kLevels; n++) kTrigger[n] = (int)(first * 10 + 50 * (n - 1));
+    unsigned first = gStock ? 70 : 0, configuredFirst = 0;
+    if (PE_parse_boot_argn("houji_thermal_trigger_c", &configuredFirst, sizeof(configuredFirst)) &&
+        configuredFirst >= 40 && configuredFirst <= 80) first = configuredFirst;
+    if (first) for (unsigned n = 1; n < kLevels; n++) kTrigger[n] = (int)(first * 10 + 50 * (n - 1));
+    if (gStock) {
+        int offset = 0;
+        if (PE_parse_boot_argn("houji_skin_offset_c", &offset, sizeof(offset)) && offset >= -100 && offset <= 100) gSkinOffsetC = offset;
+        PE_parse_boot_argn("battery", &gBatteryMode, sizeof(gBatteryMode));
+        IOLog("HOUJI CPU DVFS: policy stock, skin offset %d C, battery mode %u, TSENS emergency 75 C\n",
+              gSkinOffsetC, gBatteryMode);
+    }
     IOLog("HOUJI CPU DVFS: thermal triggers %d %d %d %d %d deci-C\n", kTrigger[1], kTrigger[2], kTrigger[3], kTrigger[4], kTrigger[5]);
     unsigned usable = 0;
     for (unsigned id = 0; id < kDomains; id++) {
@@ -247,9 +334,15 @@ extern "C" void houji_cpu_dvfs_start(void) {
         else IOLog("HOUJI CPU DVFS: domain=%u factory validation refused; no frequency writes to it\n", id);
     }
     if (!usable) return;
-    gLevel = 2;
+    gLevel = gStock ? 0 : 2;
+    if (gStock) {
+        const int hottest = houji_thermal_hottest();
+        gEmergency = hottest >= 750;
+        updateStockCaps(hottest);
+    }
     apply(gLevel, false, false);
-    IOLog("HOUJI CPU DVFS: started, max %u%%, initial level 2\n", gMaxPct);
+    if (gStock) IOLog("HOUJI CPU DVFS: started, policy stock, max %u%%, initial level 0\n", gMaxPct);
+    else IOLog("HOUJI CPU DVFS: started, max %u%%, initial level 2\n", gMaxPct);
     thread_t t = nullptr;
     if (kernel_thread_start(worker, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
 }
