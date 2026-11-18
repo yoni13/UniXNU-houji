@@ -757,8 +757,26 @@ static void top_command(const char *cmd)
         thread_deallocate(th);printf("HOUJI TOP: sampling %u ms\n",ms);
     } else { os_atomic_store(&top_busy,0,release);printf("HOUJI TOP: thread start failed\n"); }
 }
+extern unsigned native_legacy_swap_timeline(char *out,unsigned cap) __attribute__((weak_import));
+static void swaps_command(void)
+{
+    /* The display driver's last 40 swaps (submitted, offered to the copy, done), same clock as HOUJI GESTURE AT. */
+    if (!native_legacy_swap_timeline) { printf("HOUJI SWAPS: unavailable\n");return; }
+    char *buffer=kalloc_data(4096,Z_WAITOK|Z_ZERO);
+    if (!buffer) return;
+    native_legacy_swap_timeline(buffer,4096);
+    for (char *line=buffer,*next;line && *line;line=next) {
+        next=strchr(line,'\n');
+        if (next) *next++=0;
+        printf("HOUJI SWAPS: %s\n",line);
+        delay(2000);
+    }
+    kfree_data(buffer,4096);
+}
 static void gesture_thread(void *arg __unused,wait_result_t result __unused)
 {
+    {uint64_t ns;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
+     printf("HOUJI GESTURE AT t=%llu.%03llus\n",(unsigned long long)(ns/1000000000ull),(unsigned long long)((ns/1000000ull)%1000));}
     if (gesture.kind==3) {
         sweet_hid_key(3,1);gesture_sleep_ms(80);sweet_hid_key(3,0);
     } else {
@@ -955,6 +973,7 @@ static void command_line(void)
             houji_framebuffer_shot_region(r[0],r[1],r[2],r[3],cols?cols:1,rows?rows:1);
         } else printf("HOUJI DEBUG: shotr X Y W H\n");
     }
+    else if (!strcmp(u.command,"swaps")) swaps_command();
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
         int expected=0;thread_t th;

@@ -1,0 +1,86 @@
+diff --git a/scripts/prepare-houji-ufs.py b/scripts/prepare-houji-ufs.py
+index 0000000..1111111 100755
+--- a/scripts/prepare-houji-ufs.py
++++ b/scripts/prepare-houji-ufs.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Prepare a local, read-only houji adaptation of pinned ShengUfs sources.
++"""Prepare a houji adaptation of pinned ShengUfs sources.
+ 
+ Does not select a kernel archive or claim storage ABI/runtime qualification.
+ The proven houji SMMU planner is supplied from the legacy source checkout.
+@@ -90,14 +90,35 @@ def prepare(source, legacy, output):
+     native = native.replace('static void houjiStage (const char *stage)\n',
+         '#define houjiReport(...) do { IOLog (__VA_ARGS__); IOLog ("\\n"); IOSleep (2000); panic (__VA_ARGS__); } while (0)\n'
+         'static void houjiStage (const char *stage)\n', 1)
++    # Persistence remains off unless the exact owner-approved target is named.
++    native = replace_once(native,
++        '    uint32_t value = 0;\n'
++        '    if (!PE_parse_boot_argn ("sheng-data-persist", &value, sizeof (value)) || value > 2) value = 0;\n'
++        '    cached = static_cast<int> (value);',
++        '    char target[16] = {};\n'
++        '    if (PE_parse_boot_arg_str ("native-data", target, sizeof (target)) && !strcmp (target, "userdata"))\n'
++        '      cached = 2;\n'
++        '    else\n'
++        '      cached = 0;')
++    # NativeRamBlock write-back uses this optional entry. It has the same store-window checks as
++    # the FUA path, but durability is completed by native_ufs_store_sync.
++    marker = 'extern "C" int native_ufs_store_sync (void)\n{'
++    native = replace_once(native, marker,
++        'extern "C" int native_ufs_store_write_cached (uint64_t rel, uint32_t blocks, const void *src)\n'
++        '{\n'
++        '  if (storeMode () != 2 || !gStoreRegionBlocks || !src || !blocks || rel >= gStoreRegionBlocks ||\n'
++        '      blocks > gStoreRegionBlocks - rel) return 0;\n'
++        '  while (blocks) {\n'
++        '    uint32_t chunk = blocks > kDataMax / 4096 ? static_cast<uint32_t> (kDataMax / 4096) : blocks;\n'
++        '    if (hostWrite4k (0, gStoreRegionFirst + rel, chunk, src, false) != kIOReturnSuccess) return 0;\n'
++        '    src = static_cast<const uint8_t *> (src) + chunk * 4096ULL;\n'
++        '    rel += chunk; blocks -= chunk;\n'
++        '  }\n'
++        '  return 1;\n'
++        '}\n\n' + marker)
+     commands = (source / 'RootCommands.h').read_text()
+-    commands = replace_once(commands, '  *ocs = 15;\n',
+-                              '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
+-    # Also reject the public write entry before it copies or modifies DMA data.
+-    commands = replace_once(commands,
+-        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {',
+-        '  return kIOReturnNotPermitted; // houji: persistence is not qualified\n'
+-        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {')
++    # Keep upstream hostStoreOpen/hostInWindow as the final command-level write allowlist.
+@@ -136,12 +157,12 @@ def prepare(source, legacy, output):
+     (output / 'NativeUfs.cpp').write_text(native)
+     (output / 'RootCommands.h').write_text(commands)
+-    report = dict(upstream_revision=revision, writes_enabled=False, storage_abi_qualified=False,
++    report = dict(upstream_revision=revision, writes_enabled='native-data=userdata', storage_abi_qualified=False,
+                   hardware_tested=False, sources={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                                   for p in sorted(output.iterdir()) if p.is_file()})
+     (output / 'houji-adaptation.json').write_text(json.dumps(report, indent=2) + '\n')
+     print('PASS: pinned ShengUfs adapted with houji quiescent SMMU retargeting')
+-    print('PASS: hostWrite4k and hostSubmit(direction=1) reject writes')
++    print('PASS: writes remain off except native-data=userdata and bounded userdata store windows')
+     print('NOT QUALIFIED: arm64e 24B156 ABI, compilation, hardware block reads')
+diff --git a/package/SourceStorage.cpp b/package/SourceStorage.cpp
+index 2222222..3333333 100644
+--- a/package/SourceStorage.cpp
++++ b/package/SourceStorage.cpp
+@@ -14,11 +14,9 @@ extern "C" void source_storage_ufs_init(void) __asm__("__GLOBAL__sub_I_NativeUfs.cpp");
+ extern "C" IOService *native_ufs_source_create(void);
+ extern "C" void source_storage_ram_init(void) __asm__("__GLOBAL__sub_I_NativeRamBlock.cpp");
+-// The Data RAM disk's optional hooks this kernel does not have: keep the loader's seed pages (no release of loader memory),
+-// and no write-back cache path to UFS (storage writes are prohibited in this port). Ordinary definitions: neither exists
+-// elsewhere in this kernel, and a weak definition would leave a weak binding that the prelink cannot resolve.
++// Keep the loader's seed pages: this kernel has no release hook. NativeUfs supplies the optional cached store writer.
+ extern "C" bool ml_static_mfree_prepare(vm_offset_t, vm_size_t) { return false; }
+-extern "C" int native_ufs_store_write_cached(uint64_t, uint32_t, const void *) { return -1; }
+ extern "C" bool native_source_root_policies_load(void);
+ extern "C" void native_source_storage_start(void);
+ extern "C" int houji_usb_connected(void);
+@@ -78,7 +76,7 @@ extern "C" void native_source_storage_start(void)
+     step("UFS attached; starting (hardware access)");
+     if (!driver->start(provider)) panic("HoujiStorage: UFS start failed");
+-    printf("HoujiStorage: source UFS started (storage writes prohibited)\n");
++    printf("HoujiStorage: source UFS started (Data writes require native-data=userdata)\n");
+     // The Data seed the loader placed in /chosen/memory-map (PackedRAMDisk): a RAM disk below the platform root.
+     IORegistryEntry *map = IORegistryEntry::fromPath("/chosen/memory-map", gIODTPlane);
+     const bool seed = map && (map->getProperty("PackedRAMDisk") || map->getProperty("RAMDisk"));
