@@ -1,6 +1,6 @@
 --- a/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
 +++ b/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
-@@ -125,6 +125,21 @@
+@@ -125,6 +125,26 @@
  extern "C" void native_legacy_vsync_observed(unsigned event,unsigned hz);
  extern "C" uint64_t mach_continuous_time(void);
  extern "C" void flush_dcache64(addr64_t addr,unsigned count,int phys);
@@ -11,7 +11,12 @@
 +    __asm("__ZN12IOUserClient28sendAsyncResult64WithOptionsEPyiS0_jj");
 +extern "C" {volatile uint64_t native_legacy_frameinfo[7];}
 +// fb-frameinfo=1: selector 74 advertises the keys and the family's FrameInfo hooks are no-ops; =2 also sends the type-3 reports.
++// Console "fi N" (0..2) overrides the boot argument at runtime; -1 uses it. Selector 74 is asked once when the render server starts, so
++// a boot without fb-frameinfo advertises no keys whatever the override says later: switch between 1 and 2 on a boot with either.
++extern "C" {volatile int native_legacy_frameinfo_override=-1;}
 +static unsigned nativeLegacyFrameInfoLevel() {
++    const int forced=native_legacy_frameinfo_override;
++    if(forced>=0 && forced<=2)return (unsigned)forced;
 +    unsigned level=0;PE_parse_boot_argn("fb-frameinfo",&level,sizeof(level));return level<=2?level:0;
 +}
 +static bool nativeLegacyFrameInfo() {return nativeLegacyFrameInfoLevel()>=1;}
@@ -22,7 +27,7 @@
  // 32-bit BGRA, plain ('BGRA') or in Apple's lossless-compressed spelling ('&BGA', one plane): the GPU that renders the surface here writes plain rows
  // either way (no compression is implemented), so the bytes are the same.
  static inline bool nativeBgra(uint32_t format,uint32_t planes) {
-@@ -172,8 +187,6 @@
+@@ -172,8 +192,6 @@
  // macOS: the family's swap-info sender (swap_info_notify_dispatch_gated, bound by the build) and this kernel's own async result
  // sender (protected in IOUserClient.h).
  extern "C" void native_legacy_swap_info_dispatch(void *display,void *blob);
@@ -31,7 +36,7 @@
  // macOS reads the display's modes from its timing and color elements (CoreDisplay, WindowServer): IOAVFamily's constructors, bound
  // by the build (IOAVVideoTimingElement::withData, ::setColorElements, IOAVVideoColorElement::withCapabilities). The enumerations
  // are passed as their integer values.
-@@ -283,6 +296,35 @@
+@@ -283,6 +301,35 @@
      // client queue (kLegacyVsyncClients) never changes while the sender walks it.
      IOTimerEventSource *vsyncTimer=nullptr;
      uint64_t vsyncInterval=0,vsyncNext=0;
@@ -67,7 +72,7 @@
      unsigned vsyncHz=0;
      bool vsyncArmed=false;
      // Direct scanout state, used on the work loop only. DPU 9.2 inside the MDP block (0xae01000): VIG 0 and 1 at 0x4000 and 0x6000 (source
-@@ -486,6 +528,7 @@
+@@ -486,6 +533,7 @@
  public:
      // Called by the GPU client's completion (any thread): the swap is finished on the framebuffer's work loop.
      void gpuComplete(int status) {
@@ -75,7 +80,7 @@
          // houji (gop-status-ok=1): the GPU client's copy finished (its wait returned) but its command buffer status read as not completed
          // (root98 frames.trace: every swap result 4, kGpuFailed, in about 1 ms). Counted as a failure, each frame sent the next one down the
          // CPU path, whose end does not release the queue without a vsync tick (hz 0 here): an animation's last frame waited for the next
-@@ -493,12 +536,12 @@
+@@ -493,12 +541,12 @@
          static int statusOk=-1;
          if(statusOk<0){unsigned v=0;PE_parse_boot_argn("gop-status-ok",&v,sizeof(v));statusOk=v==1;}
          if(statusOk && status){native_legacy_gop_status_overrides=native_legacy_gop_status_overrides+1;native_legacy_gop_status_last=(uint32_t)status;status=0;}
@@ -91,7 +96,7 @@
      }
      void free() override {stopVsync();if(logicalPM){PMstop();logicalPM=false;}primary=false;OSSafeReleaseNULL(bootMapping);IOMobileFramebufferLegacy::free();}
      void stop(IOService *provider) override {
-@@ -786,7 +829,7 @@
+@@ -786,7 +834,7 @@
          finishTransfer(request);
      }
      // The GPU client reported its copy (status 0) or lost it. Success retires the swap like a finished copy; anything else uses the CPU copy.
@@ -100,7 +105,7 @@
          const OriginalLegacySwapRequest *request=gpuRequest;
          if(!request)return;
          gpuRequest=nullptr;
-@@ -794,13 +837,21 @@
+@@ -794,13 +842,21 @@
              // The swap retired when the client took it; its copy ending only releases the next frame. A failed copy loses this frame
              // (the next one takes the CPU copy).
              gpuRetired=false;
@@ -125,7 +130,7 @@
          }
          native_legacy_gpu_fallback_observed(status);
          transferred=false;gpuBypass=true;kickSwapQueue();
-@@ -814,12 +865,15 @@
+@@ -814,12 +870,15 @@
          if(!activateOnlyPendingSwap(request))return false;
          stat(11);note(6,-1,request);
          removeValidated(request);
@@ -141,7 +146,7 @@
          // Only after the real copy and store barrier: select the actual pending head and let the unchanged family release it and wake
          // waiters. This reports memory scanout completion, not a panel vblank or hardware fence.
          if(!retireSwap(request,force))return;
-@@ -907,11 +961,19 @@
+@@ -907,11 +966,19 @@
      IOReturn setFrameInfoNotificationState(void *,bool) override {return kIOReturnSuccess;}
      IOReturn notifyCrcReady(uint32_t) override {return kIOReturnSuccess;}
  #else
@@ -165,7 +170,7 @@
      }
  #endif
  #if defined(NATIVE_LEGACY_MACOS) && NATIVE_LEGACY_MACOS
-@@ -995,10 +1057,34 @@
+@@ -995,10 +1062,34 @@
      }
      // Selector 74 enumerates optional frame-info trace keys, not display
      // modes. This backend implements no trace-key subscription contract.
@@ -203,7 +208,7 @@
      IOReturn newUserClient(task_t task,void *security,UInt32 type,IOUserClient **client) override {
          native_legacy_client_enter(task,type);
          IOReturn status=IOMobileFramebufferLegacy::newUserClient(task,security,type,client);
-@@ -1236,7 +1322,20 @@
+@@ -1236,7 +1327,20 @@
      // No color matrix hardware either; the compositor's matrix is accepted, as the virtual-machine display accepts it.
      IOReturn swapSetColorMatrix(void *,uint32_t,uint32_t) override {return kIOReturnSuccess;}
  #endif

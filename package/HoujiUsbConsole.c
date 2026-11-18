@@ -771,6 +771,21 @@ static void disp_command(void)
     uint64_t ns;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
     printf("HOUJI DISP: t=%llu.%03llus %s\n",(unsigned long long)(ns/1000000000ull),(unsigned long long)((ns/1000000ull)%1000),line);
 }
+extern volatile int native_legacy_frameinfo_override __attribute__((weak_import));
+extern volatile uint64_t native_legacy_frameinfo[7] __attribute__((weak_import));
+static void fi_command(const char *cmd)
+{
+    /* fi: the frame-info level and counters; fi N (0..2): override fb-frameinfo at runtime (-1 = the boot argument again). */
+    if (!&native_legacy_frameinfo_override) { printf("HOUJI FI: unavailable\n");return; }
+    if (cmd[2]) {
+        char *end=NULL;long long parsed=strtoq(cmd+3,&end,10);
+        if (cmd[2]!=' ' || end==cmd+3 || *end || parsed<-1 || parsed>2) { printf("HOUJI FI: syntax fi [-1|0|1|2]\n");return; }
+        native_legacy_frameinfo_override=(int)parsed;
+    }
+    printf("HOUJI FI: override=%d sel74=%llu completions=%llu notifies=%llu no-client=%llu deferred=%llu early-sent=%llu hooks=%llu\n",
+        native_legacy_frameinfo_override,native_legacy_frameinfo[0],native_legacy_frameinfo[1],native_legacy_frameinfo[2],
+        native_legacy_frameinfo[3],native_legacy_frameinfo[4],native_legacy_frameinfo[5],native_legacy_frameinfo[6]);
+}
 static void gop_command(void)
 {
 #define GOPV(x) (&(x)?(unsigned long long)(x):~0ull)
@@ -997,6 +1012,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"swaps")) swaps_command();
     else if (!strcmp(u.command,"gop")) gop_command();
     else if (!strcmp(u.command,"disp")) disp_command();
+    else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
         int expected=0;thread_t th;

@@ -24,6 +24,8 @@ The observable report ABI is the type-3 Mach payload: `uint64_t {mask, swapID, v
 
 The current swap request stores the requested host time at `+0x390` (copied from the swap timing block at `0xfffffff00a1d6334`); family current/head/tail are display `+0x1a40/+0x1a48/+0x1a50`.
 
+Checked in the 24B156 shared cache (sub-cache `.38`): `FrameInfoNotifyFunc` (`0x22cdd8ea8`) rejects fewer than 2 arguments (`cmp w3,#1; b.hi`), reads `args[0]` as the mask and `args[1]` as the swap ID (`ldp x9,x20,[x2]`), then, for each set bit in bit order, takes the key name from the selector-74 table (`[x19+0xa70][bit]`) and the next value from `args+16`, up to `count-2` values. Bit 31 of the mask selects paired 32-bit halves. The driver's `{mask, swapID, value per enabled bit}` with `2 + popcount(mask)` arguments matches.
+
 ## Slots 324, 325, 359: family hooks (found after the root104/105 resets)
 
 All three are pure in the family (`pure_slots` in `profiles/os/ios-27.2.1-24B156/abi/original-classes.json`), and this driver filled them with leaf guards (`native_legacy_backend_guard`, which panics; the USB console dies with it, so no panic text reaches the log).
