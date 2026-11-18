@@ -865,6 +865,19 @@ static void fence_command(const char *cmd)
         native_adreno_fence_wake[4],native_adreno_fence_wake[5],native_adreno_fence_wake[6],native_adreno_fence_wake[7],waits,native_adreno_wait_outer[1],native_adreno_wait_outer[2],
         native_adreno_wait_outer[3],native_adreno_wait_outer[4],waits?native_adreno_wait_outer[1]/waits:0);
 }
+/* "cores HEXMASK": the CPUs the scheduler may run ordinary threads on (bit n = cpu n), through the perf-control recommendation CLPC
+ * uses (sched_perfcontrol_update_recommended_cores). This kernel has no __AMP__, so it schedules with Clutch alone and treats the
+ * two in-order Cortex-A520s (cpu0, cpu1) like the A720/X4 cores: "cores fc" keeps the render server's threads off them. "cores ff"
+ * recommends every core again. */
+extern void sched_perfcontrol_update_recommended_cores(uint32_t recommended_cores);
+static void cores_command(const char *arg)
+{
+    char *end=NULL;
+    const long long mask=strtoq(arg,&end,16);
+    if (end==arg || *end || mask<1 || mask>0xff) { printf("HOUJI CORES: syntax cores HEXMASK (1..ff, bit n = cpu n)\n");return; }
+    sched_perfcontrol_update_recommended_cores((uint32_t)mask);
+    printf("HOUJI CORES: recommended mask %02llx\n",mask);
+}
 static void gop_command(void)
 {
 #define GOPV(x) (&(x)?(unsigned long long)(x):~0ull)
@@ -1094,6 +1107,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"rtc")) rtc_command();
     else if (!strcmp(u.command,"fence") || !strcmp(u.command,"fence reset")) fence_command(u.command);
     else if (!strncmp(u.command,"qos ",4)) qos_command(u.command+4);
+    else if (!strncmp(u.command,"cores ",6)) cores_command(u.command+6);
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
