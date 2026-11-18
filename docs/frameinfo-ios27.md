@@ -24,9 +24,15 @@ The observable report ABI is the type-3 Mach payload: `uint64_t {mask, swapID, v
 
 The current swap request stores the requested host time at `+0x390` (copied from the swap timing block at `0xfffffff00a1d6334`); family current/head/tail are display `+0x1a40/+0x1a48/+0x1a50`.
 
-## Slot 325: the per-request hook (found after root104 reset)
+## Slots 324, 325, 359: family hooks (found after the root104/105 resets)
 
-The type-3 dispatch is `0xfffffff00a1daa10(this, arg)`, reached from `0xfffffff00a1da9bc` through the command gate (`runAction` trampoline `0xfffffff00a1dfdac`). It walks the NULL-terminated list at `+0x1a98` (`node = *node`) and calls vtable `+0xa28` (slot 325) as `(this, node, arg)` for each request, then `+0xa30` (slot 326) as `(this, arg)`. In the family, slot 326 is `bti c; ret` and slot 325 is pure (`pure_slots` in `profiles/os/ios-27.2.1-24B156/abi/original-classes.json`). This driver filled slot 325 with a leaf guard (`native_legacy_backend_guard`, which panics). Once selector 74 advertises keys, requests exist, so the guard is the likely cause of root104's resets: two of three boots stopped at 68-69 s, with the last log line the render server's first `IOMobileFramebufferUserClient` call. With `fb-frameinfo=1`, slot 325 is now a counted no-op (`hook325=` with its caller in the log). Not yet verified on the phone.
+All three are pure in the family (`pure_slots` in `profiles/os/ios-27.2.1-24B156/abi/original-classes.json`), and this driver filled them with leaf guards (`native_legacy_backend_guard`, which panics; the USB console dies with it, so no panic text reaches the log).
+
+- **324, request added/removed.** Registration appends a type-3 request to its TAILQ (`+0x1a98` first, `+0x1aa0` last; node `next` +0, `prev` +8), then calls `+0xa20` as `(this, request, 1)` (`0xfffffff00a1da38c`). Removal calls it with `0` (`0xfffffff00a1da5b8`). The results are ignored.
+- **325, per-request dispatch.** `0xfffffff00a1daa10(this, arg)` (reached through the gate trampoline `0xfffffff00a1dfdac`) walks the list and calls `+0xa28` as `(this, request, arg)`, then `+0xa30` (slot 326, `bti c; ret` in the family).
+- **359, after the sender.** The sender loop sends `sendAsyncResult64(node+24, 0, args, 3, 1)` per node (`0xfffffff00a1dac20`, which confirms the `+0x18` async reference), then calls `+0xb38` as `(this, arg)` (`0xfffffff00a1dac48`).
+
+root105 (slot 325 fixed) still reset at 68.3 s with no `HOUJI FRAMEINFO` line, right after the render server's first `IOMobileFramebufferUserClient` call. That fits slot 324 firing at registration. With `fb-frameinfo=1`, all three hooks are counted no-ops (`HOUJI FRAMEINFO: hook=N calls= caller=`). This is not yet verified on the phone.
 
 ## Implementation consequences
 

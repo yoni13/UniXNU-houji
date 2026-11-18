@@ -180,18 +180,21 @@
      }
      IOReturn newUserClient(task_t task,void *security,UInt32 type,IOUserClient **client) override {
          native_legacy_client_enter(task,type);
-@@ -1236,7 +1300,17 @@
+@@ -1236,7 +1300,20 @@
      // No color matrix hardware either; the compositor's matrix is accepted, as the virtual-machine display accepts it.
      IOReturn swapSetColorMatrix(void *,uint32_t,uint32_t) override {return kIOReturnSuccess;}
  #endif
 -#define LEAF(n) __attribute__((noreturn,noinline)) void opaque##n() override { native_legacy_backend_guard(n,this,__builtin_return_address(0)); }
-+    // Slot 325 is the family's per-request type-3 hook: its dispatch (24B156 0xfffffff00a1daa10) calls it for each FrameInfo request, then
-+    // slot 326, a no-op in the family. Pure in the family; with fb-frameinfo=1 requests exist, and the guard here is the likely reset as
-+    // the render server registered (root104: two of three boots reset at 68-69 s). sendFrameInfo delivers to the requests itself, so the hook does nothing.
++    // FrameInfo (type-3) hooks, pure in the family. 24B156: registering a type-3 request appends it to the list at +0x1a98 and calls slot
++    // 324 (this, request, 1); removal calls it with 0 (0xfffffff00a1da38c, 0xfffffff00a1da5b8; results ignored). The dispatch
++    // 0xfffffff00a1daa10 calls slot 325 (this, request, arg) per request, then slot 326, a no-op in the family; the sender ending at
++    // 0xfffffff00a1dac48 calls slot 359 (this, arg) after its loop. Here they were leaf guards: once selector 74 advertised keys, the render
++    // server's registration panicked (root104/105: reset at 68-69 s, after its first IOMobileFramebufferUserClient call). sendFrameInfo
++    // delivers to the requests itself, so with fb-frameinfo=1 the hooks only count their calls.
 +#define LEAF(n) __attribute__((noinline)) void opaque##n() override { \
-+        if(n==325 && nativeLegacyFrameInfo()) { \
++        if((n==324 || n==325 || n==359) && nativeLegacyFrameInfo()) { \
 +            const uint64_t calls=countFrameInfo(6); \
-+            if(logFrameInfo(calls))IOLog("HOUJI FRAMEINFO: hook325=%llu caller=%llx\n",calls,(uint64_t)(uintptr_t)__builtin_return_address(0)); \
++            if(logFrameInfo(calls))IOLog("HOUJI FRAMEINFO: hook=%u calls=%llu caller=%llx\n",n,calls,(uint64_t)(uintptr_t)__builtin_return_address(0)); \
 +            return; \
 +        } \
 +        native_legacy_backend_guard(n,this,__builtin_return_address(0)); \
