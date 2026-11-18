@@ -600,7 +600,6 @@ struct top_proc_sample {
     char name[64];
 };
 struct top_thread_sample {
-    thread_t thread;
     uint64_t tid,cpu_start,cpu_delta,permille;
     unsigned proc_index;
     char name[MAXTHREADNAMESIZE];
@@ -608,6 +607,7 @@ struct top_thread_sample {
 struct top_context {
     struct top_proc_sample *procs;
     struct top_thread_sample *threads;
+    uint64_t *tids;
     unsigned proc_count,thread_count;
     bool proc_truncated,thread_truncated;
 };
@@ -619,11 +619,23 @@ static uint64_t top_task_cpu(task_t task)
     recount_task_usage(task,&usage);
     return recount_usage_time_mach(&usage);
 }
-static uint64_t top_thread_cpu(thread_t thread)
+/* Threads through the accessors proc_pidinfo uses (osfmk/kern/bsd_kern.c): they take the task lock themselves, so this file needs
+ * neither struct task nor struct thread. Thread times are in nanoseconds; the layout below is bsd/sys/bsdtask_info.h's. */
+struct top_threadinfo {
+    uint64_t user_ns,system_ns;
+    int32_t cpu_usage,policy,run_state,flags,sleep_time,curpri,priority,maxpriority;
+    char name[64];
+};
+extern int get_task_numacts(task_t);
+extern int fill_taskthreadlist(task_t,void *,int,bool);
+extern int fill_taskthreadinfo(task_t,uint64_t,bool,struct top_threadinfo *,void *,int *);
+static bool top_thread_ns(task_t task,uint64_t tid,uint64_t *ns,char *name,size_t size)
 {
-    struct recount_usage usage={0};
-    recount_thread_usage(thread,&usage);
-    return recount_usage_time_mach(&usage);
+    struct top_threadinfo info={0};
+    if (fill_taskthreadinfo(task,tid,true,&info,NULL,NULL)) return false;
+    *ns=info.user_ns+info.system_ns;
+    if (name) { strlcpy(name,info.name,size); }
+    return true;
 }
 static uint64_t top_permille(uint64_t cpu,uint64_t elapsed)
 {
@@ -649,65 +661,37 @@ static int top_collect_proc(proc_t p,void *arg)
     top_clean_name(s->name,sizeof(s->name),s->pid==0?"kernel_task":"?");
     s->cpu_start=top_task_cpu(task);s->started=mach_absolute_time();
     s->thread_begin=c->thread_count;
-    task_lock(task);
-    s->threads=(unsigned)task->thread_count;
-    thread_t th;
-    queue_iterate(&task->threads,th,thread_t,task_threads) {
-        if (c->thread_count==TOP_MAX_THREADS) { c->thread_truncated=true;break; }
-        struct top_thread_sample *ts=&c->threads[c->thread_count++];
-        thread_reference(th);ts->thread=th;ts->tid=thread_tid(th);ts->proc_index=pi;
+    int n=get_task_numacts(task);
+    if (n<0) n=0;
+    if (n>(int)(TOP_MAX_THREADS-c->thread_count)) { n=(int)(TOP_MAX_THREADS-c->thread_count); c->thread_truncated=true; }
+    s->threads=(unsigned)n;
+    if (n>0) {
+        const int got=fill_taskthreadlist(task,c->tids,n,true)/(int)sizeof(uint64_t);
+        for (int i=0;i<got;++i) {
+            struct top_thread_sample *ts=&c->threads[c->thread_count];
+            if (!top_thread_ns(task,c->tids[i],&ts->cpu_start,ts->name,sizeof(ts->name))) continue;
+            ts->tid=c->tids[i];ts->proc_index=pi;c->thread_count++;
+            top_clean_name(ts->name,sizeof(ts->name),"-");
+        }
     }
-    task_unlock(task);
     s->thread_initial=c->thread_count-s->thread_begin;
-    for (unsigned i=s->thread_begin;i<c->thread_count;++i) {
-        struct top_thread_sample *ts=&c->threads[i];
-        ts->cpu_start=top_thread_cpu(ts->thread);
-        struct uthread *uth=get_bsdthread_info(ts->thread);
-        if (uth) bsd_getthreadname(uth,ts->name);
-        top_clean_name(ts->name,sizeof(ts->name),"-");
-    }
     return PROC_RETURNED;
-}
-static bool top_has_thread(const struct top_context *c,const struct top_proc_sample *s,uint64_t tid)
-{
-    for (unsigned i=s->thread_begin;i<s->thread_begin+s->thread_initial;++i)
-        if (c->threads[i].tid==tid) return true;
-    return false;
 }
 static void top_finish_proc(struct top_context *c,unsigned pi)
 {
     struct top_proc_sample *s=&c->procs[pi];
     const uint64_t end_cpu=top_task_cpu(s->task);
-    const unsigned added_begin=c->thread_count;
-    task_lock(s->task);
-    s->threads=(unsigned)s->task->thread_count;
-    thread_t th;
-    queue_iterate(&s->task->threads,th,thread_t,task_threads) {
-        const uint64_t tid=thread_tid(th);
-        if (top_has_thread(c,s,tid)) continue;
-        if (c->thread_count==TOP_MAX_THREADS) { c->thread_truncated=true;break; }
-        struct top_thread_sample *ts=&c->threads[c->thread_count++];
-        thread_reference(th);ts->thread=th;ts->tid=tid;ts->proc_index=pi;
-        /* A thread absent from the first snapshot was born in the window. */
-        ts->cpu_start=0;
-    }
-    task_unlock(s->task);
     const uint64_t ended=mach_absolute_time();
     s->elapsed=ended-s->started;
     s->cpu_delta=end_cpu>=s->cpu_start?end_cpu-s->cpu_start:0;
     s->permille=top_permille(s->cpu_delta,s->elapsed);
-    for (unsigned pass=0;pass<2;++pass) {
-        const unsigned begin=pass?added_begin:s->thread_begin;
-        const unsigned end=pass?c->thread_count:s->thread_begin+s->thread_initial;
-        for (unsigned i=begin;i<end;++i) {
-            struct top_thread_sample *ts=&c->threads[i];
-            const uint64_t end=top_thread_cpu(ts->thread);
-            ts->cpu_delta=end>=ts->cpu_start?end-ts->cpu_start:0;
-            ts->permille=top_permille(ts->cpu_delta,s->elapsed);
-            struct uthread *uth=get_bsdthread_info(ts->thread);
-            if (uth) bsd_getthreadname(uth,ts->name);
-            top_clean_name(ts->name,sizeof(ts->name),"-");
-        }
+    uint64_t elapsed_ns=0;absolutetime_to_nanoseconds(s->elapsed,&elapsed_ns);
+    for (unsigned i=s->thread_begin;i<s->thread_begin+s->thread_initial;++i) {
+        struct top_thread_sample *ts=&c->threads[i];
+        uint64_t end=0;
+        if (!top_thread_ns(s->task,ts->tid,&end,NULL,0)) end=ts->cpu_start;   /* ended in the window: its time is in the task total */
+        ts->cpu_delta=end>=ts->cpu_start?end-ts->cpu_start:0;
+        ts->permille=top_permille(ts->cpu_delta,elapsed_ns);
     }
 }
 static void top_thread(void *arg,wait_result_t result __unused)
@@ -716,7 +700,8 @@ static void top_thread(void *arg,wait_result_t result __unused)
     struct top_context c={0};
     c.procs=kalloc_data(sizeof(*c.procs)*TOP_MAX_PROCS,Z_WAITOK|Z_ZERO);
     c.threads=kalloc_data(sizeof(*c.threads)*TOP_MAX_THREADS,Z_WAITOK|Z_ZERO);
-    if (!c.procs || !c.threads) { printf("HOUJI TOP: allocation failed\n");goto out; }
+    c.tids=kalloc_data(sizeof(uint64_t)*TOP_MAX_THREADS,Z_WAITOK|Z_ZERO);
+    if (!c.procs || !c.threads || !c.tids) { printf("HOUJI TOP: allocation failed\n");goto out; }
     proc_iterate(PROC_ALLPROCLIST,top_collect_proc,&c,NULL,NULL);
     gesture_sleep_ms(ms);
     for (unsigned i=0;i<c.proc_count;++i) top_finish_proc(&c,i);
@@ -756,7 +741,7 @@ static void top_thread(void *arg,wait_result_t result __unused)
     if (c.proc_truncated || c.thread_truncated)
         printf("HOUJI TOP: sample truncated at %u processes or %u threads\n",TOP_MAX_PROCS,TOP_MAX_THREADS);
 out:
-    for (unsigned i=0;i<c.thread_count;++i) if (c.threads[i].thread) thread_deallocate(c.threads[i].thread);
+    if (c.tids) kfree_data(c.tids,sizeof(uint64_t)*TOP_MAX_THREADS);
     for (unsigned i=0;i<c.proc_count;++i) if (c.procs[i].task) task_deallocate(c.procs[i].task);
     if (c.threads) kfree_data(c.threads,sizeof(*c.threads)*TOP_MAX_THREADS);
     if (c.procs) kfree_data(c.procs,sizeof(*c.procs)*TOP_MAX_PROCS);
