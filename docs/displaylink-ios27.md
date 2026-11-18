@@ -1,0 +1,21 @@
+# DisplayLink and render wakeups — iOS 27.2.1 (24B156)
+
+Unslid QuartzCore addresses unless noted. Static cache analysis; no device tests. The two clocks below are distinct.
+
+## backboardd render clock (high confidence)
+
+`complete_display_state_transition` creates/removes the source (`0x184367f2c`/`0x184367edc`). `add_vsync_source` selects type 5 only if server `+0x61f` bit 1 is set; otherwise it creates a `CADisplayTimer` (`0x184368044`, `0x184368108`, `0x184368154`). Creation alone isn't steady ticking: `set_next_update` requires nonzero display `+0x2c0`, `is_enabled_for_vsync_render` (state bytes behind `+0x3a0`), and an existing source; otherwise it falls back to base scheduling (`0x184367ab0`, `0x184351500`, `0x184367bfc`). Pending update demand enables vsync and reloads a short tick budget (`0x184367b94–0x184367bd0`); with no finite next update, the callback counts it down and disables the source (`0x1842de16c–0x1842de1a0`). Idle `mach_msg` and zero driver counters do not diagnose a broken timer.
+
+`set_vsync_enabled` attaches the software source in default mode (`0x18444ec84`); `AddToRunLoop` arms it (`0x1843c4f68`) and the Mach callback rearms (`0x1842dd3ac`). `AlignPhase` calls `rearm_timer` (`0x1842ddb84` → `0x18448a248`); `SetInterval` can also rearm (`0x18439db38`). `refresh_timer_interval` calls the latter at `0x1843d5e90`, from source creation, timer rate change, throttle update, and a FrameInfo branch (`0x184368130`, `0x1842dd708`, `0x184676b70`, `0x18430a1a4`). FrameInfo is not an initial arm prerequisite.
+
+## Period and app ticks (high confidence)
+
+Display vfunc `+0x388` is `heartbeat_rate`: internal vtable slot `0x1e2265058` → `0x1842de984`. It returns **seconds**, preferring the selected override mode's 16.16-Hz rate when applicable (`0x1842de9c4–0x1842dea24`); otherwise cached `1/CA_HEARTBEAT_RATE` (environment in Hz), eligible refresh-step host ticks converted to seconds, minimum 32.32 interval (halved with mode flag bit 4), or **1/60 s** (`0x1842de9a4`, `0x1842dea30–0x1842dea74`, constant `0x1846fc678`). The base method instead delegates to `+0x378` (`0x1843dbbc0`).
+
+`CADisplayLink` schedules in-process (`0x1843aee3c`, timer creation `0x1843a8c04`); `mk_timer_create` and `CFMachPortCreateWithPort` (`0x1843c4d20`, `0x1843c4d4c`) are local timer delivery, not per-tick backboardd IPC. Server display info/shared timing still informs phase (`0x1843da17c`, `0x1843d8850`, `0x1842eee20`). Nonpositive client interval invalidates the timer (`0x1843a8ab8`); an inactive shared timing-power bit can pause it (`0x1843a8d90–0x1843a8dc8`, restart `0x1844b0d40–0x1844b0d64`). This can coexist with separately scheduled updates; SpringBoard's live gate is unmeasured.
+
+## Ranked checks (likelihood, not confirmed causes)
+
+1. **State/eligibility (medium).** Verify connected `GetDigitalOutState` (selector 25, `0x22cda8788`, unitless), hotplug type 0 (64-bit zero/nonzero; `0x22cdd1d7c`, `0x18467708c`), and logical power transitions (`RequestPowerChange`, selector 12, one scalar, `0x22cda8844`). No proven `Online` registry key. Compare timing-power bit, app ticks and swap counts before/after blank–unblank and one swipe.
+2. **Fixed timing (medium-low).** Publish `IOMFBDisplayRefresh` as a dictionary of numbers via existing slot 301: `displayMinRefreshInterval`/`displayMaxRefreshInterval` in 32.32 seconds and their `MachTime` counterparts/`displayRefreshStepMachTime` in host ticks (`0x1844e90dc–0x1844e9150` reads minimum and step). A/B `fb-vsync-port=1 vsync=60`; confirm publication, compare app tick timestamps and swipe/settle swaps. Missing dictionary alone has a fallback.
+3. **Type 5 / type 3 (low).** Count selector 72/type 5 registration before changing the software sender (three paired Mach-time values, `0x22cdd46c0`, `0x22cdd91bc–0x22cdd91e0`). No subscription, no benefit from emitting. Compare `fi 1`/`fi 2` with identical swipes: type 3 reports host ticks for `Presentation_time`, `Requested_presentation`, `Last_Fence_or_Event_Time` (`0x184307ab4`, `0x22cdd8ea8`); prior delivery did not restore cadence.

@@ -763,8 +763,15 @@ extern volatile uint64_t native_gop_gpu_offers __attribute__((weak_import)),nati
     native_legacy_early_failures __attribute__((weak_import)),native_legacy_gop_status_overrides __attribute__((weak_import));
 extern volatile uint32_t native_legacy_gop_status_last __attribute__((weak_import));
 extern unsigned native_legacy_prepare_report(char *out,unsigned cap) __attribute__((weak_import));
-static void disp_command(void)
+extern volatile uint64_t houji_frame_intervals[5] __attribute__((weak_import));
+extern volatile uint64_t houji_frame_last __attribute__((weak_import));
+static void disp_command(const char *cmd)
 {
+    if (&houji_frame_intervals) {
+        if (!strcmp(cmd,"disp reset")) { for (unsigned i=0;i<5;i++) houji_frame_intervals[i]=0; houji_frame_last=0; }
+        printf("HOUJI DISP INTERVALS: le20 %llu le34 %llu le100 %llu le500 %llu gt500 %llu\n",houji_frame_intervals[0],houji_frame_intervals[1],
+            houji_frame_intervals[2],houji_frame_intervals[3],houji_frame_intervals[4]);
+    }
     /* The display driver's own counters (fmt/gpu/cpu are every frame it took), with the uptime: two calls give frames per second. */
     if (!native_legacy_prepare_report) { printf("HOUJI DISP: unavailable\n");return; }
     char line[512];native_legacy_prepare_report(line,sizeof line);
@@ -1011,7 +1018,7 @@ static void command_line(void)
     }
     else if (!strcmp(u.command,"swaps")) swaps_command();
     else if (!strcmp(u.command,"gop")) gop_command();
-    else if (!strcmp(u.command,"disp")) disp_command();
+    else if (!strcmp(u.command,"disp") || !strcmp(u.command,"disp reset")) disp_command(u.command);
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
