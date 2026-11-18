@@ -32,8 +32,15 @@ Every line is a hardware result on this phone, with the run that showed it. "Not
 ## Wi-Fi (wifi=1..5, opt-in)
 
 - WCN7850 on PCIe, firmware running, Ath12kWifi core and `en0` up, the network stack opens it (root63; 64 MiB DMA window).
-- `wifi-userspace=1` installs the supplicant and its launchd job; launchd starts it, AMFI refused it with a launch-constraint violation
-  (root86). With `no-lc=1` the kernel stopped responding (root87; no log captured). Scan and join: not verified.
+- `wifi-userspace=1` installs the supplicant and its launchd job. The merged launchd cache must start from this build's own
+  `/System/Library/xpc/launchd.plist` (24B156: 732 jobs, 2 539 659 bytes, copied off the phone with `hex PATH START LENGTH`); a cache
+  from another build made backboardd abort and launchd reboot (root86, root87). AMFI refuses the supplicant with a launch-constraint
+  violation unless `no-lc=1` (root86); with both, the supplicant runs and opens the driver's control channel (root90).
+- Settings shows the Wi-Fi row only when the device tree has `/chosen unique-chip-id` (pack `UNIQUE_CHIP_ID=1`, a local random seed,
+  not the phone's ECID): without it the driver has no stable address, `mac-address-wifi0` is not published and MobileGestalt reports
+  no Wi-Fi (root90: no Wi-Fi, Bluetooth or Cellular rows). With it (root91): the Wi-Fi row, the switch on, and opening the page sends
+  a scan (Apple80211 type 10) that returns the nearby networks within 1.5 s, listed in Settings. Join: not verified (needs a
+  password typed on the phone).
 
 ## Boot images
 
