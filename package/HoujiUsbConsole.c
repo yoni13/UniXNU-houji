@@ -855,8 +855,14 @@ static void io_command(void)
     os_atomic_store(&busy,0,release);
 }
 extern volatile uint32_t native_adreno_client_bytes[5][2],native_adreno_client_stats[5][6];
+extern volatile uint32_t native_adreno_import_memory[4];
+extern int nextpidversion;
 static void vm_command(void)
 {
+    /* Processes forked so far (each fork takes a pid version) and alive now; GPU imports of process memory: live, KiB live and
+     * peak, made so far. Two calls apart give spawns and imports per second. */
+    printf("HOUJI VM: forks %d procs %d | gpu imports live %u %u KiB peak %u KiB made %u\n",nextpidversion,nprocs,
+           native_adreno_import_memory[0],native_adreno_import_memory[1],native_adreno_import_memory[2],native_adreno_import_memory[3]);
     vm_statistics64_data_t s;
     mach_msg_type_number_t n=HOST_VM_INFO64_COUNT;
     bzero(&s,sizeof s);
