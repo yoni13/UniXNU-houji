@@ -7,7 +7,7 @@
 
  Does not select a kernel archive or claim storage ABI/runtime qualification.
  The proven houji SMMU planner is supplied from the legacy source checkout.
-@@ -90,14 +90,41 @@
+@@ -90,14 +90,40 @@
      native = native.replace('static void houjiStage (const char *stage)\n',
          '#define houjiReport(...) do { IOLog (__VA_ARGS__); IOLog ("\\n"); IOSleep (2000); panic (__VA_ARGS__); } while (0)\n'
          'static void houjiStage (const char *stage)\n', 1)
@@ -38,24 +38,23 @@
 +        '  return 1;\n'
 +        '}\n\n' + marker)
      commands = (source / 'RootCommands.h').read_text()
--    commands = replace_once(commands, '  *ocs = 15;\n',
--                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
 +    # Even an accidentally enabled upstream writer cannot submit a command without the exact houji opt-in.
-+    commands = replace_once(commands, '  *ocs = 15;\n',
-+        '  *ocs = 15;\n'
-+        '  char houjiDataTarget[16] = {};\n'
-+        '  if (direction == 1 && (!PE_parse_boot_arg_str ("native-data", houjiDataTarget, sizeof (houjiDataTarget)) ||\n'
-+        '      strcmp (houjiDataTarget, "userdata"))) return kIOReturnNotPermitted;\n')
+     commands = replace_once(commands, '  *ocs = 15;\n',
+-                             '  *ocs = 15;\n  if (direction == 1) return kIOReturnNotPermitted; // houji bring-up: no storage writes\n')
 -    # Also reject the public write entry before it copies or modifies DMA data.
 -    commands = replace_once(commands,
 -        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {',
 -        '  return kIOReturnNotPermitted; // houji: persistence is not qualified\n'
 -        '  if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {')
++        '  *ocs = 15;\n'
++        '  char houjiDataTarget[16] = {};\n'
++        '  if (direction == 1 && (!PE_parse_boot_arg_str ("native-data", houjiDataTarget, sizeof (houjiDataTarget)) ||\n'
++        '      strcmp (houjiDataTarget, "userdata"))) return kIOReturnNotPermitted;\n')
 +    # Keep upstream hostStoreOpen/hostInWindow as the final command-level write allowlist.
      # The public firmware reader may read only a partition extent first granted by an exact GPT-name lookup. The GPT survey itself is
      # internal and read-only. This covers all six normal LUNs; on houji modem_a is expected on LUN 4.
      native = replace_once(native,
-@@ -136,12 +163,12 @@
+@@ -136,12 +162,12 @@
      shutil.copyfile(legacy / 'GiuliaSmmuTakeover.h', output / 'GiuliaSmmuTakeover.h')
      (output / 'NativeUfs.cpp').write_text(native)
      (output / 'RootCommands.h').write_text(commands)

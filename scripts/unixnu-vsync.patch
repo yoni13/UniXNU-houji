@@ -1,0 +1,43 @@
+--- a/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
++++ b/drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+@@ -113,7 +113,12 @@
+ // boot-arg vsync; a platform may answer otherwise (its display device's mode).
+ extern "C" __attribute__((weak)) unsigned native_legacy_refresh_hz(void) {
+     unsigned hz=0;PE_parse_boot_argn("vsync",&hz,sizeof(hz));return hz;
+ }
++// Port the fixed-refresh publication used by the older houji framebuffer to
++// iOS 27's selected CADisplayTimer path. This does not claim physical vblank.
++static bool nativeLegacyVsyncPort() {
++    unsigned enabled=0;PE_parse_boot_argn("fb-vsync-port",&enabled,sizeof(enabled));return enabled==1;
++}
+ // The unchanged original setDisplayRefreshProperties: publishes IOMFBDisplayRefresh from slot 301 (getRefreshAttributes below).
+ extern "C" bool native_legacy_set_refresh_properties(void *display);
+ extern "C" void native_legacy_vsync_observed(unsigned event,unsigned hz);
+@@ -570,8 +575,9 @@
+         if(enabled!=1)native_legacy_backend_guard(84,this,__builtin_return_address(0));
+         // Nothing in the family publishes IOMFBDisplayRefresh (its platform subclass does), and without it the render server keeps its own
+         // 1/60 s heartbeat (int-210: refresh=0). Publish it before any client can find the display, only when vsync asks for more.
+         unsigned hz=native_legacy_refresh_hz();
+-        if(primary && hz>60 && hz<=240)native_legacy_set_refresh_properties(this);
++        if(primary && hz && hz<=240 &&
++           (hz>60 || nativeLegacyVsyncPort()))native_legacy_set_refresh_properties(this);
+         IOService::registerService(options);native_legacy_registration_observed(this);
+     }
+     bool isMainDisplay() override {return primary;}
+@@ -583,12 +589,14 @@
+     bool getRefreshAttributes(uint64_t *words,bool fixed) override {
+         if(!IOMobileFramebufferLegacy::getRefreshAttributes(words,fixed) || !words)return false;
+         unsigned hz=native_legacy_refresh_hz();
+-        if(hz<=60 || hz>240)return true;
++        const bool port=nativeLegacyVsyncPort();
++        if(!hz || hz>240 || (hz<=60 && !port))return true;
+         unsigned locked=0;PE_parse_boot_argn("vsync-fixed",&locked,sizeof(locked));
+         const uint64_t interval=(1ull<<32)/hz;
+         uint64_t machTime=0;nanoseconds_to_absolutetime(interval*1000000000ull>>32,&machTime);
+         words[0]=interval;words[1]=machTime;
+-        if(fixed || locked==1){words[2]=interval;words[3]=machTime;}
++        // The opt-in ports the iOS 16 fixed-rate contract; it is not VRR.
++        if(fixed || locked==1 || port){words[2]=interval;words[3]=machTime;}
+         native_legacy_vsync_observed(5,hz);
+         return true;
+     }
