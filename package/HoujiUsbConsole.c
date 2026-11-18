@@ -915,6 +915,19 @@ static void posters_arm(void)
     if (!PE_parse_boot_argn("houji_no_posters",&v,sizeof v) || v!=1) return;
     if (kernel_thread_start(posters_thread,NULL,&t)==KERN_SUCCESS) thread_deallocate(t);
 }
+/* "ps PID": the processes with a pid of at least PID (name, pid, parent): the newest ones, which a spawn storm keeps making. */
+static int ps_proc(proc_t p,void *arg)
+{
+    const int from=*(const int *)arg;
+    if (proc_pid(p)>=from) printf("HOUJI PS %d %s ppid %d\n",proc_pid(p),proc_best_name(p),proc_ppid(p));
+    return PROC_RETURNED;
+}
+static void ps_command(const char *args)
+{
+    int from=(int)strtoq(args,NULL,10);
+    proc_iterate(PROC_ALLPROCLIST,ps_proc,&from,NULL,NULL);
+    printf("HOUJI PS: done, %d processes\n",nprocs);
+}
 static void qos_command(const char *args)
 {
     static struct qos_request r;
@@ -1376,6 +1389,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
     else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"io")) io_command();
+    else if (!strncmp(u.command,"ps ",3)) ps_command(u.command+3);
     else if (!strcmp(u.command,"mt")) {
         /* The render server's Metal bridge telemetry table (diag=1; NativeAdrenoPublish.cpp): its memory pools, purge and cache rows. */
         extern char native_adreno_metal_rows[48][96];
