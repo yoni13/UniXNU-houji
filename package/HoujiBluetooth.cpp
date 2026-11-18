@@ -223,7 +223,7 @@ unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
     }
 }
 // Whatever arrives within ms milliseconds, raw (then discarded)
-void rawDump(const char *what, unsigned ms) {
+__attribute__((unused)) void rawDump(const char *what, unsigned ms) {
     const uint64_t end = nowMs() + ms;
     while (nowMs() < end) {pump(); IODelay(100);}
     uint8_t b[48]; const unsigned n = ringCount() < sizeof b ? ringCount() : (unsigned)sizeof b;
@@ -316,7 +316,7 @@ bool hwUp() {
 
 // Vendor 0xfc48 {0x11} at 115200, then this side to 3.2 Mbaud. While it changes, RFR is held off so that its answer at the old rate is
 // not received half-switched; the controller's first event at the new rate is dropped (hci_qca.c qca_set_speed).
-bool toFast() {
+__attribute__((unused)) bool toFast() {
     se(kManualRfr) = (1u << 31) | (1u << 1);   // manual, not ready
     dsb();
     static const uint8_t baud[] = {0x01, 0x48, 0xfc, 0x01, 0x11};

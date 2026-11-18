@@ -801,6 +801,9 @@ static void rtc_command(void)
     clock_sec_t now=0;clock_usec_t us=0;clock_get_calendar_microtime(&now,&us);
     printf("HOUJI RTC: rc=%d raw=%u control=%02x enabled=%u calendar=%lu calendar-minus-raw=%lld\n",rc,secs,control,(control>>7)&1,
         (unsigned long)now,(long long)now-(long long)secs);
+    extern int houji_rtc_offset_read(uint32_t *offset);
+    uint32_t offset=0;int orc=houji_rtc_offset_read(&offset);
+    printf("HOUJI RTC: sdam 0x71bc offset rc=%d value=%u raw+offset=%llu\n",orc,offset,(unsigned long long)secs+offset);
 }
 static void gop_command(void)
 {

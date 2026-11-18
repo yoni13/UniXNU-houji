@@ -85,6 +85,22 @@ extern "C" int houji_rtc_read(uint32_t *seconds, uint8_t *control) {
   *seconds = value[1] - value[0] <= 1 ? value[1] : 0;
   return *seconds ? 0 : 203;
 }
+// The SDAM cell Linux keeps the RTC's offset in (sm8650/x1e devicetrees: pmk8550 sdam_2 at 0x7100, rtc-offset@bc, 4 bytes): if the stock
+// firmware fills it, raw + offset is the time. Read only, through the SDAM channel the reboot-reason write already uses.
+extern "C" int houji_rtc_offset_read(uint32_t *offset);
+extern "C" int houji_rtc_offset_read(uint32_t *offset) {
+  int rc = houji_reboot_reason_prepare(0);
+  if (rc) return 100 + rc;
+  if (reasonApid < 0) return 200;
+  uint32_t v = 0;
+  for (int b = 0; b < 4; ++b) {
+    uint8_t x = 0;
+    if (br_read8(spmiObs, &arb, reasonApid, (uint8_t)(0xbc + b), &x)) return 201;
+    v |= (uint32_t)x << (8 * b);
+  }
+  *offset = v;
+  return 0;
+}
 extern "C" void houji_pon_report(void);
 extern "C" void houji_pon_report(void) {
   int rc = houji_reboot_reason_prepare(0);
