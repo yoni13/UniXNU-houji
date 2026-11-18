@@ -9,12 +9,12 @@
 +// gate that changes this list, so the walk cannot race registration/removal.
 +IOReturn nativeSendAsyncResult(io_user_reference_t *reference,IOReturn result,io_user_reference_t *args,UInt32 count,IOOptionBits options)
 +    __asm("__ZN12IOUserClient28sendAsyncResult64WithOptionsEPyiS0_jj");
-+extern "C" {volatile uint64_t native_legacy_frameinfo[6];}
++extern "C" {volatile uint64_t native_legacy_frameinfo[7];}
 +static bool nativeLegacyFrameInfo() {
 +    unsigned enabled=0;PE_parse_boot_argn("fb-frameinfo",&enabled,sizeof(enabled));return enabled==1;
 +}
 +static uint64_t countFrameInfo(unsigned index) {
-+    return index<6?__atomic_add_fetch(&native_legacy_frameinfo[index],1ULL,__ATOMIC_RELAXED):0;
++    return index<7?__atomic_add_fetch(&native_legacy_frameinfo[index],1ULL,__ATOMIC_RELAXED):0;
 +}
 +static bool logFrameInfo(uint64_t n) {return n<=8 || (n && !(n&(n-1)));}
  // 32-bit BGRA, plain ('BGRA') or in Apple's lossless-compressed spelling ('&BGA', one plane): the GPU that renders the surface here writes plain rows
@@ -180,3 +180,22 @@
      }
      IOReturn newUserClient(task_t task,void *security,UInt32 type,IOUserClient **client) override {
          native_legacy_client_enter(task,type);
+@@ -1236,7 +1300,17 @@
+     // No color matrix hardware either; the compositor's matrix is accepted, as the virtual-machine display accepts it.
+     IOReturn swapSetColorMatrix(void *,uint32_t,uint32_t) override {return kIOReturnSuccess;}
+ #endif
+-#define LEAF(n) __attribute__((noreturn,noinline)) void opaque##n() override { native_legacy_backend_guard(n,this,__builtin_return_address(0)); }
++    // Slot 325 is the family's per-request type-3 hook: its dispatch (24B156 0xfffffff00a1daa10) calls it for each FrameInfo request, then
++    // slot 326, a no-op in the family. Pure in the family; with fb-frameinfo=1 requests exist, and the guard here is the likely reset as
++    // the render server registered (root104: two of three boots reset at 68-69 s). sendFrameInfo delivers to the requests itself, so the hook does nothing.
++#define LEAF(n) __attribute__((noinline)) void opaque##n() override { \
++        if(n==325 && nativeLegacyFrameInfo()) { \
++            const uint64_t calls=countFrameInfo(6); \
++            if(logFrameInfo(calls))IOLog("HOUJI FRAMEINFO: hook325=%llu caller=%llx\n",calls,(uint64_t)(uintptr_t)__builtin_return_address(0)); \
++            return; \
++        } \
++        native_legacy_backend_guard(n,this,__builtin_return_address(0)); \
++    }
+     NATIVE_LEGACY_LEAVES(LEAF)
+ #undef LEAF
+ };

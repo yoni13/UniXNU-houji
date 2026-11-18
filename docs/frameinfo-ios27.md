@@ -24,6 +24,10 @@ The observable report ABI is the type-3 Mach payload: `uint64_t {mask, swapID, v
 
 The current swap request stores the requested host time at `+0x390` (copied from the swap timing block at `0xfffffff00a1d6334`); family current/head/tail are display `+0x1a40/+0x1a48/+0x1a50`.
 
+## Slot 325: the per-request hook (found after root104 reset)
+
+The type-3 dispatch is `0xfffffff00a1daa10(this, arg)`, reached from `0xfffffff00a1da9bc` through the command gate (`runAction` trampoline `0xfffffff00a1dfdac`). It walks the NULL-terminated list at `+0x1a98` (`node = *node`) and calls vtable `+0xa28` (slot 325) as `(this, node, arg)` for each request, then `+0xa30` (slot 326) as `(this, arg)`. In the family, slot 326 is `bti c; ret` and slot 325 is pure (`pure_slots` in `profiles/os/ios-27.2.1-24B156/abi/original-classes.json`). This driver filled slot 325 with a leaf guard (`native_legacy_backend_guard`, which panics). Once selector 74 advertises keys, requests exist, so the guard is the likely cause of root104's resets: two of three boots stopped at 68-69 s, with the last log line the render server's first `IOMobileFramebufferUserClient` call. With `fb-frameinfo=1`, slot 325 is now a counted no-op (`hook325=` with its caller in the log). Not yet verified on the phone.
+
 ## Implementation consequences
 
 Both slots are ordinary virtual overrides. `build-houji-display.py` emits and verifies a full authenticated arm64e subclass vtable, including original per-slot discriminators, so no unsigned copied vtable is required. The existing user-client copied-vtable telemetry is deliberately disabled under PAC; there is no established PAC-safe selector-73 boundary hook. The draft therefore counts selector-74 calls, completion callbacks, deferred early completions, sends/drops, and prints bounded/power-of-two samples.
