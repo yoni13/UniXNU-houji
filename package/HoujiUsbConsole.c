@@ -674,6 +674,98 @@ static int qos_proc(proc_t p,void *arg)
     }
     return PROC_RETURNED;
 }
+/* "ustack PID TID [MS]": a user-stack profile of one thread (default 1500 ms, a sample every 2 ms). Each sample takes the thread's
+ * saved user registers (its state at its last kernel entry: exact while it waits in a trap, as of the last interrupt while it runs)
+ * and walks up to 7 frame-pointer frames from its process's map. The 24 most frequent stacks are printed with their counts and
+ * whether the thread was running, addresses in the dyld shared cache unslid (cache start taken as 0x180000000), so they can be
+ * named from the cache on the host. For the frames SpringBoard's main thread spends while a swipe draws nothing. */
+extern struct arm_saved_state *get_user_regs(thread_t);
+struct vm_shared_region;
+extern struct vm_shared_region *vm_shared_region_get(struct task *);
+extern void vm_shared_region_deallocate(struct vm_shared_region *);
+extern kern_return_t vm_shared_region_start_address(struct vm_shared_region *,mach_vm_offset_t *);
+extern vm_map_t get_task_map(task_t);
+extern kern_return_t copyinmap(vm_map_t,vm_map_offset_t,void *,vm_size_t);
+#define USTACK_DEPTH 8
+#define USTACK_SLOTS 512
+struct ustack_slot { uint64_t pc[USTACK_DEPTH]; uint32_t count, running; };
+static struct { int pid; uint64_t tid; unsigned ms; struct ustack_slot slots[USTACK_SLOTS]; } ustack;
+static int _Atomic ustack_busy;
+static uint64_t ustack_strip(uint64_t a) { return a & 0xffffffffffull; }
+static void ustack_thread(void *arg __unused,wait_result_t result __unused)
+{
+    proc_t p=proc_find(ustack.pid);
+    task_t task=p?proc_task(p):TASK_NULL;
+    if (task!=TASK_NULL) task_reference(task);
+    if (p) proc_rele(p);
+    thread_t th=task!=TASK_NULL?task_findtid(task,ustack.tid):THREAD_NULL;
+    if (th==THREAD_NULL) {
+        printf("HOUJI USTACK: no thread %llu in pid %d\n",(unsigned long long)ustack.tid,ustack.pid);
+        if (task!=TASK_NULL) task_deallocate(task);
+        os_atomic_store(&ustack_busy,0,release);thread_terminate(current_thread());return;
+    }
+    mach_vm_offset_t start=0;
+    struct vm_shared_region *sr=vm_shared_region_get(task);
+    if (sr) { (void)vm_shared_region_start_address(sr,&start);vm_shared_region_deallocate(sr); }
+    const uint64_t slide=start>=0x180000000ull?start-0x180000000ull:0;
+    vm_map_t map=get_task_map(task);
+    bzero(ustack.slots,sizeof ustack.slots);
+    unsigned samples=0,dropped=0,running=0;
+    for (unsigned elapsed=0;elapsed<ustack.ms;elapsed+=2) {
+        gesture_sleep_ms(2);
+        struct proc_threadinfo_internal info={0};
+        if (fill_taskthreadinfo(task,ustack.tid,true,&info,NULL,NULL)) break;
+        const int run=info.pth_run_state==1;
+        struct arm_saved_state *ss=get_user_regs(th);
+        if (!ss) break;
+        uint64_t pc[USTACK_DEPTH]={0};
+        pc[0]=ustack_strip(get_saved_state_pc(ss));
+        pc[1]=ustack_strip(get_saved_state_lr(ss));
+        uint64_t fp=get_saved_state_fp(ss);
+        for (int d=2;d<USTACK_DEPTH && fp && !(fp&7);d++) {
+            uint64_t frame[2];
+            if (copyinmap(map,(vm_map_offset_t)fp,frame,sizeof frame)!=KERN_SUCCESS) break;
+            pc[d]=ustack_strip(frame[1]);
+            if (frame[0]<=fp) break;
+            fp=frame[0];
+        }
+        for (int d=0;d<USTACK_DEPTH;d++) if (pc[d]>=start && start && pc[d]-slide<0x300000000ull) pc[d]-=slide;
+        samples++;running+=run;
+        unsigned h=0;for (int d=0;d<USTACK_DEPTH;d++) h=h*31u+(unsigned)(pc[d]^(pc[d]>>32));
+        unsigned i=h%USTACK_SLOTS,k=0;
+        for (;k<USTACK_SLOTS;k++,i=(i+1)%USTACK_SLOTS) {
+            struct ustack_slot *s=&ustack.slots[i];
+            if (!s->count) { memcpy(s->pc,pc,sizeof pc); }
+            if (!memcmp(s->pc,pc,sizeof pc)) { s->count++;s->running+=run;break; }
+        }
+        if (k==USTACK_SLOTS) dropped++;
+    }
+    thread_deallocate(th);task_deallocate(task);
+    printf("HOUJI USTACK: pid %d tid %llu samples %u running %u dropped %u cache-start 0x%llx slide 0x%llx\n",ustack.pid,
+           (unsigned long long)ustack.tid,samples,running,dropped,(unsigned long long)start,(unsigned long long)slide);
+    for (int r=0;r<24;r++) {
+        struct ustack_slot *best=NULL;
+        for (int i=0;i<USTACK_SLOTS;i++) if (ustack.slots[i].count && (!best || ustack.slots[i].count>best->count)) best=&ustack.slots[i];
+        if (!best) break;
+        printf("HOUJI USTACK %u run %u: %llx %llx %llx %llx %llx %llx %llx %llx\n",best->count,best->running,
+               best->pc[0],best->pc[1],best->pc[2],best->pc[3],best->pc[4],best->pc[5],best->pc[6],best->pc[7]);
+        best->count=0;
+    }
+    os_atomic_store(&ustack_busy,0,release);
+    thread_terminate(current_thread());
+}
+static void ustack_command(const char *args)
+{
+    long long v[3]={0,0,1500};int n=0;const char *s=args;
+    while (*s && n<3) { while (*s==' ') s++; if (!*s) break; char *e=NULL;v[n]=strtoq(s,&e,10);if (e==s) break;n++;s=e; }
+    if (n<2 || v[0]<=0 || v[1]<=0 || v[2]<2 || v[2]>10000) { printf("HOUJI USTACK: syntax ustack PID TID [MS 2..10000]\n");return; }
+    if (!os_atomic_cmpxchg(&ustack_busy,0,1,acquire)) { printf("HOUJI USTACK: busy\n");return; }
+    ustack.pid=(int)v[0];ustack.tid=(uint64_t)v[1];ustack.ms=(unsigned)v[2];
+    thread_t t;
+    if (kernel_thread_start(ustack_thread,NULL,&t)!=KERN_SUCCESS) { os_atomic_store(&ustack_busy,0,release);return; }
+    thread_deallocate(t);
+    printf("HOUJI USTACK: sampling pid %d tid %llu for %u ms\n",ustack.pid,(unsigned long long)ustack.tid,ustack.ms);
+}
 static void qos_command(const char *args)
 {
     static struct qos_request r;
@@ -1132,6 +1224,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"fence") || !strcmp(u.command,"fence reset")) fence_command(u.command);
     else if (!strncmp(u.command,"qos ",4)) qos_command(u.command+4);
     else if (!strncmp(u.command,"cores ",6)) cores_command(u.command+6);
+    else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
