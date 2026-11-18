@@ -806,7 +806,7 @@ extern volatile uint64_t native_ram_block_unmapped_pages,native_ram_block_unmaps
  * physical footprint (MiB): on this phone Data is a RAM disk, so a file written is memory taken. */
 #include <sys/resource.h>
 extern void gather_rusage_info(proc_t,rusage_info_current *,int);
-struct io_entry { int pid; uint32_t written, footprint; char name[24]; };
+struct io_entry { int pid; uint32_t written, footprint, pageins; char name[24]; };
 /* Allocated per call: tables this size do not fit the kernel's __DATA beside the retained segments. */
 struct io_table { struct io_entry e[512]; struct io_entry copy[512]; unsigned n; rusage_info_current ru; };
 static struct io_table *io_t;
@@ -816,21 +816,25 @@ static int io_proc(proc_t p,void *arg __unused)
     gather_rusage_info(p,&io_t->ru,RUSAGE_INFO_V4);
     struct io_entry *e=&io_t->e[io_t->n++];
     e->pid=proc_pid(p);e->written=(uint32_t)(io_t->ru.ri_diskio_byteswritten>>20);e->footprint=(uint32_t)(io_t->ru.ri_phys_footprint>>20);
+    e->pageins=(uint32_t)io_t->ru.ri_pageins;
     strlcpy(e->name,proc_best_name(p),sizeof e->name);
     return PROC_RETURNED;
 }
-static void io_print(int by_footprint)
+/* by: 0 bytes written, 1 footprint, 2 page-ins (ri_pageins: faults that read a page from its file, lifetime) */
+static uint32_t io_key(const struct io_entry *e,int by) { return by==1?e->footprint:by==2?e->pageins:e->written; }
+static void io_print(int by)
 {
+    static const char *const what[3]={"disk","mem","pagein"};
     for (int r=0;r<14;r++) {
         int best=-1;
         for (unsigned i=0;i<io_t->n;i++) {
-            const uint32_t v=by_footprint?io_t->e[i].footprint:io_t->e[i].written;
-            if (v && (best<0 || v>(by_footprint?io_t->e[best].footprint:io_t->e[best].written))) best=(int)i;
+            const uint32_t v=io_key(&io_t->e[i],by);
+            if (v && (best<0 || v>io_key(&io_t->e[best],by))) best=(int)i;
         }
         if (best<0) break;
         struct io_entry *e=&io_t->e[best];
-        printf("HOUJI IO: %s %d %s written %u MiB footprint %u MiB\n",by_footprint?"mem":"disk",e->pid,e->name,e->written,e->footprint);
-        if (by_footprint) e->footprint=0; else e->written=0;
+        printf("HOUJI IO: %s %d %s written %u MiB footprint %u MiB pageins %u\n",what[by],e->pid,e->name,e->written,e->footprint,e->pageins);
+        if (by==1) e->footprint=0; else if (by==2) e->pageins=0; else e->written=0;
     }
 }
 static void io_command(void)
@@ -844,6 +848,8 @@ static void io_command(void)
     io_print(0);
     memcpy(io_t->e,io_t->copy,sizeof io_t->copy);
     io_print(1);
+    memcpy(io_t->e,io_t->copy,sizeof io_t->copy);
+    io_print(2);
     printf("HOUJI IO: %u processes\n",io_t->n);
     kfree_data(io_t,sizeof *io_t);io_t=NULL;
     os_atomic_store(&busy,0,release);
