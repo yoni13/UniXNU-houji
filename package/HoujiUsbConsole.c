@@ -689,7 +689,8 @@ extern kern_return_t copyinmap(vm_map_t,vm_map_offset_t,void *,vm_size_t);
 #define USTACK_DEPTH 8
 #define USTACK_SLOTS 512
 struct ustack_slot { uint64_t pc[USTACK_DEPTH]; uint32_t count, running; };
-static struct { int pid; uint64_t tid; unsigned ms; struct ustack_slot slots[USTACK_SLOTS]; } ustack;
+/* The slots are allocated per run: a static table this size does not fit the kernel's __DATA beside the retained segments. */
+static struct { int pid; uint64_t tid; unsigned ms; struct ustack_slot *slots; } ustack;
 static int _Atomic ustack_busy;
 static uint64_t ustack_strip(uint64_t a) { return a & 0xffffffffffull; }
 static void ustack_thread(void *arg __unused,wait_result_t result __unused)
@@ -709,7 +710,8 @@ static void ustack_thread(void *arg __unused,wait_result_t result __unused)
     if (sr) { (void)vm_shared_region_start_address(sr,&start);vm_shared_region_deallocate(sr); }
     const uint64_t slide=start>=0x180000000ull?start-0x180000000ull:0;
     vm_map_t map=get_task_map(task);
-    bzero(ustack.slots,sizeof ustack.slots);
+    ustack.slots=kalloc_data(sizeof(struct ustack_slot)*USTACK_SLOTS,Z_WAITOK|Z_ZERO);
+    if (!ustack.slots) { thread_deallocate(th);task_deallocate(task);os_atomic_store(&ustack_busy,0,release);thread_terminate(current_thread());return; }
     unsigned samples=0,dropped=0,running=0;
     for (unsigned elapsed=0;elapsed<ustack.ms;elapsed+=2) {
         gesture_sleep_ms(2);
@@ -751,6 +753,7 @@ static void ustack_thread(void *arg __unused,wait_result_t result __unused)
                best->pc[0],best->pc[1],best->pc[2],best->pc[3],best->pc[4],best->pc[5],best->pc[6],best->pc[7]);
         best->count=0;
     }
+    kfree_data(ustack.slots,sizeof(struct ustack_slot)*USTACK_SLOTS);ustack.slots=NULL;
     os_atomic_store(&ustack_busy,0,release);
     thread_terminate(current_thread());
 }
