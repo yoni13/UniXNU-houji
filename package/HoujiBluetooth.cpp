@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Bluetooth on houji (Xiaomi 14): the WCN7850's Bluetooth controller over its UART, brought up to a running HCI controller.
-// iOS 27 (24B156) port, probe only: USB console "bt probe [nocts]" (the ROM version and HCI_Reset at 115200) after the shared WCN7850
-// power vote. Nothing runs at boot; no firmware download and nothing is published to iOS yet (the iOS 16 driver did both).
+// iOS 27 (24B156) port: USB console "bt probe [nocts]" (the ROM version and HCI_Reset at 115200) and "bt init" (the whole bring-up with the
+// stock rampatch and NVM), after the shared WCN7850 power vote. Nothing runs at boot and nothing is published to iOS yet.
 // Board facts (the SteamOS houji port, armada/ports/houji/bluetooth-haptics.dtsi and sm8650-xiaomi-houji.dts, where this controller
 // pairs): uart14 = QUPv3 wrapper 2 serial engine 6 (0x00898000, wrapper 0x008c0000), pins GPIO 24 CTS, 25 RTS, 26 TX, 27 RX
 // (function qup2_se6 = 1, pinctrl-sm8650.c); BT_EN is GPIO 17, beside WLAN_EN 16 on the shared WCN7850 PMU whose input rails and RF
@@ -27,6 +27,8 @@
 #include <IOKit/IOLocks.h>
 #include <pexpert/pexpert.h>
 #include "WcnPower.h"
+#include "HoujiUfsPartition.h"
+#include "HoujiFatVolume.h"
 #include <libkern/c++/OSData.h>
 #include <kern/thread.h>
 #include <string.h>
@@ -339,13 +341,177 @@ bool toFast() {
     return true;
 }
 
+// The stock firmware files of the bluetooth partition (FAT, image/...): iOS 27's reader for what iOS 16's houji_fw_file did. Bounded to
+// max bytes; the caller frees with IOFreeData. 0, or a positive errno (ENOENT: no such file).
+int houji_fw_file(unsigned, const char *path, uint8_t **data, size_t *size, size_t max) {
+    static const char *const names[] = {"bluetooth_a", "bluetooth_b"};
+    HoujiUfsPartition *partition = IOMallocType(HoujiUfsPartition);
+    HoujiFatVolume *volume = IOMallocType(HoujiFatVolume);
+    int rc = partition && volume ? 0 : ENOMEM;
+    if (!rc) rc = houji_ufs_partition_open(partition, names, sizeof names / sizeof names[0]);
+    if (!rc && houji_fat_mount(volume, partition->blocks * 4096, houji_ufs_partition_read, partition)) rc = EFTYPE;
+    HoujiFatFile file = {};
+    if (!rc && houji_fat_open(volume, path, &file)) rc = ENOENT;
+    if (!rc && (file.directory || !file.size || file.size > max)) rc = EFBIG;
+    uint8_t *buffer = nullptr;
+    if (!rc && !(buffer = (uint8_t *)IOMallocData(file.size))) rc = ENOMEM;
+    if (!rc && houji_fat_read(volume, &file, 0, buffer, file.size)) rc = EIO;
+    if (!rc) {*data = buffer; *size = file.size; buffer = nullptr;}
+    if (buffer) IOFreeData(buffer, file.size);
+    if (partition) IOFreeType(partition, HoujiUfsPartition);
+    if (volume) IOFreeType(volume, HoujiFatVolume);
+    return rc;
+}
+bool download(const char *name, const uint8_t *data, size_t size, unsigned mode) {
+    uint8_t seg[2 + 243];
+    size_t done = 0;
+    unsigned segments = 0;
+    const uint64_t began = nowMs();
+    while (done < size) {
+        const unsigned n = size - done > 243 ? 243 : (unsigned)(size - done);
+        const bool last = done + n == size || n < 243;
+        seg[0] = 0x1e; seg[1] = (uint8_t)n;
+        memcpy(seg + 2, data + done, n);
+        if (mode == 0 || last) {
+            uint8_t r[16];
+            const int rn = command(0xfc00, seg, (uint8_t)(n + 2), r, sizeof r, 2000);
+            if (rn < 2 || r[0] != 0 || r[1] != 0x1e) {IOLog("HOUJI BT: %s segment %u at %zu: reply %d %02x %02x\n", name, segments, done, rn, rn > 0 ? r[0] : 0, rn > 1 ? r[1] : 0); return false;}
+        } else if (!sendCommand(0xfc00, seg, (uint8_t)(n + 2))) {IOLog("HOUJI BT: %s segment %u not sent\n", name, segments); return false;}
+        done += n; segments++;
+    }
+    IOLog("HOUJI BT: %s: %zu bytes in %u segments, %llu ms\n", name, size, segments, nowMs() - began);
+    return true;
+}
+
+bool patchNvm(uint8_t *d, size_t size) {
+    if (size < 4) return false;
+    uint32_t tl; memcpy(&tl, d, 4);
+    size_t off = 4, len = tl >> 8;
+    if ((tl & 0xff) == 4) {if (size < 8) return false; memcpy(&tl, d + 4, 4); off = 8; len = tl >> 8;}
+    if ((tl & 0xff) != 2 || off + len > size) return false;
+    unsigned changed = 0;
+    for (size_t i = off; i + 12 <= off + len;) {
+        const unsigned tag = d[i] | d[i + 1] << 8, tlen = d[i + 2] | d[i + 3] << 8;
+        uint8_t *v = d + i + 12;
+        if (i + 12 + tlen > off + len) return false;
+        if (tag == 2 && tlen == 6) {for (unsigned k = 0; k < 6; ++k) v[k] = gAddr[5 - k]; changed++;}   // little-endian address
+        if (tag == 17 && tlen >= 2) {v[0] &= (uint8_t)~0x80; v[1] = 0x11; changed++;}                   // no in-band sleep, 3.2 Mbaud
+        if (tag == 27 && tlen >= 1) {v[0] &= (uint8_t)~0x01; changed++;}                                // no deep sleep
+        i += 12 + tlen;
+    }
+    return changed == 3;
+}
+
+volatile bool gReady;
+bool bringUp() {
+    gReady = false;
+    const uint64_t began = nowMs();
+    if (!hwUp()) return false;
+    bs[0] = 7;
+    uint8_t v[64];
+    int n = edl(0x19, v, sizeof v);   // {length?, product le32, patch le16, rom le16, soc le32}
+    if (n < 13) {bs[0] = -7; IOLog("HOUJI BT: no ROM version (IOS=%x); are the Wi-Fi rails up?\n", se(kIos)); return false;}
+    uint32_t product, soc; uint16_t patch, rom;
+    memcpy(&product, v + 1, 4); memcpy(&patch, v + 5, 2); memcpy(&rom, v + 7, 2); memcpy(&soc, v + 9, 4);
+    IOLog("HOUJI BT: ROM product %x patch %x rom %x soc %08x\n", product, patch, rom, soc);
+    bs[0] = 8;
+    if (!toFast()) {bs[0] = -8; return false;}
+    n = edl(0x19, v, sizeof v);
+    if (n < 13) {bs[0] = -8; IOLog("HOUJI BT: no answer at 3.2 Mbaud\n"); return false;}
+    bs[5] = 3200000;
+    bs[0] = 9;
+    uint8_t *fw = nullptr; size_t fwSize = 0;
+    int rc = houji_fw_file(2, "image/hmtbtfw20.tlv", &fw, &fwSize, 1u << 20);
+    if (rc || fwSize < 24) {bs[0] = -9; IOLog("HOUJI BT: image/hmtbtfw20.tlv of the bluetooth partition: error %d\n", rc); return false;}
+    const unsigned mode = fw[14];   // tlv_type_patch.download_mode
+    const bool ok = download("rampatch hmtbtfw20.tlv", fw, fwSize, mode);
+    IOFreeData(fw, fwSize);
+    if (!ok) {bs[0] = -9; return false;}
+    IOSleep(10);
+    bs[0] = 10;
+    uint8_t b[8] = {};
+    {
+        const uint64_t asked = nowMs();
+        n = edl(0x23, b, sizeof b, 10000);   // {length, id high, id low}; Linux allows HCI_INIT_TIMEOUT
+        IOLog("HOUJI BT: board id reply after %llu ms (%d)\n", nowMs() - asked, n);
+        if (n < 0) {
+            static const uint8_t version[] = {0x01, 0x01, 0x10, 0x00};   // HCI_Read_Local_Version_Information
+            const unsigned before = ringCount();
+            uartWrite(version, sizeof version);
+            const uint64_t end = nowMs() + 300;
+            while (nowMs() < end) {pump(); IODelay(100);}
+            uint8_t raw[48]; const unsigned c = ringCount() < sizeof raw ? ringCount() : (unsigned)sizeof raw;
+            for (unsigned i = 0; i < c; ++i) raw[i] = ringAt(i);
+            IOLog("HOUJI BT: after Read_Local_Version: %u bytes (%u before)\n", ringCount(), before);
+            if (c) dump("raw after the nudge", raw, c);
+            uint8_t ev[64];
+            if (readEvent(ev, sizeof ev, 10) >= 9 && ev[0] == 0x0e && ev[5] == 0 && ev[6] == 0x23) {b[0] = ev[7]; b[1] = ev[8]; b[2] = ev[9]; n = 3;}
+            gTail = gHead;
+        }
+    }
+    const unsigned board = n >= 3 ? (unsigned)(b[1] << 8 | b[2]) : 0;
+    bs[6] = (int32_t)board;
+    char path[40];
+    snprintf(path, sizeof path, board ? "image/hmtnv20.b%x" : "image/hmtnv20.bin", board);
+    rc = houji_fw_file(2, path, &fw, &fwSize, 1u << 20);
+    if (rc == ENOENT && board) {IOLog("HOUJI BT: %s missing, using hmtnv20.bin\n", path); strlcpy(path, "image/hmtnv20.bin", sizeof path); rc = houji_fw_file(2, path, &fw, &fwSize, 1u << 20);}
+    if (rc) {bs[0] = -10; IOLog("HOUJI BT: %s: error %d\n", path, rc); return false;}
+    IOLog("HOUJI BT: board id %x, NVM %s\n", board, path);
+    const bool patched = patchNvm(fw, fwSize);
+    const bool nvmOk = patched && download(path, fw, fwSize, 0);
+    IOFreeData(fw, fwSize);
+    if (!nvmOk) {bs[0] = -10; IOLog("HOUJI BT: NVM %s\n", patched ? "download failed" : "tags 2/17/27 not found"); return false;}
+    bs[0] = 11;
+    rawDump("after the NVM", 300);
+    uint8_t r[260];
+    if (command(0x0c03, nullptr, 0, r, sizeof r) < 1) {
+        IOLog("HOUJI BT: no HCI_Reset reply at 3.2 Mbaud; trying 115200\n");
+        readStop(); seClock(384, 15625); setDivider(7372800u / (115200u * gSampling)); gHead = gTail = 0; readStart();
+        if (command(0x0c03, nullptr, 0, r, sizeof r) >= 1) {bs[5] = 115200; IOLog("HOUJI BT: the controller is at 115200 after the NVM\n");}
+        else rawDump("at 115200", 300);
+    }
+    static const uint8_t noLogs[] = {0x14, 0x00};
+    if (command(0xfc17, noLogs, sizeof noLogs, r, sizeof r) < 1) IOLog("HOUJI BT: logging off: no reply\n");
+    n = command(0x0c03, nullptr, 0, r, sizeof r);
+    if (n < 1 || r[0]) {bs[0] = -11; IOLog("HOUJI BT: HCI_Reset after the patch failed\n"); return false;}
+    n = edl(0x20, r, sizeof r);   // {length, label}
+    if (n > 1) {char label[128]; const unsigned l = r[0] < sizeof label - 1 ? r[0] : sizeof label - 1; memcpy(label, r + 1, l); label[l] = 0;
+                for (unsigned i = 0; i < l; ++i) if (label[i] < 32) label[i] = ' ';
+                IOLog("HOUJI BT: firmware %s\n", label);}
+    n = command(0x1009, nullptr, 0, r, sizeof r);   // HCI_Read_BD_ADDR
+    if (n >= 7) IOLog("HOUJI BT: address %02x:%02x:%02x:%02x:%02x:%02x (wanted %02x:%02x:%02x:%02x:%02x:%02x)\n", r[6], r[5], r[4], r[3], r[2], r[1],
+                      gAddr[0], gAddr[1], gAddr[2], gAddr[3], gAddr[4], gAddr[5]);
+    n = command(0x1001, nullptr, 0, r, sizeof r);   // HCI_Read_Local_Version_Information
+    if (n >= 9) IOLog("HOUJI BT: HCI version %u revision %04x LMP %u manufacturer %04x subversion %04x\n", r[1], r[2] | r[3] << 8, r[4],
+                      r[5] | r[6] << 8, r[7] | r[8] << 8);
+    bs[7] = (int32_t)(nowMs() - began);
+    bs[0] = 12; bs[4] = 1;
+    gReady = true;
+    IOLog("HOUJI BT: controller ready at 3.2 Mbaud in %llu ms (skipped %u packets and %u stray bytes, dropped %u)\n", nowMs() - began,
+          skippedPackets, skippedBytes, gDropped);
+    return true;
+}
+
+// ---- iOS side ----
+// bluetoothd (iOS 16.7) leaves at once ("No bluetooth on this device.") unless IOServiceNameMatching("bluetooth") finds a service, from
+// which it also takes local-mac-address. With BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth,3200000 in its launchd job its POSIX
+// driver connects a stream kernel control of that name (the default, com.apple.uart.sk.bluetooth, wants a Skywalk channel), reads and
+// writes termios through getsockopt TIOCGETA / setsockopt TIOCSETA at SYSPROTO_CONTROL, and then sends and receives H4 packets.
+kern_ctl_ref gCtl;
+uint32_t gUnit;            // connected unit, 0: none
+
+bool gInit;
 volatile uint32_t gBusy;
 void btThread(void *, wait_result_t) {
     makeAddress();
     // The shared PMU rails and RF clock (WifiProbe.cpp): held only for the probe, released after it unless Wi-Fi holds its own vote.
     const int power = sheng_wcn_power_get(SHENG_WCN_BLUETOOTH);
     IOLog("HOUJI BT: shared WCN7850 power vote %d (owners %x)\n", power, sheng_wcn_power_owners());
-    if (!power && hwUp()) {
+    if (!power && gInit) {
+        // bt init: the whole bring-up (rampatch and NVM from the stock bluetooth partition, 3.2 Mbaud). The controller keeps its power
+        // and enable pin afterwards; nothing is published to iOS yet.
+        if (bringUp()) {__atomic_store_n(&gBusy, 0u, __ATOMIC_RELEASE); return;}
+    } else if (!power && hwUp()) {
         uint8_t v[64];
         const int n = edl(0x19, v, sizeof v);
         if (n > 0) dump("ROM version", v, (unsigned)n);
@@ -362,10 +528,12 @@ void btThread(void *, wait_result_t) {
 
 // USB console "bt probe [nocts]"
 extern "C" void houji_bt_command(const char *what) {
-    if (strncmp(what, "probe", 5)) {IOLog("HOUJI BT: commands: bt probe [nocts] (this port has no bring-up yet)\n"); return;}
+    const bool probe = !strncmp(what, "probe", 5), init = !strncmp(what, "init", 4);
+    if (!probe && !init) {IOLog("HOUJI BT: commands: bt probe [nocts] | bt init\n"); return;}
     uint32_t idle = 0;
     if (!__atomic_compare_exchange_n(&gBusy, &idle, 1u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {IOLog("HOUJI BT: busy\n"); return;}
-    gCts = strncmp(what + 5, " nocts", 6) != 0;
+    gInit = init;
+    gCts = !(probe && !strncmp(what + 5, " nocts", 6));
     thread_t t = nullptr;
     if (kernel_thread_start(btThread, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
     else __atomic_store_n(&gBusy, 0u, __ATOMIC_RELEASE);
