@@ -26,6 +26,10 @@ The current swap request stores the requested host time at `+0x390` (copied from
 
 Checked in the 24B156 shared cache (sub-cache `.38`): `FrameInfoNotifyFunc` (`0x22cdd8ea8`) rejects fewer than 2 arguments (`cmp w3,#1; b.hi`), reads `args[0]` as the mask and `args[1]` as the swap ID (`ldp x9,x20,[x2]`), then, for each set bit in bit order, takes the key name from the selector-74 table (`[x19+0xa70][bit]`) and the next value from `args+16`, up to `count-2` values. Bit 31 of the mask selects paired 32-bit halves. The driver's `{mask, swapID, value per enabled bit}` with `2 + popcount(mask)` arguments matches.
 
+Core Animation's callback (`0x184307ab4`, sub-cache `.01`) reads three keys: `Presentation_time` (17-byte CFString), `Requested_presentation` (22) and `Last_Fence_or_Event_Time` (24). It does not read `Vbl_FrameTime`, which the draft advertised as the third key. If the presentation time is in the future, the callback sleeps until then; the fence time only feeds an optional latency calculation that skips 0 (`cbz x28`). The driver now advertises `Last_Fence_or_Event_Time` and sends the copy completion as its value.
+
+root110 (`fb-frameinfo=2` with `Vbl_FrameTime`): one report per completion, `clients=1 status=0x0`, latency 1-2.5 ms after a 2.4 s startup frame, but drawing did not improve (0 fps during swipes, about 0.7 fps over the next 90 s). backboardd's render threads were idle in their run loops, not blocked.
+
 ## Slots 324, 325, 359: family hooks (found after the root104/105 resets)
 
 All three are pure in the family (`pure_slots` in `profiles/os/ios-27.2.1-24B156/abi/original-classes.json`), and this driver filled them with leaf guards (`native_legacy_backend_guard`, which panics; the USB console dies with it, so no panic text reaches the log).
