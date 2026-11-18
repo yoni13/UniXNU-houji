@@ -13,6 +13,10 @@
 // .bin) of the stock bluetooth partition go down in 243-byte EDL segments (sub-command 0x1e); then logging off (0xfc17 {0x14, 0}),
 // HCI_Reset and the build label (sub-command 0x20). NVM changes: tag 2 = this phone's address; tag 27 deep sleep off (this host does
 // not run Qualcomm's in-band sleep protocol, and tag 17 leaves it off); tag 17's baud byte 0x11 = 3.2 Mbaud (the stock value).
+// The rest of the iOS 16 driver's bring-up layer (3.2 Mbaud switch, sleep-protocol state, raw dumps) is kept for the next step and
+// unused by the probe, hence these two warnings off for this file only.
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wunused-variable"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
@@ -223,7 +227,7 @@ unsigned readEvent(uint8_t *ev, unsigned room, unsigned ms) {
     }
 }
 // Whatever arrives within ms milliseconds, raw (then discarded)
-__attribute__((unused)) void rawDump(const char *what, unsigned ms) {
+void rawDump(const char *what, unsigned ms) {
     const uint64_t end = nowMs() + ms;
     while (nowMs() < end) {pump(); IODelay(100);}
     uint8_t b[48]; const unsigned n = ringCount() < sizeof b ? ringCount() : (unsigned)sizeof b;
@@ -316,7 +320,7 @@ bool hwUp() {
 
 // Vendor 0xfc48 {0x11} at 115200, then this side to 3.2 Mbaud. While it changes, RFR is held off so that its answer at the old rate is
 // not received half-switched; the controller's first event at the new rate is dropped (hci_qca.c qca_set_speed).
-__attribute__((unused)) bool toFast() {
+bool toFast() {
     se(kManualRfr) = (1u << 31) | (1u << 1);   // manual, not ready
     dsb();
     static const uint8_t baud[] = {0x01, 0x48, 0xfc, 0x01, 0x11};
