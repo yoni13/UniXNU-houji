@@ -159,7 +159,7 @@
      }
  #endif
  #if defined(NATIVE_LEGACY_MACOS) && NATIVE_LEGACY_MACOS
-@@ -995,9 +1051,19 @@
+@@ -995,10 +1051,31 @@
      }
      // Selector 74 enumerates optional frame-info trace keys, not display
      // modes. This backend implements no trace-key subscription contract.
@@ -180,9 +180,21 @@
 +        if(logFrameInfo(n))IOLog("HOUJI FRAMEINFO: selector74=%llu index=%u count=3 key=%s transport=0\n",n,index,key);
 +        return kIOReturnSuccess;
      }
++#if defined(NATIVE_LEGACY_FRAME_INFO_QUERY)
++    // Slot 214, the family's gated FrameInfo query (24B156: 0xfffffff00a1d8da4 runs it as (this, a, p, b); the IOReturn goes back to the
++    // user client). Pure in the family; it was a leaf guard, and the render server's first call after registering for type 3 panicked
++    // (root108: leaf=214 right after hook 324). No current-frame snapshot is kept here, so the query is answered unsupported.
++    IOReturn frameInfo(uint32_t a,void *p,uint32_t b) override {
++        if(!nativeLegacyFrameInfo())native_legacy_backend_guard(214,this,__builtin_return_address(0));
++        const uint64_t n=countFrameInfo(6);
++        if(logFrameInfo(n))IOLog("HOUJI FRAMEINFO: query214 calls=%llu a=%u p=%d b=%u\n",n,a,p!=nullptr,b);
++        return kIOReturnUnsupported;
++    }
++#endif
      IOReturn newUserClient(task_t task,void *security,UInt32 type,IOUserClient **client) override {
          native_legacy_client_enter(task,type);
-@@ -1236,7 +1302,20 @@
+         IOReturn status=IOMobileFramebufferLegacy::newUserClient(task,security,type,client);
+@@ -1236,7 +1313,20 @@
      // No color matrix hardware either; the compositor's matrix is accepted, as the virtual-machine display accepts it.
      IOReturn swapSetColorMatrix(void *,uint32_t,uint32_t) override {return kIOReturnSuccess;}
  #endif

@@ -32,6 +32,10 @@ All three are pure in the family (`pure_slots` in `profiles/os/ios-27.2.1-24B156
 - **325, per-request dispatch.** `0xfffffff00a1daa10(this, arg)` (reached through the gate trampoline `0xfffffff00a1dfdac`) walks the list and calls `+0xa28` as `(this, request, arg)`, then `+0xa30` (slot 326, `bti c; ret` in the family).
 - **359, after the sender.** The sender loop sends `sendAsyncResult64(node+24, 0, args, 3, 1)` per node (`0xfffffff00a1dac20`, which confirms the `+0x18` async reference), then calls `+0xb38` as `(this, arg)` (`0xfffffff00a1dac48`).
 
+- **214, FrameInfo query.** `0xfffffff00a1d8da4(this, uint32 a, void *p, uint32 b)` runs the thunk `0xfffffff00a1dfd78` through the command gate. The thunk tail-calls `+0x6b0` (slot 214) with the same arguments, and its IOReturn goes back to the user client. Since it returns a value, a `void` no-op would leave garbage in `x0`. It is declared typed instead: `IOReturn frameInfo(uint32_t, void *, uint32_t)` under the name `frameInfo_11704`, whose mangled form hashes to slot 214's original PAC diversity `0xb486`. It answers `kIOReturnUnsupported` (`HOUJI FRAMEINFO: query214`).
+
+root108 (`fb-frameinfo=1`, no reports sent) got the panic text out through the USB drain: `NativeLegacyDisplay: leaf=214`, after `selector74=1..3` (all three keys) and `hook=324 calls=1 caller=fffffff00a1da3ac`. So selector 74 and the slot-324 no-op work, and slot 214 is the next call. root104-106 left no panic text.
+
 root105 (slot 325 fixed) still reset at 68.3 s with no `HOUJI FRAMEINFO` line, right after the render server's first `IOMobileFramebufferUserClient` call. That fits slot 324 firing at registration. With `fb-frameinfo=1`, all three hooks are counted no-ops (`HOUJI FRAMEINFO: hook=N calls= caller=`). This is not yet verified on the phone.
 
 ## Implementation consequences

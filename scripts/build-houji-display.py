@@ -77,6 +77,9 @@ def discriminator(name):
 # Prototypes of the original slots the owned backend overrides or calls; every other slot is an opaque dispatch target.
 PROTOTYPES = {
     'isMainDisplay': 'bool isMainDisplay()', 'getDotPitch': 'IOReturn getDotPitch(uint32_t *)',
+    # Slot 214: the family's gated FrameInfo query (0xfffffff00a1d8da4 runs thunk 0xfffffff00a1dfd78 as (this, a, p, b)); its IOReturn
+    # goes back to the user client. Pure in the family.
+    'frameInfo': 'IOReturn frameInfo(uint32_t,void *,uint32_t)=0',
     'supportedFrameInfo': 'IOReturn supportedFrameInfo(uint32_t,uint32_t *,char *,uint32_t *)=0',
     'getDisplayDimensions': 'void getDisplayDimensions(uint32_t *,uint32_t *)', 'startHardware': 'bool startHardware()',
     'kickSwapQueue': 'void kickSwapQueue()', 'completeCurrentSwap': 'void completeCurrentSwap()',
@@ -100,6 +103,7 @@ for base, (name, suffix) in abi['names'].items():
     require(discriminator(mangled) == slots[slot][1], f'Reviewed name {name} has the diversity of slot {slot}')
     renames.append(f'#define {base} {name}\n')
 leaves = ' '.join(f'LEAF({i})' for i in abi['leaves'])
+FRAME_INFO_QUERY = '#define NATIVE_LEGACY_FRAME_INFO_QUERY 1\n' if 'frameInfo' in abi['methods'] else ''
 # The macOS family's swap request and notification fields (gen-board-abi.py); the iPadOS header has none of them.
 MACOS_CONSTANTS = ('#define NATIVE_LEGACY_MACOS 1\n'
     f"static constexpr unsigned kLegacyCurrentSwap={D['current']};\n"
@@ -122,7 +126,7 @@ static constexpr unsigned kRequestRect0={R['rect0']},kRequestRect1={R['rect1']},
 #define NATIVE_LEGACY_LEAVES(LEAF) {leaves}
 #define NATIVE_LEGACY_DEFAULT_SURFACE 1
 #define NATIVE_LEGACY_CANCEL_SWAPS 1
-{MACOS_CONSTANTS}static constexpr unsigned kLegacyDefaultSurface={D['default_surface']};
+{FRAME_INFO_QUERY}{MACOS_CONSTANTS}static constexpr unsigned kLegacyDefaultSurface={D['default_surface']};
 {''.join(renames)}class IOMobileFramebufferLegacy : public IOService {{
  OSDeclareAbstractStructors(IOMobileFramebufferLegacy)
  unsigned char originalPrivate[{abi['instance_size']}-sizeof(IOService)];

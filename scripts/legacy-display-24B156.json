@@ -1534,10 +1534,10 @@
   "collectCompletionReports": 358,
   "applyStateRequest": 375,
   "create_default_fb_surface": 316,
-  "cancelSwapsAfterTimeout": 366
+  "cancelSwapsAfterTimeout": 366,
+  "frameInfo": 214
  },
  "leaves": [
-  214,
   257,
   258,
   324,
@@ -1805,10 +1805,6 @@
   ],
   "opaque213": [
    "opaque213_229343",
-   "Ev"
-  ],
-  "opaque214": [
-   "opaque214_170871",
    "Ev"
   ],
   "opaque215": [
@@ -2466,6 +2462,10 @@
   "create_default_fb_surface": [
    "create_default_fb_surface",
    "Ev"
+  ],
+  "frameInfo": [
+   "frameInfo_11704",
+   "EjPvj"
   ]
  },
  "caller_diversity": {
