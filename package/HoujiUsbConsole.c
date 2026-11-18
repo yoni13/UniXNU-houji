@@ -9,6 +9,8 @@
 #include <sys/systm.h>
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <kern/task.h>
+#include <kern/recount.h>
 #include <mach/thread_act.h>
 #include <kern/sched_prim.h>
 #include <machine/machine_routines.h>
@@ -395,10 +397,13 @@ static void heartbeat_thread(void *arg,wait_result_t result __unused)
  * the storage path can read a given file (for example the DriverKit shared cache, first read when a dext starts). Read only. */
 #include <sys/vnode.h>
 #include <sys/proc.h>
+#include <sys/proc_internal.h>
+#include <sys/bsdtask_info.h>
 #include <sys/fcntl.h>
 #include <sys/uio.h>
 #include <sys/vnode_if.h>
 #include <sys/dirent.h>
+extern task_t proc_task(proc_t);
 static char readfile_path[256];
 static int _Atomic readfile_busy;
 static uint64_t hex_start,hex_length;   /* hex PATH [START [LENGTH]]: hex digits; default 0 and 2 MiB */
@@ -580,6 +585,197 @@ static void gesture_sleep_ms(unsigned ms)
     clock_interval_to_deadline(ms,NSEC_PER_MSEC,&deadline);
     (void)assert_wait_deadline(&channel,THREAD_UNINT,deadline);
     thread_block(THREAD_CONTINUE_NULL);
+}
+
+/* top [MS]: two bounded snapshots of recount's lifetime CPU accounting.  Task
+ * totals include threads already terminated; references retain the starting
+ * threads so their individual lifetime counters remain readable at the end. */
+#define TOP_MAX_PROCS 2048
+#define TOP_MAX_THREADS 16384
+struct top_proc_sample {
+    task_t task;
+    uint64_t started,elapsed,cpu_start,cpu_delta,permille;
+    unsigned thread_begin,thread_initial,threads;
+    int pid;
+    char name[64];
+};
+struct top_thread_sample {
+    thread_t thread;
+    uint64_t tid,cpu_start,cpu_delta,permille;
+    unsigned proc_index;
+    char name[MAXTHREADNAMESIZE];
+};
+struct top_context {
+    struct top_proc_sample *procs;
+    struct top_thread_sample *threads;
+    unsigned proc_count,thread_count;
+    bool proc_truncated,thread_truncated;
+};
+static int _Atomic top_busy;
+
+static uint64_t top_task_cpu(task_t task)
+{
+    struct recount_usage usage={0};
+    recount_task_usage(task,&usage);
+    return recount_usage_time_mach(&usage);
+}
+static uint64_t top_thread_cpu(thread_t thread)
+{
+    struct recount_usage usage={0};
+    recount_thread_usage(thread,&usage);
+    return recount_usage_time_mach(&usage);
+}
+static uint64_t top_permille(uint64_t cpu,uint64_t elapsed)
+{
+    if (!elapsed) return 0;
+    return cpu/elapsed*1000+(cpu%elapsed)*1000/elapsed;
+}
+static void top_clean_name(char *name,size_t size,const char *fallback)
+{
+    if (!name[0]) strlcpy(name,fallback,size);
+    for (size_t i=0;name[i];++i)
+        if ((unsigned char)name[i]<32 || (unsigned char)name[i]>126) name[i]='?';
+}
+static int top_collect_proc(proc_t p,void *arg)
+{
+    struct top_context *c=arg;
+    if (c->proc_count==TOP_MAX_PROCS) { c->proc_truncated=true;return PROC_RETURNED_DONE; }
+    task_t task=proc_task(p);
+    if (task==TASK_NULL) return PROC_RETURNED;
+    const unsigned pi=c->proc_count++;
+    struct top_proc_sample *s=&c->procs[pi];
+    s->pid=proc_pid(p);s->task=task;task_reference(task);
+    strlcpy(s->name,proc_best_name(p),sizeof(s->name));
+    top_clean_name(s->name,sizeof(s->name),s->pid==0?"kernel_task":"?");
+    s->cpu_start=top_task_cpu(task);s->started=mach_absolute_time();
+    s->thread_begin=c->thread_count;
+    task_lock(task);
+    s->threads=(unsigned)task->thread_count;
+    thread_t th;
+    queue_iterate(&task->threads,th,thread_t,task_threads) {
+        if (c->thread_count==TOP_MAX_THREADS) { c->thread_truncated=true;break; }
+        struct top_thread_sample *ts=&c->threads[c->thread_count++];
+        thread_reference(th);ts->thread=th;ts->tid=thread_tid(th);ts->proc_index=pi;
+    }
+    task_unlock(task);
+    s->thread_initial=c->thread_count-s->thread_begin;
+    for (unsigned i=s->thread_begin;i<c->thread_count;++i) {
+        struct top_thread_sample *ts=&c->threads[i];
+        ts->cpu_start=top_thread_cpu(ts->thread);
+        struct uthread *uth=get_bsdthread_info(ts->thread);
+        if (uth) bsd_getthreadname(uth,ts->name);
+        top_clean_name(ts->name,sizeof(ts->name),"-");
+    }
+    return PROC_RETURNED;
+}
+static bool top_has_thread(const struct top_context *c,const struct top_proc_sample *s,uint64_t tid)
+{
+    for (unsigned i=s->thread_begin;i<s->thread_begin+s->thread_initial;++i)
+        if (c->threads[i].tid==tid) return true;
+    return false;
+}
+static void top_finish_proc(struct top_context *c,unsigned pi)
+{
+    struct top_proc_sample *s=&c->procs[pi];
+    const uint64_t end_cpu=top_task_cpu(s->task);
+    const unsigned added_begin=c->thread_count;
+    task_lock(s->task);
+    s->threads=(unsigned)s->task->thread_count;
+    thread_t th;
+    queue_iterate(&s->task->threads,th,thread_t,task_threads) {
+        const uint64_t tid=thread_tid(th);
+        if (top_has_thread(c,s,tid)) continue;
+        if (c->thread_count==TOP_MAX_THREADS) { c->thread_truncated=true;break; }
+        struct top_thread_sample *ts=&c->threads[c->thread_count++];
+        thread_reference(th);ts->thread=th;ts->tid=tid;ts->proc_index=pi;
+        /* A thread absent from the first snapshot was born in the window. */
+        ts->cpu_start=0;
+    }
+    task_unlock(s->task);
+    const uint64_t ended=mach_absolute_time();
+    s->elapsed=ended-s->started;
+    s->cpu_delta=end_cpu>=s->cpu_start?end_cpu-s->cpu_start:0;
+    s->permille=top_permille(s->cpu_delta,s->elapsed);
+    for (unsigned pass=0;pass<2;++pass) {
+        const unsigned begin=pass?added_begin:s->thread_begin;
+        const unsigned end=pass?c->thread_count:s->thread_begin+s->thread_initial;
+        for (unsigned i=begin;i<end;++i) {
+            struct top_thread_sample *ts=&c->threads[i];
+            const uint64_t end=top_thread_cpu(ts->thread);
+            ts->cpu_delta=end>=ts->cpu_start?end-ts->cpu_start:0;
+            ts->permille=top_permille(ts->cpu_delta,s->elapsed);
+            struct uthread *uth=get_bsdthread_info(ts->thread);
+            if (uth) bsd_getthreadname(uth,ts->name);
+            top_clean_name(ts->name,sizeof(ts->name),"-");
+        }
+    }
+}
+static void top_thread(void *arg,wait_result_t result __unused)
+{
+    const unsigned ms=(unsigned)(uintptr_t)arg;
+    struct top_context c={0};
+    c.procs=kalloc_data(sizeof(*c.procs)*TOP_MAX_PROCS,Z_WAITOK|Z_ZERO);
+    c.threads=kalloc_data(sizeof(*c.threads)*TOP_MAX_THREADS,Z_WAITOK|Z_ZERO);
+    if (!c.procs || !c.threads) { printf("HOUJI TOP: allocation failed\n");goto out; }
+    proc_iterate(PROC_ALLPROCLIST,top_collect_proc,&c,NULL,NULL);
+    gesture_sleep_ms(ms);
+    for (unsigned i=0;i<c.proc_count;++i) top_finish_proc(&c,i);
+
+    unsigned best[15],best_n=0;
+    uint64_t total=0,kernel=0;
+    for (unsigned i=0;i<c.proc_count;++i) {
+        total+=c.procs[i].permille;
+        if (c.procs[i].pid==0 || !strcmp(c.procs[i].name,"kernel_task")) kernel=c.procs[i].permille;
+        unsigned at=0;while (at<best_n && c.procs[best[at]].cpu_delta>=c.procs[i].cpu_delta) at++;
+        if (at<15) {
+            if (best_n<15) best_n++;
+            for (unsigned j=best_n-1;j>at;--j) best[j]=best[j-1];
+            best[at]=i;
+        }
+    }
+    for (unsigned rank=0;rank<best_n;++rank) {
+        const struct top_proc_sample *s=&c.procs[best[rank]];
+        printf("HOUJI TOP: %d %.63s %llu %u\n",s->pid,s->name,s->permille,s->threads);
+        if (rank<3) {
+            unsigned tb[3],tn=0;
+            for (unsigned i=0;i<c.thread_count;++i) if (c.threads[i].proc_index==best[rank]) {
+                unsigned at=0;while (at<tn && c.threads[tb[at]].cpu_delta>=c.threads[i].cpu_delta) at++;
+                if (at<3) {
+                    if (tn<3) tn++;
+                    for (unsigned j=tn-1;j>at;--j) tb[j]=tb[j-1];
+                    tb[at]=i;
+                }
+            }
+            for (unsigned i=0;i<tn;++i) {
+                const struct top_thread_sample *ts=&c.threads[tb[i]];
+                printf("HOUJI TOP THREAD: %d %llu %.63s %llu\n",s->pid,ts->tid,ts->name,ts->permille);
+            }
+        }
+    }
+    printf("HOUJI TOP: total %llu permille over %u processes, kernel_task %llu\n",total,c.proc_count,kernel);
+    if (c.proc_truncated || c.thread_truncated)
+        printf("HOUJI TOP: sample truncated at %u processes or %u threads\n",TOP_MAX_PROCS,TOP_MAX_THREADS);
+out:
+    for (unsigned i=0;i<c.thread_count;++i) if (c.threads[i].thread) thread_deallocate(c.threads[i].thread);
+    for (unsigned i=0;i<c.proc_count;++i) if (c.procs[i].task) task_deallocate(c.procs[i].task);
+    if (c.threads) kfree_data(c.threads,sizeof(*c.threads)*TOP_MAX_THREADS);
+    if (c.procs) kfree_data(c.procs,sizeof(*c.procs)*TOP_MAX_PROCS);
+    os_atomic_store(&top_busy,0,release);
+    thread_terminate(current_thread());
+}
+static void top_command(const char *cmd)
+{
+    unsigned ms=2000;
+    if (cmd[3]) {
+        char *end=NULL;long long parsed=strtoq(cmd+4,&end,10);
+        if (cmd[3]!=' ' || end==cmd+4 || *end) { printf("HOUJI TOP: syntax top [MS]\n");return; }
+        ms=(unsigned)(parsed<200?200:parsed>10000?10000:parsed);
+    }
+    if (!os_atomic_cmpxchg(&top_busy,0,1,acq_rel)) { printf("HOUJI TOP: busy\n");return; }
+    thread_t th;
+    if (kernel_thread_start(top_thread,(void *)(uintptr_t)ms,&th)==KERN_SUCCESS) {
+        thread_deallocate(th);printf("HOUJI TOP: sampling %u ms\n",ms);
+    } else { os_atomic_store(&top_busy,0,release);printf("HOUJI TOP: thread start failed\n"); }
 }
 static void gesture_thread(void *arg __unused,wait_result_t result __unused)
 {
@@ -769,6 +965,7 @@ static void command_line(void)
         }
     }
     else if (!strcmp(u.command,"ping")) printf("HOUJI DEBUG: pong HOUJIDBG001\n");
+    else if (!strcmp(u.command,"top") || !strncmp(u.command,"top ",4)) top_command(u.command);
     else if (!strcmp(u.command,"shot")) { extern void houji_framebuffer_shot(unsigned,unsigned); houji_framebuffer_shot(150,334); }
     else if (!strncmp(u.command,"shotr ",6)) {
         extern void houji_framebuffer_shot_region(unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
@@ -896,7 +1093,7 @@ static void command_line(void)
             __DATE__,__TIME__,u.events,u.tx_bytes,u.rx_bytes,houji_debug_total(),houji_debug_dropped());
     else if (!strcmp(u.command,"replay")) {
         u.cursor=0;printf("HOUJI DEBUG: replay retained RAM log\n");
-    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot tap swipe home shot shotr wifi bt ls cat hex sshot sysctl readfile\n");
+    } else if (u.command_n) printf("HOUJI DEBUG: commands help status ping replay reboot top tap swipe home shot shotr wifi bt ls cat hex sshot sysctl readfile\n");
     u.command_n=0;u.command_overflow=false;
 }
 static void receive_done(unsigned length)
