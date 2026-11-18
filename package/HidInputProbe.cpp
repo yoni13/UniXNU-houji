@@ -181,8 +181,15 @@ __attribute__((noinline)) void native_hid_live_checkpoint(IOService *device) {
 // the kernel's data segment).
 volatile uint64_t *native_touch_report_ring;
 volatile uint32_t native_touch_report_count;
+// The newest 256 touch-report times, always kept: the console's gesture timing reads them (HoujiUsbConsole.c).
+extern "C" { volatile uint64_t native_touch_recent[256]; volatile uint32_t native_touch_recent_count; }
 void native_hid_input_observed(unsigned event,int result) {
     if(event<8){native_hid_input_events[event]=native_hid_input_events[event]+1;native_hid_input_results[event]=result;}
+    if(event==6) {
+        const uint32_t r=native_touch_recent_count;
+        native_touch_recent[r&255]=mach_absolute_time();
+        native_touch_recent_count=r+1;
+    }
     if(event==6 && native_touch_report_ring) {
         const uint32_t n=native_touch_report_count;
         native_touch_report_ring[n&65535]=mach_absolute_time();

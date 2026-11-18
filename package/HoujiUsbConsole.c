@@ -901,6 +901,23 @@ static void swaps_command(void)
     }
     kfree_data(buffer,4096);
 }
+/* One line per tap or swipe: when each contact change was published and when NativeHidInput handed each touch report to the HID
+ * event driver (native_touch_recent), in ms from the touch-down: span, largest step, and the delay of the first and last report. */
+extern volatile uint64_t native_touch_recent[256];
+extern volatile uint32_t native_touch_recent_count;
+static uint64_t gesture_us(uint64_t a,uint64_t b) { uint64_t ns;absolutetime_to_nanoseconds(b>a?b-a:0,&ns);return ns/1000; }
+static void gesture_timing(const uint64_t *pub,int np,uint32_t r0)
+{
+    const uint32_t r1=native_touch_recent_count;
+    uint32_t nr=r1-r0;if (nr>256) nr=256;
+    uint64_t pmax=0,rmax=0;
+    for (int i=1;i<np;i++) { uint64_t g=gesture_us(pub[i-1],pub[i]);if (g>pmax) pmax=g; }
+    for (uint32_t i=1;i<nr;i++) { uint64_t g=gesture_us(native_touch_recent[(r1-nr+i-1)&255],native_touch_recent[(r1-nr+i)&255]);if (g>rmax) rmax=g; }
+    const uint64_t first=nr?native_touch_recent[(r1-nr)&255]:0,last=nr?native_touch_recent[(r1-1)&255]:0;
+    printf("HOUJI GESTURE TIMING: published %d span %llu us max-step %llu us; reports %u first +%llu us last +%llu us (lift +%llu us) max-step %llu us\n",
+           np,gesture_us(pub[0],pub[np-1]),pmax,r1-r0,nr?gesture_us(pub[0],first):0ull,nr?gesture_us(pub[0],last):0ull,
+           nr?(last>=pub[np-1]?gesture_us(pub[np-1],last):0ull):0ull,rmax);
+}
 static void gesture_thread(void *arg __unused,wait_result_t result __unused)
 {
     {uint64_t ns;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
@@ -909,13 +926,20 @@ static void gesture_thread(void *arg __unused,wait_result_t result __unused)
         sweet_hid_key(3,1);gesture_sleep_ms(80);sweet_hid_key(3,0);
     } else {
         int steps=gesture.kind==1?1:(gesture.ms/8>2?gesture.ms/8:2);
+        const uint32_t r0=native_touch_recent_count;
+        uint64_t pub[258];int np=0;
+        pub[np++]=mach_absolute_time();
         sweet_hid_touch(0,1,gesture.x1,gesture.y1);
         for (int i=1;i<=steps;i++) {
             gesture_sleep_ms(gesture.kind==1?60:8);
             int x=gesture.x1+(gesture.x2-gesture.x1)*i/steps,y=gesture.y1+(gesture.y2-gesture.y1)*i/steps;
+            if (np<257) pub[np++]=mach_absolute_time();
             sweet_hid_touch(0,1,x,y);
         }
+        if (np<258) pub[np++]=mach_absolute_time();
         sweet_hid_touch(0,0,gesture.x2,gesture.y2);
+        gesture_sleep_ms(150);
+        gesture_timing(pub,np,r0);
     }
     os_atomic_store(&gesture_busy,0,release);
     thread_terminate(current_thread());
