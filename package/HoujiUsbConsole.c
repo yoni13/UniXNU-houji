@@ -857,8 +857,27 @@ static void io_command(void)
 extern volatile uint32_t native_adreno_client_bytes[5][2],native_adreno_client_stats[5][6];
 extern volatile uint32_t native_adreno_import_memory[4];
 extern int nextpidversion;
+/* iOS memory kills (memorystatus) so far, summed over priority bands, by cause (sys/kern_memorystatus.h JETSAM_REASON_*). */
+extern uint32_t _Atomic memorystatus_kill_counts[210 + 1][17 - 1];
+extern uint32_t _Atomic memorystatus_idle_exit_kill_count;
+static void kills_print(void)
+{
+    static const char *const names[17]={"","generic","highwater","vnode","page-shortage","proc-thrash","fc-thrash","per-process",
+        "disk-space","idle-exit","zone-map","compressor-thrash","compressor-space","lowswap","sustained","pageout-starved","conclave"};
+    char line[400];int n=snprintf(line,sizeof line,"HOUJI VM: kills idle-exit(idle band) %u",memorystatus_idle_exit_kill_count);
+    for (int cause=1;cause<=17;cause++) {
+        if (cause==9) continue;
+        const int column=cause<9?cause-1:cause-2;
+        if (column>=16) break;
+        uint32_t sum=0;
+        for (int pri=0;pri<=210;pri++) sum+=memorystatus_kill_counts[pri][column];
+        if (sum && n<(int)sizeof line-40) n+=snprintf(line+n,sizeof line-n," %s %u",cause<17?names[cause]:"longidle",sum);
+    }
+    printf("%s\n",line);
+}
 static void vm_command(void)
 {
+    kills_print();
     /* Processes forked so far (each fork takes a pid version) and alive now; GPU imports of process memory: live, KiB live and
      * peak, made so far. Two calls apart give spawns and imports per second. */
     printf("HOUJI VM: forks %d procs %d | gpu imports live %u %u KiB peak %u KiB made %u\n",nextpidversion,nprocs,
