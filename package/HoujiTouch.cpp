@@ -73,7 +73,7 @@ static struct {
   uint32_t cfg[6],io[6];
   struct gt_state contacts;
   bool changed,started;
-  unsigned stage,error,frames,events,irqPolls,deviceMaxWrite,effectiveMaxWrite,configBytes,lastHeader,discarded;
+  unsigned stage,error,frames,events,irqPolls,deviceMaxWrite,effectiveMaxWrite,configBytes,lastHeader,discarded,syntheticLifts;
   unsigned workerPhase,loops,irqLevel,hidEntered,hidCompleted;
   uint8_t reportConfig[512];
   unsigned descriptorBytes;
@@ -203,9 +203,26 @@ static int htRun(void) {
   uint8_t touch=0x11;err=gw_command(&bus,5,&touch,1,&msg);if(err)return 260+err;
   htStage(5);IOLog("HOUJI TOUCH: native contact descriptor validated; physical polling enabled\n");
   unsigned errors=0;
+  // houji_touch_poll_ms: the interval between interrupt-line checks (default 10, 1..10). houji_touch_lift_ms (0 off): a contact still down
+  // with no report for that long gets a lift, counted as synthetic: a finger-up lost with a discarded or late report left a page held
+  // mid-swipe (root101: discarded=2, the home screen stopped between two pages).
+  unsigned pollMs=10,liftMs=0;
+  PE_parse_boot_argn("houji_touch_poll_ms",&pollMs,sizeof(pollMs));
+  PE_parse_boot_argn("houji_touch_lift_ms",&liftMs,sizeof(liftMs));
+  if(pollMs<1)pollMs=1;
+  if(pollMs>10)pollMs=10;
+  uint64_t lastReport=mach_absolute_time(),liftAbs=0;
+  if(liftMs)nanoseconds_to_absolutetime((uint64_t)liftMs*NSEC_PER_MSEC,&liftAbs);
   for(;;) {
     __atomic_store_n(&ht.workerPhase,1,__ATOMIC_RELEASE);
-    htWait(10);
+    htWait(pollMs);
+    if(liftAbs && ht.contacts.active && mach_absolute_time()-lastReport>liftAbs) {
+      for(unsigned i=0;i<GT_CONTACTS;i++)if(ht.contacts.active&(1u<<i)) {
+        houji_touch_contact(i,0,ht.contacts.x[i],ht.contacts.y[i]);
+        __atomic_add_fetch(&ht.syntheticLifts,1,__ATOMIC_RELAXED);
+      }
+      ht.contacts.active=0;
+    }
     __atomic_add_fetch(&ht.loops,1,__ATOMIC_RELAXED);
     __atomic_store_n(&ht.workerPhase,2,__ATOMIC_RELEASE);
     unsigned irqLevel=htRead(ht.pin[5],4)&1;
@@ -214,6 +231,7 @@ static int htRun(void) {
     __atomic_add_fetch(&ht.irqPolls,1,__ATOMIC_RELAXED);
     __atomic_store_n(&ht.workerPhase,3,__ATOMIC_RELEASE);
     err=gw_read(&bus,&msg);
+    if(!err)lastReport=mach_absolute_time();
     if(!err && msg.code==0x10)return 280;
     if(!err && msg.code==0x11) {
       __atomic_store_n(&ht.workerPhase,4,__ATOMIC_RELEASE);
@@ -322,13 +340,13 @@ extern "C" void houji_touch_start(void) {
 }
 extern "C" void houji_touch_driver_report(void) {
   if(!ht.started)return;
-  IOLog("HOUJI TOUCH: stage=%u error=%u frames=%u events=%u irq-polls=%u device-write=%u host-write=%u config=%u last-header=%08x discarded=%u; GPIO SPI, no DMA or firmware writes\n",
+  IOLog("HOUJI TOUCH: stage=%u error=%u frames=%u events=%u irq-polls=%u device-write=%u host-write=%u config=%u last-header=%08x discarded=%u synthetic-lifts=%u; GPIO SPI, no DMA or firmware writes\n",
     __atomic_load_n(&ht.stage,__ATOMIC_ACQUIRE),__atomic_load_n(&ht.error,__ATOMIC_ACQUIRE),
     __atomic_load_n(&ht.frames,__ATOMIC_RELAXED),__atomic_load_n(&ht.events,__ATOMIC_RELAXED),
     __atomic_load_n(&ht.irqPolls,__ATOMIC_RELAXED),
     __atomic_load_n(&ht.deviceMaxWrite,__ATOMIC_RELAXED),__atomic_load_n(&ht.effectiveMaxWrite,__ATOMIC_RELAXED),
     __atomic_load_n(&ht.configBytes,__ATOMIC_RELAXED),__atomic_load_n(&ht.lastHeader,__ATOMIC_RELAXED),
-    __atomic_load_n(&ht.discarded,__ATOMIC_RELAXED));
+    __atomic_load_n(&ht.discarded,__ATOMIC_RELAXED),__atomic_load_n(&ht.syntheticLifts,__ATOMIC_RELAXED));
   // Cached worker state only: the sampler performs no additional GPIO or bus reads.
   IOLog("HOUJI TOUCH WORKER: phase=%u loops=%u irq-level=%u HID-entered=%u HID-completed=%u; phases 1=sleep 2=IRQ 3=wire 4=decode 5=HID 6=done 7=stopped\n",
     __atomic_load_n(&ht.workerPhase,__ATOMIC_ACQUIRE),__atomic_load_n(&ht.loops,__ATOMIC_RELAXED),
