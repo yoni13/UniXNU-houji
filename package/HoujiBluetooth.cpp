@@ -492,13 +492,6 @@ bool bringUp() {
     return true;
 }
 
-// ---- iOS side ----
-// bluetoothd (iOS 16.7) leaves at once ("No bluetooth on this device.") unless IOServiceNameMatching("bluetooth") finds a service, from
-// which it also takes local-mac-address. With BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth,3200000 in its launchd job its POSIX
-// driver connects a stream kernel control of that name (the default, com.apple.uart.sk.bluetooth, wants a Skywalk channel), reads and
-// writes termios through getsockopt TIOCGETA / setsockopt TIOCSETA at SYSPROTO_CONTROL, and then sends and receives H4 packets.
-kern_ctl_ref gCtl;
-uint32_t gUnit;            // connected unit, 0: none
 
 bool gInit;
 volatile uint32_t gBusy;
