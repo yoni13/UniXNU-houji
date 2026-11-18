@@ -14,6 +14,8 @@
 #include <kern/task.h>
 #include <kern/recount.h>
 #include <mach/thread_act.h>
+#include <mach/host_info.h>
+#include <mach/vm_statistics.h>
 #include <kern/sched_prim.h>
 #include <machine/machine_routines.h>
 #include <arm/caches_internal.h>
@@ -778,6 +780,21 @@ static void ustack_command(const char *args)
     thread_deallocate(t);
     printf("HOUJI USTACK: sampling pid %d tid %llu for %u ms\n",ustack.pid,(unsigned long long)ustack.tid,ustack.ms);
 }
+/* "vm": the host's VM statistics (host_statistics64 HOST_VM_INFO64, as vm_stat reads them), in pages: the page-ins and
+ * decompressions a stall in a page fault shows as rising counts between two calls. */
+extern kern_return_t host_statistics64(host_t,host_flavor_t,host_info64_t,mach_msg_type_number_t *);
+extern host_t host_self(void);
+static void vm_command(void)
+{
+    vm_statistics64_data_t s;
+    mach_msg_type_number_t n=HOST_VM_INFO64_COUNT;
+    bzero(&s,sizeof s);
+    const kern_return_t kr=host_statistics64(host_self(),HOST_VM_INFO64,(host_info64_t)&s,&n);
+    printf("HOUJI VM: kr %d free %u active %u inactive %u spec %u wire %u ext %u int %u compressor %u (holds %llu) | faults %llu pageins %llu "
+           "pageouts %llu decompressions %llu compressions %llu reactivations %llu swapins %llu\n",kr,s.free_count,s.active_count,
+           s.inactive_count,s.speculative_count,s.wire_count,s.external_page_count,s.internal_page_count,s.compressor_page_count,
+           s.total_uncompressed_pages_in_compressor,s.faults,s.pageins,s.pageouts,s.decompressions,s.compressions,s.reactivations,s.swapins);
+}
 static void qos_command(const char *args)
 {
     static struct qos_request r;
@@ -1237,6 +1254,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"qos ",4)) qos_command(u.command+4);
     else if (!strncmp(u.command,"cores ",6)) cores_command(u.command+6);
     else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
+    else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
     else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
