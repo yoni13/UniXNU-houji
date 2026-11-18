@@ -1,0 +1,30 @@
+--- a/GpuScanoutPresenter.h
++++ b/GpuScanoutPresenter.h
+@@ -10,6 +10,8 @@
+ #pragma once
+ #import <Metal/Metal.h>
+ #include <unistd.h>
++#include <stdio.h>
++#include <time.h>
+ #include <stdint.h>
+ #include <string.h>
+ #include <atomic>
+@@ -55,6 +57,18 @@
+     }
+     if (commands.status == MTLCommandBufferStatusCompleted) return kOk;
+     gLastCopyDetail.store((uint32_t)commands.status << 8 | ((uint32_t)commands.error.code & 0xff), std::memory_order_relaxed);
++    // The failure's own text (status 5 with code -1 says only that the runtime refused it): the first 8 and every 64th after go to
++    // copy-errors.txt beside frames.trace, which the console can read.
++    static std::atomic<uint32_t> failures{0};
++    const uint32_t n = failures.fetch_add(1, std::memory_order_relaxed);
++    if (n < 8 || !(n % 64)) {
++        if (FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/copy-errors.txt", "a")) {
++            NSError *e = commands.error;
++            fprintf(f, "copy failure %u at %.3f s: status %d domain %s code %ld: %s\n", n + 1, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9, (int)commands.status,
++                    e.domain.UTF8String ?: "-", (long)e.code, e.localizedDescription.UTF8String ?: "-");
++            fclose(f);
++        }
++    }
+     return kGpuFailed;
+ }
+ 
