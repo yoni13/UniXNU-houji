@@ -851,6 +851,20 @@ static void rtc_command(void)
     uint32_t offset=0;int orc=houji_rtc_offset_read(&offset);
     printf("HOUJI RTC: sdam 0x71bc offset rc=%d value=%u raw+offset=%llu\n",orc,offset,(unsigned long long)secs+offset);
 }
+extern volatile uint64_t native_adreno_fence_wake[8] __attribute__((weak_import));
+extern volatile uint64_t native_adreno_wait_outer[5] __attribute__((weak_import));
+static void fence_command(const char *cmd)
+{
+    /* "fence [reset]": the GPU fence waits as the render server sees them (NativeAdrenoPublish.cpp): wake = interrupts, fence-bit
+     * interrupts, completion passes, waiters a pass woke, waits that slept, sleeps that timed out, waiters the periodic pass woke, ring switches; wait = waits, us waited in total, pauses, longest us, lock-free polls. */
+    if (!&native_adreno_fence_wake || !&native_adreno_wait_outer) { printf("HOUJI FENCE: unavailable\n");return; }
+    if (!strcmp(cmd,"fence reset")) { for (unsigned i=0;i<8;i++) native_adreno_fence_wake[i]=0; for (unsigned i=0;i<5;i++) native_adreno_wait_outer[i]=0; }
+    const uint64_t waits=native_adreno_wait_outer[0];
+    printf("HOUJI FENCE: irq %llu fence-irq %llu passes %llu pass-woke %llu slept %llu timed-out %llu periodic-woke %llu switches %llu wait n=%llu total-us=%llu pauses=%llu longest-us=%llu nolock=%llu avg-us=%llu\n",
+        native_adreno_fence_wake[0],native_adreno_fence_wake[1],native_adreno_fence_wake[2],native_adreno_fence_wake[3],
+        native_adreno_fence_wake[4],native_adreno_fence_wake[5],native_adreno_fence_wake[6],native_adreno_fence_wake[7],waits,native_adreno_wait_outer[1],native_adreno_wait_outer[2],
+        native_adreno_wait_outer[3],native_adreno_wait_outer[4],waits?native_adreno_wait_outer[1]/waits:0);
+}
 static void gop_command(void)
 {
 #define GOPV(x) (&(x)?(unsigned long long)(x):~0ull)
@@ -1078,6 +1092,7 @@ static void command_line(void)
     else if (!strcmp(u.command,"gop")) gop_command();
     else if (!strcmp(u.command,"disp") || !strcmp(u.command,"disp reset")) disp_command(u.command);
     else if (!strcmp(u.command,"rtc")) rtc_command();
+    else if (!strcmp(u.command,"fence") || !strcmp(u.command,"fence reset")) fence_command(u.command);
     else if (!strncmp(u.command,"qos ",4)) qos_command(u.command+4);
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
