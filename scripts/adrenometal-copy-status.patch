@@ -1,0 +1,68 @@
+--- a/GpuScanoutPresenter.h
++++ b/GpuScanoutPresenter.h
+@@ -42,6 +42,21 @@
+ };
+ 
+ enum Result { kOk = 0, kBadFrame, kBadScanout, kNoResource, kGpuFailed };
++// The copy's end. The runtime's waitUntilCompleted can return while the command buffer still reads Committed or Scheduled (its early
++// return paths), and taking that as a failure sent every such frame down the slow path (houji root125: 316 of 470 copies "failed", the
++// share of 60 Hz frames fell from 58% to 28%). Only Error fails; a buffer still in flight is waited for in 100 us steps, at most 20 ms.
++// The last failed copy's state for the kernel's report: MTLCommandBufferStatus << 8 | the low byte of its error code.
++inline std::atomic<uint32_t> gLastCopyDetail{0};
++static inline Result finishCopy(id<MTLCommandBuffer> commands) {
++    [commands waitUntilCompleted];
++    for (unsigned i = 0; i < 200 && commands.status != MTLCommandBufferStatusCompleted && commands.status != MTLCommandBufferStatusError; ++i) {
++        usleep(100);
++        [commands waitUntilCompleted];
++    }
++    if (commands.status == MTLCommandBufferStatusCompleted) return kOk;
++    gLastCopyDetail.store((uint32_t)commands.status << 8 | ((uint32_t)commands.error.code & 0xff), std::memory_order_relaxed);
++    return kGpuFailed;
++}
+ 
+ class Presenter {
+ public:
+@@ -75,8 +90,7 @@
+             [encoder dispatchThreadgroups:MTLSizeMake((frame.width + 15) / 16, (rows + 7) / 8, 1) threadsPerThreadgroup:MTLSizeMake(16, 8, 1)];
+             [encoder endEncoding];
+             [commands commit];
+-            [commands waitUntilCompleted];
+-            return commands.status == MTLCommandBufferStatusCompleted ? kOk : kGpuFailed;
++            return finishCopy(commands);
+         }
+         id<MTLCommandBuffer> commands = [queue_ commandBuffer];
+         id<MTLBlitCommandEncoder> blit = commands ? [commands blitCommandEncoder] : nil;
+@@ -103,8 +117,7 @@
+         }
+         [blit endEncoding];
+         [commands commit];
+-        [commands waitUntilCompleted];
+-        return commands.status == MTLCommandBufferStatusCompleted ? kOk : kGpuFailed;
++        return finishCopy(commands);
+     }
+     // A half-float frame: one thread per pixel, 16 x 8 threads a group (the kernel skips threads past the edges).
+     Result convert(const Frame &frame) {
+@@ -129,8 +142,7 @@
+                 threadsPerThreadgroup:MTLSizeMake(16, 8, 1)];
+         [encoder endEncoding];
+         [commands commit];
+-        [commands waitUntilCompleted];
+-        return commands.status == MTLCommandBufferStatusCompleted ? kOk : kGpuFailed;
++        return finishCopy(commands);
+     }
+     // A kernel of the scanout library, made once; a failure is not retried (every later half-float frame then goes back to the display
+     // driver's own path, every BGRA frame to the blit).
+--- a/GpuScanoutClient.h
++++ b/GpuScanoutClient.h
+@@ -102,7 +102,10 @@
+         if (r == gpupresent::kOk && swap.format == NGP_BGRX8888 && stats_->verified < 4) verify(swap);
+         note(0x6731);   // the GPU copy returned
+         const uint64_t copiedUs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
+-        NGPComplete done = {swap.sequence, r == gpupresent::kOk ? 0u : 0xe00002bcu /* kIOReturnError */, 0};
++        // A failed GPU copy reports 0xe001SSEE (SS its MTLCommandBufferStatus, EE its error code's low byte); other failures kIOReturnError.
++        const uint32_t failed = r == gpupresent::kGpuFailed ? 0xe0010000u | gpupresent::gLastCopyDetail.load(std::memory_order_relaxed)
++                                                            : 0xe00002bcu /* kIOReturnError */;
++        NGPComplete done = {swap.sequence, r == gpupresent::kOk ? 0u : failed, 0};
+         const int completed = transport_.call(transport_.context, NGP_METHOD_COMPLETE_SWAP, &done, sizeof done, nullptr, 0);
+         if (NBTraceSwap) NBTraceSwap(offeredUs, copiedUs, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, (uint32_t)swap.sequence, (uint32_t)r);
+         if (completed) {++stats_->failures; stats_->error = completed; return false;}
