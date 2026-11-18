@@ -2047,6 +2047,15 @@ void gpuDcvsThread(void *, wait_result_t) {
         }
         if (winNs >= 10000000000ull) {
             native_gpu_dcvs[4] = (uint32_t)(winBusy * 100 / winNs);
+            {
+                // One line per 10 s window: busy %, the level now, the % of the window at each level 1..top, votes taken and refused.
+                char share[96]; unsigned n = 0;
+                for (unsigned l = 1; l <= kGpuTop && n < sizeof share - 8; ++l)
+                    n += (unsigned)snprintf(share + n, sizeof share - n, "%u%s", (unsigned)(atLevel[l] * 100 / winNs), l < kGpuTop ? "," : "");
+                IOLog("HOUJI GPU DCVS: busy %u%% level %u (%u MHz) floor %u at-level %s votes %u refused %u touch-boosts %u\n",
+                      (unsigned)(winBusy * 100 / winNs), cur, kGpuMHz[cur], floor, share, native_gpu_dcvs[2], native_gpu_dcvs[3],
+                      native_gpu_dcvs[13]);
+            }
             for (unsigned l = 1; l <= kGpuTop; ++l) {native_gpu_dcvs[4 + l] = (uint32_t)(atLevel[l] * 100 / winNs); atLevel[l] = 0;}
             winBusy = winNs = 0;
             native_gpu_dcvs_windows[0] = seen; native_gpu_dcvs_windows[1] = seenBusy; native_gpu_dcvs_windows[2] = seenFaint;
