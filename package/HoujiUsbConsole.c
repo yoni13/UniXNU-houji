@@ -875,9 +875,24 @@ static void kills_print(void)
     }
     printf("%s\n",line);
 }
+/* The GPU driver's per-process tables (NativeAdrenoMemory.cpp): pid, KiB, objects; imports (process memory the GPU maps) and
+ * the driver's own buffer objects. */
+extern volatile uint32_t native_adreno_import_owners[24][4],native_adreno_bo_owners[24][4];
+static void owners_print(const char *what,volatile uint32_t (*table)[4])
+{
+    for (int i=0;i<24;i++) {
+        if (!table[i][2] || table[i][1]<4096) continue;
+        char name[32]="?";
+        proc_t p=proc_find((int)table[i][0]);
+        if (p) { strlcpy(name,proc_best_name(p),sizeof name);proc_rele(p); } else strlcpy(name,"(exited)",sizeof name);
+        printf("HOUJI VM: %s owner %u %s %u MiB in %u\n",what,table[i][0],name,table[i][1]>>10,table[i][2]);
+    }
+}
 static void vm_command(void)
 {
     kills_print();
+    owners_print("import",native_adreno_import_owners);
+    owners_print("gpu-bo",native_adreno_bo_owners);
     /* Processes forked so far (each fork takes a pid version) and alive now; GPU imports of process memory: live, KiB live and
      * peak, made so far. Two calls apart give spawns and imports per second. */
     printf("HOUJI VM: forks %d procs %d | gpu imports live %u %u KiB peak %u KiB made %u\n",nextpidversion,nprocs,
