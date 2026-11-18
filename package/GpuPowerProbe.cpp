@@ -148,6 +148,9 @@ extern "C" const uint64_t native_adreno_firmware_image_size __attribute__((weak)
 extern "C" ShengGmuDbStatus ShengGmuCommandDbInputs(const uint8_t *, size_t, uint32_t, ShengGmuVoteInputs *) __attribute__((weak));
 extern "C" AdrenoHfiStartupStatus ShengGmuBuildStartup(const ShengGmuVoteInputs *, AdrenoHfiStartupConfig *) __attribute__((weak));
 extern "C" unsigned ShengGmuPerfVote(unsigned, unsigned *) __attribute__((weak));
+extern "C" AdrenoHfiStartupStatus ShengGmuBuildStockStartup(const ShengGmuVoteInputs *, AdrenoHfiStartupConfig *) __attribute__((weak));
+extern "C" unsigned ShengGmuStockPerfVote(unsigned, unsigned *) __attribute__((weak));
+extern "C" int houji_thermal_gpu(void);
 
 extern "C" {
 extern char boot_progress_ext[8][48];
@@ -158,6 +161,29 @@ volatile uint32_t native_gpu_power_stage;
 }
 
 namespace {
+bool gpuOppStockRequested() {
+    static int cached = -1;
+    if (cached < 0) {char value[16] = {}; cached = PE_parse_boot_argn("gpu-opp", value, sizeof value) && !strcmp(value, "stock");}
+    return cached != 0;
+}
+bool gGpuOppStock;
+uint32_t gGpuSpeedBin = ~0u;
+OSSharedPtr<IOMemoryMap> gGpuFuseMap;
+bool selectGpuStockOpp() {
+    if (!gpuOppStockRequested()) return false;
+    IODeviceMemory *memory = IODeviceMemory::withRange(0x221c2000, 0x1000);
+    if (memory) {gGpuFuseMap = OSSharedPtr<IOMemoryMap>(memory->map(kIOMapAnywhere | kIOMapInhibitCache | kIOMapReadOnly), OSNoRetain); memory->release();}
+    if (!gGpuFuseMap) {IOLog("HOUJI GPU OPP: stock refused: speed-bin fuse map failed\n"); return false;}
+    const uintptr_t va = gGpuFuseMap->getVirtualAddress();
+    gGpuSpeedBin = (*reinterpret_cast<volatile uint32_t *>(va + 0x98) >> 28) & 7;
+    // The iOS 16 port's captured bin-5/feature-AB selection and Android's
+    // explicit bin-4 record both resolve to this same 231..903 MHz profile.
+    if (gGpuSpeedBin != 4 && gGpuSpeedBin != 5) {
+        IOLog("HOUJI GPU OPP: stock refused: unsupported speed-bin %u\n", gGpuSpeedBin);
+        return false;
+    }
+    return true;
+}
 unsigned mode() {
     static unsigned cached = ~0u;
     if (cached == ~0u) {unsigned m = 0; PE_parse_boot_argn("gpu-power", &m, sizeof m); cached = m > 9 ? 9 : m;}
@@ -1838,9 +1864,9 @@ void gpuStart() {
 // upthreshold 50). A window's work is its busy time times the frequency it ran at, so the sum holds across a level change. The
 // governor goes up at once to the lowest level at or above 1.1 x of that frequency, to the top when the span was over 85 % busy or
 // after 50 ms busy without a break; it goes down one level after 4 windows in a row (5 right after a step up) that would have needed
-// at most 0.8 x the next lower level, and back to the floor after 80 ms without work. `gpu-dcvs-min` is the floor level (default 3,
-// 348 MHz). Each change is the same HFI GX_BW_PERF_VOTE as the boot vote, with that level's bandwidth. OPP MHz in sheng-gmu's table
-// order.
+// at most 0.8 x the next lower level, and back to the floor after 80 ms without work. `gpu-dcvs-min` is the HFI floor index: default
+// table 3 = 348 MHz; with `gpu-opp=stock`, 3 = 366 MHz. Each change is the same HFI GX_BW_PERF_VOTE as the boot vote, with that
+// level's paired bandwidth. OPP MHz are in ascending HFI table order.
 // The span is 1 window by default: every window is judged by itself, and a load that starts in full reaches the top one window
 // later. A window is shorter than the gap between two jobs of a sparse load, so its busy share is the length of the one job in it:
 // at 680 MHz a job over 5.8 ms (36.2 % = 0.8 x 615 / (2 x 680)) clears the step-down count, and at 615 MHz a job over 7.3 ms
@@ -1850,21 +1876,23 @@ void gpuStart() {
 // the 4 windows of a step down, which the next job would undo. The span costs time on the frame (a job runs longer at the lower
 // level before its fence signals, and the top is reached after three windows instead of one), so it is an option.
 // native_gpu_dcvs_windows[4] is the measured length of the longest job, which decides whether the span rule applies to a load.
-constexpr uint32_t kGpuMHz[9] = {0, 220, 295, 348, 401, 475, 550, 615, 680};
-constexpr unsigned kGpuTop = 8;
+constexpr uint32_t kGpuLegacyMHz[13] = {0, 220, 295, 348, 401, 475, 550, 615, 680};
+constexpr uint32_t kGpuStockMHz[13] = {0, 231, 310, 366, 422, 500, 578, 629, 680, 720, 770, 834, 903};
+const uint32_t *gpuMHz() {return gGpuOppStock ? kGpuStockMHz : kGpuLegacyMHz;}
+unsigned gpuTop() {return gGpuOppStock ? 12 : 8;}
 constexpr unsigned kGpuSpanMax = 8;   // `gpu-dcvs-span` at most
 constexpr unsigned kGpuKeep = 16;     // windows whose busiest span decides a step down
 extern "C" {
-// [0] 1 running, [1] level now, [2] changes, [3] failed votes, [4] busy % over the last 10 s, [5..12] % of those 10 s at levels 1..8,
-// [13] touch boosts, [14] wake boosts
-volatile uint32_t native_gpu_dcvs[15];
+// [0] 1 running, [1] level now, [2] changes, [3] failed votes, [4] busy % over the last 10 s, then one residency per level;
+// legacy [13]/[14], stock [17]/[18] are touch/wake boosts.
+volatile uint32_t native_gpu_dcvs[19];
 // Every level change, the newest 256: [0] time (us since boot), [1] from << 56 | to << 48 | reason << 40 | span busy % << 32 | the MHz the span
 // would have needed (32 bits). Reasons: 1 busy over 85 % or 50 ms without a break, 2 more frequency needed, 3 one step down, 4 idle for 80 ms,
-// 5 touch boost, 6 wake boost, 7 raised to the floor, 8 the vote failed.
+// 5 touch boost, 6 wake boost, 7 raised to the floor, 8 the vote failed, 9 thermal cap.
 volatile uint64_t native_gpu_dcvs_log[256][2];
 volatile uint32_t native_gpu_dcvs_log_count;
-// Level changes since boot by the reason above ([1..8], [0] unused): which rule moves the level.
-volatile uint32_t native_gpu_dcvs_reasons[9];
+// Level changes since boot by the reason above ([1..9], [0] unused): which rule moves the level.
+volatile uint32_t native_gpu_dcvs_reasons[10];
 // The windows of the last 10 s: [0] how many, [1] with busy time, [2] of those under 1 % busy, [3] without busy time but with ring
 // words pending, [4] the longest busy time in one window (us), [5] the MHz it ran at; [6] rests since boot (80 ms without work),
 // [7] the span in windows. macOS runs 55 to 61 never counted a wake boost, also not after 10 s without a submission (run61, 181 to
@@ -1883,7 +1911,8 @@ uint64_t gpuBusyTicks() {
 }
 bool gpuVote(unsigned level) {
     unsigned bw = 1;
-    level = ShengGmuPerfVote ? ShengGmuPerfVote(level, &bw) : level;
+    level = gGpuOppStock && ShengGmuStockPerfVote ? ShengGmuStockPerfVote(level, &bw) :
+            ShengGmuPerfVote ? ShengGmuPerfVote(level, &bw) : level;
     const uint32_t vote[3] = {1, level, bw};
     uint32_t out[16], error = 0;
     size_t count = 0;
@@ -1892,8 +1921,9 @@ bool gpuVote(unsigned level) {
     return true;
 }
 unsigned gpuLevelFor(uint64_t mhz) {
+    const uint32_t *mhzTable = gpuMHz(); const unsigned top = gpuTop();
     unsigned l = 1;
-    while (l < kGpuTop && kGpuMHz[l] < mhz) ++l;
+    while (l < top && mhzTable[l] < mhz) ++l;
     return l;
 }
 void gpuPerfTick(uint64_t busyTicks) {
@@ -1930,19 +1960,21 @@ void gpuPerfTick(uint64_t busyTicks) {
 }
 void gpuDcvsThread(void *, wait_result_t) {
     ShengGmuIo &io = gColdDevice.io;
+    const uint32_t *mhzTable = gpuMHz(); const unsigned top = gpuTop();
     unsigned floor = bootArg("gpu-dcvs-min", 3);
     if (floor < 1) floor = 1;
-    if (floor > kGpuTop) floor = kGpuTop;
+    if (floor > top) floor = top;
     io.write32(io.cookie, ShengGmuCore, kGmuReg(0x23b0e), 0xff000000u);
     uint32_t sel = 0;
     io.read32(io.cookie, ShengGmuCore, kGmuReg(0x1f841), &sel);
     io.write32(io.cookie, ShengGmuCore, kGmuReg(0x1f841), (sel & ~0xffu) | 1u << 5);
     io.write32(io.cookie, ShengGmuCore, kGmuReg(0x1f840), 1);
     io.barrier(io.cookie);
-    unsigned cur = native_gpu_perf_vote[0] ? native_gpu_perf_vote[0] : kGpuTop;
+    unsigned cur = native_gpu_perf_vote[0] ? native_gpu_perf_vote[0] : top;
+    if (cur > top) cur = top;
     native_gpu_dcvs[0] = 1; native_gpu_dcvs[1] = cur;
     uint64_t lastBusy = gpuBusyTicks(), lastT = mach_absolute_time(), idleSince = lastT;
-    uint64_t runNs = 0, winBusy = 0, winNs = 0, atLevel[kGpuTop + 1] = {};
+    uint64_t runNs = 0, winBusy = 0, winNs = 0, atLevel[13] = {};
     unsigned down = 0, hold = 0;
     unsigned span = bootArg("gpu-dcvs-span", 1);
     if (span < 1) span = 1;
@@ -1958,6 +1990,8 @@ void gpuDcvsThread(void *, wait_result_t) {
     nanoseconds_to_absolutetime(50000000ull, &wakeAbs);
     uint32_t touches = &native_hid_input_events ? native_hid_input_events[6] : 0;
     bool idle = false;
+    unsigned thermalC = bootArg("gpu-thermal-c", 85); if (thermalC > 150) thermalC = 150;
+    int gpuTemp = -1000; unsigned thermalTick = 0;
     const bool tracePerf=bootArg("gpu-perf",0)==1;unsigned perfTick=0;
     for (;;) {
         IOSleep(16);
@@ -1978,11 +2012,11 @@ void gpuDcvsThread(void *, wait_result_t) {
         if (busyNs) {
             ++seenBusy;
             if (busyNs * 100 < ns) ++seenFaint;
-            if (busyNs / 1000 > longestUs) {longestUs = (uint32_t)(busyNs / 1000); longestMHz = kGpuMHz[cur];}
+            if (busyNs / 1000 > longestUs) {longestUs = (uint32_t)(busyNs / 1000); longestMHz = mhzTable[cur];}
         } else if (active) {
             ++seenRing;
         }
-        spanBusy[spanAt] = busyNs; spanNs[spanAt] = ns; spanWork[spanAt] = busyNs * kGpuMHz[cur];
+        spanBusy[spanAt] = busyNs; spanNs[spanAt] = ns; spanWork[spanAt] = busyNs * mhzTable[cur];
         spanAt = (spanAt + 1) % span;
         spanActive = (spanActive << 1 | (active ? 1u : 0u)) & ((1u << span) - 1);
         uint64_t sumBusy = 0, sumNs = 0, sumWork = 0;
@@ -1997,11 +2031,11 @@ void gpuDcvsThread(void *, wait_result_t) {
         unsigned want = cur, reason = 0;
         bool rested = false;
         if (sumBusy * 100 > sumNs * 85 || runNs >= 50000000ull) {
-            want = kGpuTop;reason = 1;
+            want = top;reason = 1;
         } else if (gpuLevelFor(need * 11 / 10) > cur) {
             want = gpuLevelFor(need * 11 / 10);reason = 2;
         } else if (spanActive) {
-            if (cur > floor && peak * 10 <= (uint64_t)kGpuMHz[cur - 1] * 8) {
+            if (cur > floor && peak * 10 <= (uint64_t)mhzTable[cur - 1] * 8) {
                 if (++down >= 4 + hold) {want = cur - 1;reason = 3;}
             } else {
                 down = 0;
@@ -2017,19 +2051,33 @@ void gpuDcvsThread(void *, wait_result_t) {
         if (rested && !idle) native_gpu_dcvs_windows[6] = native_gpu_dcvs_windows[6] + 1;
         if (rested) idle = true;
         if (active && idle) {
-            idle = false; wakeEnd = t + wakeAbs; native_gpu_dcvs[14] = native_gpu_dcvs[14] + 1;
+            const unsigned wakeSlot = gGpuOppStock ? 18 : 14;
+            idle = false; wakeEnd = t + wakeAbs; native_gpu_dcvs[wakeSlot] = native_gpu_dcvs[wakeSlot] + 1;
         }
         if (boostAbs && &native_hid_input_events && native_hid_input_events[6] != touches) {
             touches = native_hid_input_events[6];
-            if (t >= touchEnd) native_gpu_dcvs[13] = native_gpu_dcvs[13] + 1;
+            const unsigned touchSlot = gGpuOppStock ? 17 : 13;
+            if (t >= touchEnd) native_gpu_dcvs[touchSlot] = native_gpu_dcvs[touchSlot] + 1;
             touchEnd = t + boostAbs;
         }
-        if (t < touchEnd) {want = kGpuTop;reason = 5;}
+        if (t < touchEnd) {
+            const unsigned touch = gGpuOppStock ? gpuLevelFor(680) : top;
+            if (want < touch) {want = touch;reason = 5;}
+        }
         else if (t < wakeEnd) {
-            const unsigned wake = gpuLevelFor(kGpuMHz[cur] * 2 > 578 ? kGpuMHz[cur] * 2 : 578);
+            const unsigned wake = gpuLevelFor(mhzTable[cur] * 2 > 578 ? mhzTable[cur] * 2 : 578);
             if (want < wake) {want = wake;reason = 6;}
         }
         if (want < floor) {want = floor;reason = 7;}
+        // GPU-zone TSENS cap: at the threshold retain at most the stock 680 MHz
+        // OPP; five degrees hotter pin the governor to its configured floor.
+        if (gGpuOppStock && thermalC) {
+            if (!(thermalTick++ & 15)) gpuTemp = houji_thermal_gpu();
+            unsigned cap = top;
+            if (gpuTemp > (int)(thermalC + 5) * 10) cap = floor;
+            else if (gpuTemp > (int)thermalC * 10) cap = gpuLevelFor(680);
+            if (want > cap) {want = cap; reason = 9;}
+        }
         if (want != cur) {
             const bool voted = gpuVote(want);
             const uint32_t slot = native_gpu_dcvs_log_count & 255;
@@ -2050,13 +2098,20 @@ void gpuDcvsThread(void *, wait_result_t) {
             {
                 // One line per 10 s window: busy %, the level now, the % of the window at each level 1..top, votes taken and refused.
                 char share[96]; unsigned n = 0;
-                for (unsigned l = 1; l <= kGpuTop && n < sizeof share - 8; ++l)
-                    n += (unsigned)snprintf(share + n, sizeof share - n, "%u%s", (unsigned)(atLevel[l] * 100 / winNs), l < kGpuTop ? "," : "");
-                IOLog("HOUJI GPU DCVS: busy %u%% level %u (%u MHz) floor %u at-level %s votes %u refused %u touch-boosts %u\n",
-                      (unsigned)(winBusy * 100 / winNs), cur, kGpuMHz[cur], floor, share, native_gpu_dcvs[2], native_gpu_dcvs[3],
-                      native_gpu_dcvs[13]);
+                for (unsigned l = 1; l <= top && n < sizeof share - 8; ++l)
+                    n += (unsigned)snprintf(share + n, sizeof share - n, "%u%s", (unsigned)(atLevel[l] * 100 / winNs), l < top ? "," : "");
+                const unsigned touchSlot = gGpuOppStock ? 17 : 13;
+                if (gGpuOppStock) {
+                    IOLog("HOUJI GPU DCVS: busy %u%% level %u (%u MHz) floor %u at-level %s votes %u refused %u touch-boosts %u thermal %d.%d C\n",
+                          (unsigned)(winBusy * 100 / winNs), cur, mhzTable[cur], floor, share, native_gpu_dcvs[2], native_gpu_dcvs[3],
+                          native_gpu_dcvs[touchSlot], gpuTemp / 10, gpuTemp % 10 < 0 ? -(gpuTemp % 10) : gpuTemp % 10);
+                } else {
+                    IOLog("HOUJI GPU DCVS: busy %u%% level %u (%u MHz) floor %u at-level %s votes %u refused %u touch-boosts %u\n",
+                          (unsigned)(winBusy * 100 / winNs), cur, mhzTable[cur], floor, share, native_gpu_dcvs[2], native_gpu_dcvs[3],
+                          native_gpu_dcvs[touchSlot]);
+                }
             }
-            for (unsigned l = 1; l <= kGpuTop; ++l) {native_gpu_dcvs[4 + l] = (uint32_t)(atLevel[l] * 100 / winNs); atLevel[l] = 0;}
+            for (unsigned l = 1; l <= top; ++l) {native_gpu_dcvs[4 + l] = (uint32_t)(atLevel[l] * 100 / winNs); atLevel[l] = 0;}
             winBusy = winNs = 0;
             native_gpu_dcvs_windows[0] = seen; native_gpu_dcvs_windows[1] = seenBusy; native_gpu_dcvs_windows[2] = seenFaint;
             native_gpu_dcvs_windows[3] = seenRing; native_gpu_dcvs_windows[4] = longestUs; native_gpu_dcvs_windows[5] = longestMHz;
@@ -2156,8 +2211,9 @@ void gpuOn() {
     // also the DDR floor while the GPU is on (no GPU DCVS changes either afterwards).
     unsigned perf = 1, bw = 1;
     PE_parse_boot_argn("gpu-perf", &perf, sizeof(perf));
-    perf = ShengGmuPerfVote ? ShengGmuPerfVote(perf, &bw) : 1;
-    if (!ShengGmuPerfVote) bw = 1;
+    perf = gGpuOppStock && ShengGmuStockPerfVote ? ShengGmuStockPerfVote(perf, &bw) :
+           ShengGmuPerfVote ? ShengGmuPerfVote(perf, &bw) : 1;
+    if ((!gGpuOppStock && !ShengGmuPerfVote) || (gGpuOppStock && !ShengGmuStockPerfVote)) bw = 1;
     native_gpu_perf_vote[0] = perf; native_gpu_perf_vote[1] = bw;
     const uint32_t vote[3] = {1, perf, bw};
     uint32_t out[16], error = 0;
@@ -2335,7 +2391,18 @@ void gmuPrerequisites(const gpb_result &r) {
             gVoteInputs = {};
             gVoteInputs.chip_id = HOUJI_GPU_CHIP_ID;   // a7xx_catalog.c A750 chip_ids, the ID ShengGmuVotes is pinned to
             parse = ShengGmuCommandDbInputs(gCmdDb, kCmdDbBytes, version, &gVoteInputs);
-            if (parse == ShengGmuDbSuccess) build = ShengGmuBuildStartup(&gVoteInputs, &gStartup);
+            if (parse == ShengGmuDbSuccess) {
+                gGpuOppStock = selectGpuStockOpp() && ShengGmuBuildStockStartup && ShengGmuStockPerfVote;
+                build = gGpuOppStock ? ShengGmuBuildStockStartup(&gVoteInputs, &gStartup) : ShengGmuBuildStartup(&gVoteInputs, &gStartup);
+                if (gGpuOppStock && build != AdrenoHfiStartupSuccess) {
+                    IOLog("HOUJI GPU OPP: stock table build refused; retaining legacy 8-level table\n");
+                    gGpuOppStock = false; build = ShengGmuBuildStartup(&gVoteInputs, &gStartup);
+                }
+                if (gpuOppStockRequested() && !gGpuOppStock)
+                    IOLog("HOUJI GPU OPP: stock unavailable; retaining legacy 8-level table\n");
+                else if (gGpuOppStock)
+                    IOLog("HOUJI GPU OPP: stock 12-level table selected, speed-bin %u, HFI indices 1..12 = 231..903 MHz\n", gGpuSpeedBin);
+            }
         } else parse = 8;
     }
     // GMU state words, only with the GMU clock and the GPUCC AHB clock already running (nothing here enables them).

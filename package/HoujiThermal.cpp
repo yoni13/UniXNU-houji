@@ -74,6 +74,10 @@ extern "C" void houji_thermal_report(void) {report();}
 // Hottest sensor in deci-C, or -1000 without a reading: for the sleep/DVFS policy and the console.
 extern "C" int houji_thermal_hottest(void) {Reading r; return read(r) ? r.hottest : -1000;}
 
+// Hottest sensor in the GPU thermal zone, in deci-C.  DCVS uses this rather
+// than the package maximum so CPU load does not spuriously select a GPU OPP.
+extern "C" int houji_thermal_gpu(void) {Reading r; return read(r) && r.gpu > -1000 ? r.gpu : -1000;}
+
 extern "C" void houji_thermal_start(void) {
     static bool started;
     unsigned seconds = 0;

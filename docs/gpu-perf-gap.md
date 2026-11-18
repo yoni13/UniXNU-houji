@@ -15,5 +15,15 @@ Offline source/log comparison; counters are not panel-FPS measurements.
 ## Top-three port plan
 
 1. In `houji-default.args`, opt in with `gpu-dcvs=1 gpu-dcvs-min=3`; first A/B also use `gpu-perf=4` (401 MHz) to isolate clock/BW impact. Add DCVS level/residency to `GpuPowerProbe.cpp` console output. Risk: higher GPU/DDR power; retain caps and require cooling for sustained tests.
+
 2. Port iOS 16 interaction policy into `package/HoujiCpuDvfs.cpp`/`HoujiTouch.cpp` behind `houji_cpu_interactive=1`; args: `houji_cpu_frame_pct`, `houji_cpu_touch_pct`, `houji_cpu_touch_ms`, and `houji_cpu_x4_boost=1`. Keep 60%/50 C defaults; test 70%/60 C only cooled. Risk: the 85% run already reached 68.7 C.
 3. Add `houji_fb_pipeline=1` in `NativeLegacyDisplay.cpp`, `GpuScanoutClient.h`, and `GpuScanoutPresenter.h`: two retained scanout submissions, completion handlers, bounded depth, and per-stage timing; publish `vsync=120` separately as `houji_fb_vsync=120`. Risks: scanout overwrite/tearing without physical vblank, IOSurface lifetime errors, and extra heat; fall back to the current synchronous path on any fence error.
+
+## Stock A750 OPP option
+
+`gpu-opp=stock` advertises the selected houji stock 12-level GMU table and makes DCVS/HFI30 use its paired DDR indices. HFI and
+`gpu-dcvs-min` indices are ascending: `1..12` map to `231, 310, 366, 422, 500, 578, 629, 680, 720, 770, 834, 903 MHz`.
+The default remains the legacy eight-level table (`1..8` = `220, 295, 348, 401, 475, 550, 615, 680 MHz`). The stock option
+accepts the observed fuse selections 4 and 5, which both resolve to the 231–903 MHz houji profile; unknown bins retain the legacy
+table. Touch retains the iOS 16 port's 680 MHz floor. `gpu-thermal-c` defaults to 85 C: above that GPU-zone temperature stock
+DCVS is capped at 680 MHz, and above another 5 C it is capped at the configured floor.

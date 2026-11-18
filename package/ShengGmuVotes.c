@@ -44,3 +44,61 @@ unsigned ShengGmuPerfVote(unsigned perf,unsigned *bandwidth)
     if(bandwidth)*bandwidth=bw;
     return perf;
 }
+
+/* Android's houji A750 table, in the ascending HFI index order used by the
+ * iOS 16 port.  The DT lists it in the opposite order.  Keep the complete
+ * DDR table: GX_BW_PERF_VOTE carries the DT bus-freq index, not a compressed
+ * index over only the bandwidths used by an OPP. */
+static const ShengGmuOpp houji_stock_gpu_opps[]={
+    {0,0,0,0,0},
+    {231000000,52,0x209a8e,0,0},{310000000,56,0x209a8e,0,0},
+    {366000000,60,0x5caf6a,0,0},{422000000,64,0x7cb163,0,0},
+    {500000000,80,0x7cb163,0,0},{578000000,128,0x7cb163,0,0},
+    {629000000,144,0xa3140c,0,0},{680000000,192,0xbdf5c2,0,0},
+    {720000000,224,0xbdf5c2,0,0},{770000000,256,0xbdf5c2,0,0},
+    {834000000,320,0xdbb3e5,0,0},{903000000,384,0xfbc520,0,0},
+};
+static const uint32_t houji_stock_gpu_bandwidths[]={
+    0,0x209a8e,0x2dc6c0,0x5caf6a,0x65ce03,0x7cb163,0xa3140c,0xbdf5c2,0xdbb3e5,0xfbc520,
+};
+static const unsigned houji_stock_gpu_bw[]={0,1,1,3,5,5,5,6,7,7,7,8,9};
+
+AdrenoHfiStartupStatus ShengGmuBuildStockStartup(const ShengGmuVoteInputs *in,AdrenoHfiStartupConfig *out)
+{
+    enum { GPU_OPPS=sizeof(houji_stock_gpu_opps)/sizeof(houji_stock_gpu_opps[0]) };
+    if(!in || !out || in->chip_id!=SHENG_GMU_VOTES_CHIP_ID || in->gmxc_present>1 ||
+        in->enable_acd>1 || in->enable_ifpc>1 ||
+        (!in->gmxc_present && (in->gmxc.data || in->gmxc.bytes)))return AdrenoHfiStartupInvalid;
+    AdrenoHfiStartupConfig c={0};uint32_t votes[16],levels[16];
+    const ShengGmuAux *gpu_secondary=in->gmxc_present?&in->gmxc:&in->mx;
+    for(unsigned i=0;i<GPU_OPPS;++i)levels[i]=houji_stock_gpu_opps[i].level;
+    if(AdrenoHfiArcVotes(levels,GPU_OPPS,in->gfx.data,in->gfx.bytes,
+        gpu_secondary->data,gpu_secondary->bytes,votes,16))return AdrenoHfiStartupInvalid;
+    c.gpu_count=GPU_OPPS;
+    for(unsigned i=0;i<c.gpu_count;++i)c.gpu[i]=(AdrenoHfiPerformanceLevel){houji_stock_gpu_opps[i].hz,votes[i]};
+    for(unsigned i=0;i<SHENG_GMU_OPPS;++i)levels[i]=sheng_gmu_opps[i].level;
+    if(AdrenoHfiArcVotes(levels,SHENG_GMU_OPPS,in->cx.data,in->cx.bytes,
+        in->mx.data,in->mx.bytes,votes,16))return AdrenoHfiStartupInvalid;
+    c.gmu_count=SHENG_GMU_OPPS;
+    for(unsigned i=0;i<c.gmu_count;++i)c.gmu[i]=(AdrenoHfiPerformanceLevel){sheng_gmu_opps[i].hz,votes[i]};
+    const ShengGmuBcmInput *inputs[]={&in->sh0,&in->mc0,&in->acv};AdrenoHfiBcm bcms[3];
+    for(unsigned i=0;i<3;++i) {
+        bcms[i]=sheng_bcm_policy[i];bcms[i].address=inputs[i]->address;
+        if(AdrenoHfiBcmAux(bcms+i,inputs[i]->aux.data,inputs[i]->aux.bytes))return AdrenoHfiStartupInvalid;
+    }
+    if(AdrenoHfiBuildBandwidth(houji_stock_gpu_bandwidths,
+        sizeof(houji_stock_gpu_bandwidths)/sizeof(houji_stock_gpu_bandwidths[0]),bcms,3,in->cn0_address,&c))
+        return AdrenoHfiStartupInvalid;
+    c.enable_ifpc=in->enable_ifpc;
+    if(AdrenoHfiStartupValidate(&c))return AdrenoHfiStartupInvalid;
+    *out=c;return AdrenoHfiStartupSuccess;
+}
+
+unsigned ShengGmuStockPerfVote(unsigned perf,unsigned *bandwidth)
+{
+    if(perf<1)perf=1;
+    if(perf>=sizeof(houji_stock_gpu_opps)/sizeof(houji_stock_gpu_opps[0]))
+        perf=sizeof(houji_stock_gpu_opps)/sizeof(houji_stock_gpu_opps[0])-1;
+    if(bandwidth)*bandwidth=houji_stock_gpu_bw[perf];
+    return perf;
+}
