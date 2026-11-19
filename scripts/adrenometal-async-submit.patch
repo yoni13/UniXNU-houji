@@ -1,0 +1,34 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -3194,7 +3194,17 @@
+ // The kernel driver's own submission times are not recorded: 0 is Metal's answer where they are unavailable.
+ - (CFTimeInterval)kernelStartTime {return 0;}
+ - (CFTimeInterval)kernelEndTime {return 0;}
+-- (BOOL)commitAndWaitUntilSubmitted {[(id<MTLCommandBuffer>)self commit];[self waitUntilScheduled];return !self.failedLocally;}
++// houji: NATIVE_METAL_ASYNC_SUBMIT (boot argument m2v-async=1): on the render server's own threads, with the encoding thread, return
++// once the commit is recorded instead of draining the encoding thread. CoreAnimation's flush called this for every frame, and the drain
++// held its display thread until the runtime had encoded and submitted the whole frame (root202: 352 of 1000 samples of a Search swipe in
++// encodeDrain under CA::OGL::MetalContext::flush), so CoreAnimation's encoding and the runtime's never overlapped. The order is kept (every
++// later call runs on the same thread after this commit), every read-back still drains, and the completion waits are unchanged.
++static bool asyncSubmit() {static const bool on=getenv("NATIVE_METAL_ASYNC_SUBMIT")!=nullptr;return on;}
++- (BOOL)commitAndWaitUntilSubmitted {
++ [(id<MTLCommandBuffer>)self commit];
++ if(asyncSubmit() && gEncodeThread && onRenderServerThread())return !self.failedLocally;
++ [self waitUntilScheduled];return !self.failedLocally;
++}
+ - (CFTimeInterval)GPUStartTime {return self.submitted && !self.failedLocally?nmb_command_buffer_gpu_time(_handle,false):0;}
+ - (CFTimeInterval)GPUEndTime {return self.submitted && !self.failedLocally?nmb_command_buffer_gpu_time(_handle,true):0;}
+ // An encoder whose runtime half `make` makes, on the encoding thread when that is on. A refused encoder is still an object: its calls
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -352,6 +352,10 @@
+         // by Mesa's option parser): with it the BV thread bins a pass while BR still renders the one before. tu-cb=1 turns it on.
+         // It stays at Mesa's default, off: what it gains here was never measured.
+         if (bootArgSet("tu-cb=1")) setenv("tu_allow_concurrent_binning", "true", 0);
++        // m2v-async=1: the render server's commitAndWaitUntilSubmitted returns without draining its encoding thread (the frontend's
++        // asyncSubmit); off by default.
++        if (bootArgSet("m2v-async=1")) setenv("NATIVE_METAL_ASYNC_SUBMIT", "1", 1);
++        else unsetenv("NATIVE_METAL_ASYNC_SUBMIT");
+         // diag=1 turns on every diagnostic of the GPU stack in this process: the frontend's frame trace, Turnip's pass stamps and
+         // submission ring, the runtime's stage ring, and in the render server the status and telemetry lines. Without it none of them runs.
+         if (bootArgSet("diag=1") || bootArgSet("gpu-trace=1")) setenv("SHENG_DIAG", "1", 1);
