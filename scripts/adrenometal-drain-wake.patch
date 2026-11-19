@@ -1,0 +1,56 @@
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -2214,7 +2214,13 @@
+  std::deque<EncodeBatch *> batches;
+  std::vector<EncodeBatch *> spare;
+  uint64_t queued=0,done=0;
++ uint32_t drainers=0;uint64_t wakeAt=UINT64_MAX;   // m2v-wake=1: the threads in encodeDrain and the lowest batch one of them waits for
+ };
++// houji: NATIVE_METAL_DRAIN_WAKE (boot argument m2v-wake=1): the encoding thread wakes encodeDrain's waiters only when no one waits
++// for nothing (no broadcast) and once the lowest batch a waiter waits for is done, instead of a broadcast after every batch. root228:
++// backboardd's encoding thread was in psynch_cvbroad in 108 of 1000 samples of a Control Center open (root207: 162), each early wake a
++// context switch of the waiting render server thread that found its batch not done and slept again.
++static bool drainWake() {static const bool on=getenv("NATIVE_METAL_DRAIN_WAKE")!=nullptr;return on;}
+ static thread_local bool tOnEncodeThread;
+ static thread_local EncodeBatch *tBatch;
+ // The encoding thread does the render server's frame work for CoreAnimation's render thread, so it runs at that thread's scheduling
+@@ -2252,7 +2258,9 @@
+     const uint64_t cpuBefore=diagOn()?threadCpuUs():0;
+     @autoreleasepool {batch->run();}
+     batchStage(batch->serial,3,batch->enqueuedUs,tasks,depth,diagOn()?(uint32_t)(threadCpuUs()-cpuBefore):0);tEncodeBatchId=0;
+-    lock.lock();t.spare.push_back(batch);t.done++;t.idle.notify_all();
++    lock.lock();t.spare.push_back(batch);t.done++;
++    if(!drainWake())t.idle.notify_all();
++    else if(t.drainers && t.done>=t.wakeAt){t.wakeAt=UINT64_MAX;t.idle.notify_all();}
+    }
+    return nullptr;
+   },t);
+@@ -2291,7 +2299,14 @@
+  EncodeThread &t=encodeThread();
+  std::unique_lock<std::mutex> lock(t.lock);
+  const uint64_t target=t.queued;
+- t.idle.wait(lock,[&]{return t.done>=target;});
++ if(!drainWake()){t.idle.wait(lock,[&]{return t.done>=target;});return;}
++ if(t.done>=target)return;
++ t.drainers++;
++ while(t.done<target) {
++  if(target<t.wakeAt)t.wakeAt=target;   // a waiter woken for a lower target sets its own again
++  t.idle.wait(lock);
++ }
++ if(--t.drainers==0)t.wakeAt=UINT64_MAX;
+ }
+ template<class F> struct TracedEncodeCall {
+  std::optional<F> work;const char *label;uint32_t line;uint64_t id,command,parent,queued;
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -356,6 +356,10 @@
+         // asyncSubmit); off by default.
+         if (bootArgSet("m2v-async=1")) setenv("NATIVE_METAL_ASYNC_SUBMIT", "1", 1);
+         else unsetenv("NATIVE_METAL_ASYNC_SUBMIT");
++        // m2v-wake=1: the encoding thread wakes encodeDrain's waiters only once the batch they wait for is done (the frontend's
++        // drainWake); off by default.
++        if (bootArgSet("m2v-wake=1")) setenv("NATIVE_METAL_DRAIN_WAKE", "1", 1);
++        else unsetenv("NATIVE_METAL_DRAIN_WAKE");
+         // diag=1 turns on every diagnostic of the GPU stack in this process: the frontend's frame trace, Turnip's pass stamps and
+         // submission ring, the runtime's stage ring, and in the render server the status and telemetry lines. Without it none of them runs.
+         if (bootArgSet("diag=1") || bootArgSet("gpu-trace=1")) setenv("SHENG_DIAG", "1", 1);
