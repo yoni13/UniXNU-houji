@@ -775,6 +775,30 @@ static void ustack_thread(void *arg __unused,wait_result_t result __unused)
     os_atomic_store(&ustack_busy,0,release);
     thread_terminate(current_thread());
 }
+/* "threads PID": every thread of PID with its id, CPU time (user + system, ms), run state, priority and name. Two calls apart give
+ * each thread's CPU over the interval: which thread of a busy daemon to sample with "ustack PID TID". */
+static void threads_command(const char *args)
+{
+    const int pid=(int)strtoq(args,NULL,10);
+    proc_t p=pid>0?proc_find(pid):PROC_NULL;
+    task_t task=p?proc_task(p):TASK_NULL;
+    if (task!=TASK_NULL) task_reference(task);
+    if (p) proc_rele(p);
+    if (task==TASK_NULL) { printf("HOUJI THREADS: no pid %d\n",pid);return; }
+    uint64_t *tids=kalloc_data(sizeof(uint64_t)*512,Z_WAITOK|Z_ZERO);
+    int n=get_task_numacts(task);if (n>512) n=512;
+    const int got=tids && n>0?fill_taskthreadlist(task,tids,n,true)/(int)sizeof(uint64_t):0;
+    for (int i=0;i<got;i++) {
+        struct proc_threadinfo_internal info={0};
+        if (!tids[i] || fill_taskthreadinfo(task,tids[i],true,&info,NULL,NULL)) continue;
+        printf("HOUJI THREADS %d %llu cpu %llu ms state %d pri %d %.32s\n",pid,(unsigned long long)tids[i],
+            (unsigned long long)((info.pth_user_time+info.pth_system_time)/1000000ull),info.pth_run_state,info.pth_curpri,info.pth_name);
+        delay(2000);
+    }
+    printf("HOUJI THREADS: pid %d, %d threads\n",pid,got);
+    if (tids) kfree_data(tids,sizeof(uint64_t)*512);
+    task_deallocate(task);
+}
 static void ustack_command(const char *args)
 {
     long long v[3]={0,0,1500};int n=0;const char *s=args;
@@ -1444,6 +1468,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"qos ",4)) qos_command(u.command+4);
     else if (!strncmp(u.command,"cores ",6)) cores_command(u.command+6);
     else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
+    else if (!strncmp(u.command,"threads ",8)) threads_command(u.command+8);
     else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"io")) io_command();
     else if (!strncmp(u.command,"ps ",3)) ps_command(u.command+3);
