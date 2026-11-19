@@ -1,0 +1,39 @@
+diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl_darwin.cc
+index 9a75087..0209617 100644
+--- a/src/freedreno/vulkan/tu_knl_darwin.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -1240,6 +1240,9 @@ darwin_submit_begin_command_buffer(struct tu_device *device, void *_submit)
+    util_dynarray_append(&submit->starts, at);
+ }
+ 
++/* Command stream entries left out because their BO was already freed (darwin_submit_add_entries). */
++static uint32_t darwin_freed_entries_skipped;
++
+ static void
+ darwin_submit_add_entries(struct tu_device *device, void *_submit,
+                           struct tu_cs_entry *entries, unsigned num_entries)
+@@ -1247,13 +1250,23 @@ darwin_submit_add_entries(struct tu_device *device, void *_submit,
+    struct tu_darwin_queue_submit *submit = (struct tu_darwin_queue_submit *)_submit;
+    NativeAdrenoAbiSubmitBuffer *cmds = (NativeAdrenoAbiSubmitBuffer *)
+       util_dynarray_grow(&submit->commands, NativeAdrenoAbiSubmitBuffer, num_entries);
++   unsigned kept = 0;
+    for (unsigned i = 0; i < num_entries; i++) {
+-      cmds[i] = (NativeAdrenoAbiSubmitBuffer) {
++      /* A command stream entry whose BO was already freed (darwin_bo_finish zeroes the struct: handle 0): the kernel refuses the whole
++       * submission (kIOReturnBadArgument at the buffer lookup) and the device is lost, after which the render server draws nothing
++       * (houji root171: backboardd, handle 0). The freed buffer's commands are not valid either way; the entry is left out and
++       * counted (darwin_freed_entries_skipped) so the rest of the submission and the device go on. */
++      if (!entries[i].bo || !entries[i].bo->darwin_handle) {
++         p_atomic_inc(&darwin_freed_entries_skipped);
++         continue;
++      }
++      cmds[kept++] = (NativeAdrenoAbiSubmitBuffer) {
+          .handle = entries[i].bo->darwin_handle,
+          .iova = entries[i].bo->iova + entries[i].offset,
+          .bytes = entries[i].size,
+       };
+    }
++   submit->commands.size -= (num_entries - kept) * sizeof(NativeAdrenoAbiSubmitBuffer);
+ }
+ 
+ static void
