@@ -688,7 +688,7 @@ extern void vm_shared_region_deallocate(struct vm_shared_region *);
 extern kern_return_t vm_shared_region_start_address(struct vm_shared_region *,mach_vm_offset_t *);
 extern vm_map_t get_task_map(task_t);
 extern kern_return_t copyinmap(vm_map_t,vm_map_offset_t,void *,vm_size_t);
-#define USTACK_DEPTH 8
+#define USTACK_DEPTH 20   /* 8 frames did not reach the caller of a UIKit loop (root214) */
 #define USTACK_SLOTS 512
 struct ustack_slot { uint64_t pc[USTACK_DEPTH]; uint32_t count, running; };
 /* The slots are allocated per run: a static table this size does not fit the kernel's __DATA beside the retained segments. */
@@ -767,8 +767,10 @@ static void ustack_thread(void *arg __unused,wait_result_t result __unused)
         struct ustack_slot *best=NULL;
         for (int i=0;i<USTACK_SLOTS;i++) if (ustack.slots[i].count && (!best || ustack.slots[i].count>best->count)) best=&ustack.slots[i];
         if (!best) break;
-        printf("HOUJI USTACK %u run %u: %llx %llx %llx %llx %llx %llx %llx %llx\n",best->count,best->running,
-               best->pc[0],best->pc[1],best->pc[2],best->pc[3],best->pc[4],best->pc[5],best->pc[6],best->pc[7]);
+        char line[24*USTACK_DEPTH];unsigned at=0;line[0]=0;
+        for (int d=0;d<USTACK_DEPTH && at+20<sizeof line;d++) at+=(unsigned)snprintf(line+at,sizeof line-at," %llx",best->pc[d]);
+        printf("HOUJI USTACK %u run %u:%s\n",best->count,best->running,line);
+        delay(2000);
         best->count=0;
     }
     kfree_data(ustack.slots,sizeof(struct ustack_slot)*USTACK_SLOTS);ustack.slots=NULL;
