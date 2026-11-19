@@ -1,0 +1,21 @@
+diff -ruN a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -617,8 +617,16 @@
+ 	/*
+ 	 * Setup the V=P bootstrap mapping
+ 	 * x5 - total number of L2 entries to allocate
++	 *
++	 * houji: the V=P mapping only carries the switch to the KVA: the kernel, its stacks and the boot arguments lie in the first
++	 * 2 GiB from the kernel's base. Mapping all of memory twice took 2 + 2 x (N + 2) bootstrap pages for N GiB, more than the
++	 * 16 the 4 KiB pool holds from 7 GiB on (root169/root175: 8 GiB stopped at Lbootstrap_tables_exhausted). With 2 GiB here
++	 * the KVA mapping of 9 GiB fits the same 16 pages, and the pool needs no more room in __DATA_CONST.
+ 	 */
+-	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
++	mov		x5,  #(0x80000000 >> ARM_TT_L2_SHIFT)
++	lsr		x6,  x24, #(ARM_TT_L2_SHIFT)
++	cmp		x5,  x6
++	csel	x5,  x6, x5, hi
+ 	/* create_bootstrap_mapping(vbase, pbase, num_ents, L1 table, freeptr) */
+ 	create_bootstrap_mapping x0,  x4,  x5, x1, x2, x6, x10, x11, x12, x13
+ 
