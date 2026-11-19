@@ -1,0 +1,97 @@
+diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl_darwin.cc
+index d684250..9a75087 100644
+--- a/src/freedreno/vulkan/tu_knl_darwin.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -58,6 +58,14 @@ static struct {
+    NativeAdrenoAbiParams params;
+ } dw = { .lock = PTHREAD_MUTEX_INITIALIZER };
+ 
++/* Queue submissions between building their list of buffers and their last kernel submission, under dw.lock. A BO freed meanwhile
++ * may be in that list, so its record cannot take dw.last_fence (an earlier submission's fence, which the GPU may pass while this one
++ * still waits for ring space or is cut in chunks): it takes DARWIN_FENCE_PENDING, never reaped, and the submission that ends last
++ * gives every pending record its own final fence. Without it the BO was released first and the submission named a freed handle:
++ * the kernel refused it (kIOReturnBadArgument at the buffer lookup, houji root165) and Turnip lost the device. */
++static unsigned darwin_submitting;
++#define DARWIN_FENCE_PENDING UINT32_MAX
++
+ /* Preserve the native handle, CPU view and IOVA until the captured ring fence
+  * actually completed. An unrelated later submission never extends this lease.
+  * The queue grows with what is waiting; destruction never waits. */
+@@ -766,7 +774,9 @@ darwin_reap_locked(struct tu_device *dev, struct darwin_retire_state *retire)
+    for (unsigned i = 0; i < total; ++i) {
+       struct darwin_retired_bo *bo = &retire->entries[(retire->head + i) % retire->capacity];
+       bool ready = true;
+-      if (bo->fence) {
++      if (bo->fence == DARWIN_FENCE_PENDING) {
++         ready = false;   /* freed during a queue submission still in progress */
++      } else if (bo->fence) {
+          if (have_pending_fence && bo->fence == pending_fence) {
+             ready = false;
+          } else if (!have_completed_fence || bo->fence != completed_fence) {
+@@ -1166,7 +1176,7 @@ darwin_bo_finish(struct tu_device *dev, struct tu_bo *bo)
+    }
+    if (retire->count < retire->capacity) {
+       pthread_mutex_lock(&dw.lock);
+-      uint32_t fence = dw.last_fence;
++      uint32_t fence = darwin_submitting ? DARWIN_FENCE_PENDING : dw.last_fence;
+       pthread_mutex_unlock(&dw.lock);
+       unsigned slot = (retire->head + retire->count) % retire->capacity;
+       retire->entries[slot] = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
+@@ -1518,6 +1528,27 @@ darwin_submit_chunk(struct tu_queue *queue, const NativeAdrenoAbiSubmitBuffer *e
+    }
+ }
+ 
++/* The end of a queue submission's kernel submissions (fence: its last one's, 0 when none was made). The last one to end resolves the
++ * pending records to its fence, or to the newest one when it made none. Lock order as darwin_bo_finish: retire->lock, then dw.lock. */
++static void
++darwin_submission_ended(struct tu_device *dev, uint32_t fence)
++{
++   struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
++   pthread_mutex_lock(&retire->lock);
++   pthread_mutex_lock(&dw.lock);
++   const bool last = --darwin_submitting == 0;
++   const uint32_t resolved = fence ? fence : dw.last_fence;
++   pthread_mutex_unlock(&dw.lock);
++   if (last) {
++      for (unsigned i = 0; i < retire->count; ++i) {
++         struct darwin_retired_bo *bo = &retire->entries[(retire->head + i) % retire->capacity];
++         if (bo->fence == DARWIN_FENCE_PENDING)
++            bo->fence = resolved;
++      }
++   }
++   pthread_mutex_unlock(&retire->lock);
++}
++
+ static VkResult
+ darwin_queue_submit(struct tu_queue *queue, void *_submit,
+                     struct vk_sync_wait *waits, uint32_t wait_count,
+@@ -1545,6 +1576,9 @@ darwin_queue_submit(struct tu_queue *queue, void *_submit,
+    uint32_t fence = 0;
+    const unsigned total = util_dynarray_num_elements(&submit->commands, NativeAdrenoAbiSubmitBuffer);
+    if (total) {
++      pthread_mutex_lock(&dw.lock);
++      ++darwin_submitting;
++      pthread_mutex_unlock(&dw.lock);
+       const NativeAdrenoAbiSubmitBuffer *all =
+          util_dynarray_element(&submit->commands, NativeAdrenoAbiSubmitBuffer, 0);
+       bool inside = false;
+@@ -1577,8 +1611,10 @@ darwin_queue_submit(struct tu_queue *queue, void *_submit,
+          }
+          uint32_t chunk_fence = 0;
+          VkResult result = darwin_submit_chunk(queue, all + at, count, &chunk_fence, &rec);
+-         if (result != VK_SUCCESS)
++         if (result != VK_SUCCESS) {
++            darwin_submission_ended(dev, fence);
+             return result;
++         }
+          rec.chunks++;
+          pthread_mutex_lock(&dw.lock);
+          darwin_note_fence(chunk_fence);
+@@ -1586,6 +1622,7 @@ darwin_queue_submit(struct tu_queue *queue, void *_submit,
+          fence = chunk_fence;
+          tu_frame_event(38,(uintptr_t)submit,chunk_fence,at,count,rec.busy,rec.space_wait_us,wait_count,signal_count);
+       }
++      darwin_submission_ended(dev, fence);
+       p_atomic_set(&queue->fence, fence);
+       rec.buffers = MIN2(total, 255u);
+       if (inside)
