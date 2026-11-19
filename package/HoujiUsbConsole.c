@@ -917,6 +917,21 @@ extern volatile uint64_t houji_adreno_missing[6];
 extern volatile uint32_t houji_adreno_free_count;
 extern volatile uint64_t houji_adreno_cpumap_refusals[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_view_diag[6] __attribute__((weak_import)),native_adreno_view_kept __attribute__((weak_import));
+/* "gm": the GPU driver's per-method counters (NativeAdrenoUserClient's Tally: calls, failures, last result, total microseconds) and
+ * the BO view counters (clientMemoryForType). Two calls around an action give its allocations, CPU maps and frees and their cost. */
+extern volatile uint32_t native_adreno_method_stats[20][4] __attribute__((weak_import));
+static void gm_command(void)
+{
+    static const char *const names[20]={"?","query","alloc","map","free","submit","wait","time","status","setmeta","getmeta","mkqueue",
+        "closeq","cpumap","cpuunmap","devinfo","import","prio","note","?"};
+    if (&native_adreno_method_stats)
+        for (int m=1;m<20;m++) if (native_adreno_method_stats[m][0])
+            printf("HOUJI GM %s calls %u fails %u last 0x%x us %u\n",names[m],native_adreno_method_stats[m][0],native_adreno_method_stats[m][1],
+                   native_adreno_method_stats[m][2],native_adreno_method_stats[m][3]);
+    if (&native_adreno_view_diag)
+        printf("HOUJI GM views calls %u new %u cached %u refused %u\n",native_adreno_view_diag[0],native_adreno_view_diag[1],
+               native_adreno_view_diag[2],native_adreno_view_diag[3]);
+}
 static void vm_command(void)
 {
     if (houji_adreno_missing[3]) {
@@ -1484,6 +1499,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
     else if (!strncmp(u.command,"threads ",8)) threads_command(u.command+8);
     else if (!strcmp(u.command,"vm")) vm_command();
+    else if (!strcmp(u.command,"gm")) gm_command();
     else if (!strcmp(u.command,"io")) io_command();
     else if (!strncmp(u.command,"ps ",3)) ps_command(u.command+3);
     else if (!strcmp(u.command,"mt")) {
