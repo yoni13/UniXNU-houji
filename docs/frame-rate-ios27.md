@@ -84,6 +84,27 @@ thread, render encoder calls lowered at the call) removes it. root206 (`m2v-asyn
 did not open, its screenshot shows the home screen), Control Center open 24 / 45, close 52 / 91 (4 gaps). One boot each: the
 differences to root204 are within the run-to-run spread except Search open (10-31 -> 38-40) and the home swipe.
 
+### A/B of `metal-flow=6` over four boots (root208-root211)
+
+`t-ab-flow.sh`: A (`metal-flow=6`) and B (the lowering thread), both `gpu-opp=stock vsync=120 tu-bc=8 m2v-async=1`, alternating
+A B A B; each boot settles 90 s after the UI is up (`t-round.sh` SETTLE: 67-68 C down to 53-54 C, no guard trip), then two rounds
+of t-actions. Animation frame rates (rounds where Settings did not open, and windows of 4 gaps, left out):
+
+| Operation | A (root208, root210) | B (root209, root211) |
+|---|---|---|
+| Settings scroll | 112-115 | 109-114 |
+| Home swipe | 68-73 (mean 70) | 65-73 (mean 68) |
+| Control Center close | 56-77 (mean 65) | 48-77 (mean 58) |
+| Settings open | 43-65 | 53-57 |
+| Settings close | 52-61 (mean 57) | 50-57 (mean 54) |
+| Search close | 52 | 47-57 (mean 51) |
+| Search open | 38-42 (mean 40) | 30-36 (mean 34) |
+| Control Center open | 21-35 (mean 30) | 28-35 (mean 32) |
+
+A is kept. Control Center open is the slowest: its first frame comes 200-380 ms after the gesture in most runs, and root207 found
+backboardd's encoding thread busy through it (668 of 1000 samples running), partly in pipeline variant compilation
+(`RenderVariant::compiled` under `Device::owned_kernel`).
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
