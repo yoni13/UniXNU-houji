@@ -13,3 +13,4 @@ houji-stage0-optional-runtime.patch
 houji-debug-console.patch
 houji-iphone-shared-region.patch
 houji-wifi-userspace.patch
+houji-bootstrap-9gib.patch
