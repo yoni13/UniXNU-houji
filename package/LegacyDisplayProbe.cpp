@@ -200,9 +200,9 @@ void native_legacy_frame_colors_observed(const uint32_t *colors,const uint64_t *
     native_legacy_frame_color_other[n]=other;
 }
 // The life of every accepted swap, from the kernel's side: validated (the client submitted it), offered to the GPU copy (or started on the CPU),
-// and retired. Times are microseconds since boot; the last 64 are kept.
+// and retired. Times are microseconds since boot; the last 128 are kept (about 1 s at 120 Hz).
 struct SwapEvent {uint64_t submitted,offered,done;uint32_t number;};
-static SwapEvent swapEvents[64];static uint32_t swapEventCount;
+static SwapEvent swapEvents[128];static uint32_t swapEventCount;
 static uint64_t houjiCpuFrameCounter;
 extern "C" uint64_t houji_cpu_frame_activity(void) {
     return __atomic_load_n(&houjiCpuFrameCounter,__ATOMIC_RELAXED);
@@ -212,21 +212,21 @@ extern "C" void native_legacy_swap_stage(unsigned stage) {
     uint32_t total=swapEventCount;
     if(stage==0) {
         __atomic_fetch_add(&houjiCpuFrameCounter,1ULL,__ATOMIC_RELAXED);
-        SwapEvent &e=swapEvents[total%64];e={now,0,0,total+1};swapEventCount=total+1;return;
+        SwapEvent &e=swapEvents[total%128];e={now,0,0,total+1};swapEventCount=total+1;return;
     }
-    uint32_t first=total>64?total-64:0;
+    uint32_t first=total>128?total-128:0;
     for(uint32_t i=first;i<total;++i) {
-        SwapEvent &e=swapEvents[i%64];
+        SwapEvent &e=swapEvents[i%128];
         if(stage==1 && !e.offered && !e.done){e.offered=now;return;}
         if(stage==2 && !e.done){e.done=now;if(!e.offered)e.offered=now;return;}
     }
 }
 extern "C" unsigned native_legacy_swap_timeline(char *out,unsigned cap) {
     unsigned at=0;out[0]=0;
-    uint32_t total=swapEventCount,first=total>40?total-40:0;
+    uint32_t total=swapEventCount,first=total>128?total-128:0;
     for(uint32_t i=first;i<total && at+90<cap;++i) {
-        const SwapEvent &e=swapEvents[i%64];
-        uint64_t previous=i>first?swapEvents[(i-1)%64].submitted:e.submitted;
+        const SwapEvent &e=swapEvents[i%128];
+        uint64_t previous=i>first?swapEvents[(i-1)%128].submitted:e.submitted;
         at+=snprintf(out+at,cap-at,"W%u t=%llu.%03llus +%llums offer=%lldms done=%lldms\n",e.number,(unsigned long long)(e.submitted/1000000),
             (unsigned long long)((e.submitted/1000)%1000),(unsigned long long)((e.submitted-previous)/1000),
             e.offered?(long long)((e.offered-e.submitted)/1000):-1LL,e.done?(long long)((e.done-e.submitted)/1000):-1LL);

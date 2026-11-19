@@ -1199,18 +1199,18 @@ static void gop_command(void)
 }
 static void swaps_command(void)
 {
-    /* The display driver's last 40 swaps (submitted, offered to the copy, done), same clock as HOUJI GESTURE AT. */
+    /* The display driver's last 128 swaps (submitted, offered to the copy, done), same clock as HOUJI GESTURE AT. */
     if (!native_legacy_swap_timeline) { printf("HOUJI SWAPS: unavailable\n");return; }
-    char *buffer=kalloc_data(4096,Z_WAITOK|Z_ZERO);
+    char *buffer=kalloc_data(12288,Z_WAITOK|Z_ZERO);
     if (!buffer) return;
-    native_legacy_swap_timeline(buffer,4096);
+    native_legacy_swap_timeline(buffer,12288);
     for (char *line=buffer,*next;line && *line;line=next) {
         next=strchr(line,'\n');
         if (next) *next++=0;
         printf("HOUJI SWAPS: %s\n",line);
         delay(2000);
     }
-    kfree_data(buffer,4096);
+    kfree_data(buffer,12288);
 }
 /* One line per tap or swipe: when each contact change was published and when NativeHidInput handed each touch report to the HID
  * event driver (native_touch_recent), in ms from the touch-down: span, largest step, and the delay of the first and last report. */
