@@ -74,6 +74,16 @@ Settings close 95 / 57, home swipe 53 / 74 (median 9 ms), Control Center close 7
 30 / 48, Search open 10 / 31, Search close 54 / 46. Screenshots of Settings, Control Center and the home screen are complete (the
 Settings row icons, blank grey in root180, now draw); no GPU submit errors or map refusals.
 
+### Render lowering on the encoding thread (`metal-flow=6`, root205-root206)
+
+root205 (`m2v-async=1`): during Search the encoding thread waited in metal2vulkan's `CommandBuffer::settle_ended`, under
+`render_command_encoder` from `nmb_render_encoder_new`: each new render encoder waited for the lowering thread to finish the last
+one's end, a hand-off per pass in CoreAnimation's blur chains. The existing boot argument `metal-flow=6` (bit 1 off: no lowering
+thread, render encoder calls lowered at the call) removes it. root206 (`m2v-async=1 metal-flow=6`), rounds 1 / 2: home swipe 72 / 72 fps
+(median gap 9 ms), Search open 38 / 40, Search close 51 / 54, Settings close 58 / 69, Settings scroll 112 (round 2; in round 1 Settings
+did not open, its screenshot shows the home screen), Control Center open 24 / 45, close 52 / 91 (4 gaps). One boot each: the
+differences to root204 are within the run-to-run spread except Search open (10-31 -> 38-40) and the home swipe.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
