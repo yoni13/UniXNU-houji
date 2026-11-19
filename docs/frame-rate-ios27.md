@@ -61,6 +61,19 @@ extension 24 % vs backboardd 7 % and nothing else above 3 %; the mean GPU map 28
 Search after these (root201 vs root194, per render command buffer): commit to the first kernel submission median 3.1 -> 1.4 ms,
 commit to the last pass 9.9 -> 5.2 ms; the slow tail stays (p90 15-16 ms), and Search renders only about 38 command buffers in 2.6 s.
 
+### Asynchronous submission (`m2v-async=1`, root204)
+
+root202: during Search, backboardd's display thread spent 352 of 1000 samples in `CA::OGL::MetalContext::flush` ->
+`-[NBCommandBuffer commitAndWaitUntilSubmitted]` -> `waitUntilScheduled` -> `encodeDrain()` (symbolized with the plugin's link map,
+base 0x115f00000): every frame's flush waited until the encoding thread had translated and submitted the whole frame, so
+CoreAnimation's encoding and the runtime's never overlapped. `adrenometal-async-submit.patch` (boot argument `m2v-async=1`) returns
+from that call once the commit is recorded, on the render server's threads only; order, read-backs and completion waits are unchanged.
+
+root204 (`gpu-opp=stock vsync=120 tu-bc=8 m2v-async=1`, killer off), rounds 1 / 2: Settings scroll 105 / 112 fps (median gap 8-9 ms),
+Settings close 95 / 57, home swipe 53 / 74 (median 9 ms), Control Center close 70, Control Center open 62 / 49, Settings open
+30 / 48, Search open 10 / 31, Search close 54 / 46. Screenshots of Settings, Control Center and the home screen are complete (the
+Settings row icons, blank grey in root180, now draw); no GPU submit errors or map refusals.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
