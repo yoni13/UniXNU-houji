@@ -24,6 +24,8 @@ extern char boot_progress_ext[8][48];
 volatile uint32_t native_aks_opens, native_aks_calls;
 static volatile uint32_t aks_count[96];
 static volatile int32_t aks_rc[96];
+static volatile int32_t aks_pid[96];   /* the last caller of each selector (console "aks") */
+extern "C" int proc_selfpid(void);
 bool native_aks_state_enabled(void) {
     static int cached = -1;
     if (cached < 0) {
@@ -84,8 +86,15 @@ void native_aks_opened(void) {
 }
 void native_aks_call(uint32_t selector, int32_t result) {
     native_aks_calls = native_aks_calls + 1;
-    if (selector < 96) { aks_count[selector] = aks_count[selector] + 1; aks_rc[selector] = result; }
+    if (selector < 96) { aks_count[selector] = aks_count[selector] + 1; aks_rc[selector] = result; aks_pid[selector] = proc_selfpid(); }
     aks_publish();
+}
+// Console "aks": the calls so far, per selector with its last result and last caller (root215: Spotlight's main thread spun on
+// the keyboard's dictation availability, which follows the device lock state the key store answers).
+extern "C" void native_aks_report(void) {
+    IOLog("HOUJI AKS: opens %u calls %u\n", native_aks_opens, native_aks_calls);
+    for (unsigned sel = 0; sel < 96; ++sel)
+        if (aks_count[sel]) IOLog("HOUJI AKS %u count %u last 0x%x pid %d\n", sel, aks_count[sel], (unsigned)aks_rc[sel], aks_pid[sel]);
 }
 static void native_keyevents_probe(void) {
     unsigned enabled = 0, original = 0;

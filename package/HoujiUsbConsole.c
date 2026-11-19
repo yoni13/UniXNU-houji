@@ -1502,6 +1502,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"threads ",8)) threads_command(u.command+8);
     else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"gm")) gm_command();
+    else if (!strcmp(u.command,"aks")) { extern void native_aks_report(void) __attribute__((weak_import)); if (native_aks_report) native_aks_report(); else printf("HOUJI AKS: unavailable\n"); }
     else if (!strcmp(u.command,"io")) io_command();
     else if (!strncmp(u.command,"ps ",3)) ps_command(u.command+3);
     else if (!strcmp(u.command,"mt")) {
