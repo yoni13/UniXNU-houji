@@ -1,0 +1,35 @@
+--- a/drivers/Adreno740/NativeAdrenoUserClient.cpp
++++ b/drivers/Adreno740/NativeAdrenoUserClient.cpp
+@@ -725,16 +725,28 @@
+     tally_result=status;
+     return status;
+ }
++/* houji: BoCpuMap refusals, for the console's "vm": [0] not open, [1] no such handle, [2] unreleasable, [3] imported, [4] leases full,
++ * [5] the last refused handle, [6] its pid, [7] when (mach time). A refusal is Turnip's VK_ERROR_MEMORY_MAP_FAILED (root191: backboardd
++ * wrote through the NULL command stream of a BO it could not map, in tu_init_hw from tu_BeginCommandBuffer). */
++extern "C" {volatile uint64_t houji_adreno_cpumap_refusals[8];}
++static IOReturn houjiCpuMapRefused(unsigned why,uint32_t handle,IOReturn status)
++{
++    __atomic_fetch_add(&houji_adreno_cpumap_refusals[why],1,__ATOMIC_RELAXED);
++    houji_adreno_cpumap_refusals[5]=handle;houji_adreno_cpumap_refusals[6]=(uint64_t)proc_selfpid();
++    houji_adreno_cpumap_refusals[7]=mach_absolute_time();
++    return status;
++}
+ IOReturn NativeAdrenoUserClient::cpuMap(const NativeAdrenoAbiBoCpuMap *request,
+     NativeAdrenoAbiBoCpuMapReply *reply)
+ {
+     if(!request || !reply)return kIOReturnBadArgument;*reply={};
+-    if(!open_)return kIOReturnNotReady;
++    if(!open_)return houjiCpuMapRefused(0,request->handle,kIOReturnNotReady);
+     Entry *entry=find(request->handle);
+-    if(!entry || entry->unreleasable)return kIOReturnBadArgument;
++    if(!entry)return houjiCpuMapRefused(1,request->handle,kIOReturnBadArgument);
++    if(entry->unreleasable)return houjiCpuMapRefused(2,request->handle,kIOReturnBadArgument);
+     /* An imported BO is the caller's own memory, already mapped where it came from. */
+-    if(entry->memory.imported())return kIOReturnUnsupported;
+-    if(entry->mapping_leases==UINT32_MAX)return kIOReturnNoResources;
++    if(entry->memory.imported())return houjiCpuMapRefused(3,request->handle,kIOReturnUnsupported);
++    if(entry->mapping_leases==UINT32_MAX)return houjiCpuMapRefused(4,request->handle,kIOReturnNoResources);
+     ++entry->mapping_leases;
+     reply->token=entry->token;reply->bytes=entry->memory.bytes();
+     return kIOReturnSuccess;

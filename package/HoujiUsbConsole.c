@@ -915,6 +915,8 @@ static void owners_print(const char *what,volatile uint32_t (*table)[4])
 extern volatile uint64_t houji_adreno_submit_errors[5];
 extern volatile uint64_t houji_adreno_missing[6];
 extern volatile uint32_t houji_adreno_free_count;
+extern volatile uint64_t houji_adreno_cpumap_refusals[8] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_view_diag[6] __attribute__((weak_import)),native_adreno_view_kept __attribute__((weak_import));
 static void vm_command(void)
 {
     if (houji_adreno_missing[3]) {
@@ -931,6 +933,18 @@ static void vm_command(void)
         printf("HOUJI VM: gpu submit errors %llu last 0x%llx pid %llu at %llu (1 fence wait, 2 buffer, 3 ring) %llu ms ago\n",
                houji_adreno_submit_errors[0],houji_adreno_submit_errors[1],houji_adreno_submit_errors[2],houji_adreno_submit_errors[3],ago_ms);
     }
+    if (&houji_adreno_cpumap_refusals) {
+        /* Turnip's VK_ERROR_MEMORY_MAP_FAILED has two sources: BoCpuMap refusals and refused views (clientMemoryForType). */
+        uint64_t ago_ms=0;
+        if (houji_adreno_cpumap_refusals[7]) { absolutetime_to_nanoseconds(mach_absolute_time()-houji_adreno_cpumap_refusals[7],&ago_ms);ago_ms/=1000000; }
+        printf("HOUJI VM: gpu cpumap refusals not-open %llu no-handle %llu unreleasable %llu imported %llu leases %llu; last handle %llu pid %llu %llu ms ago\n",
+               houji_adreno_cpumap_refusals[0],houji_adreno_cpumap_refusals[1],houji_adreno_cpumap_refusals[2],houji_adreno_cpumap_refusals[3],
+               houji_adreno_cpumap_refusals[4],houji_adreno_cpumap_refusals[5],houji_adreno_cpumap_refusals[6],ago_ms);
+    }
+    if (&native_adreno_view_diag)
+        printf("HOUJI VM: gpu views calls %u new %u cached %u refused %u last 0x%x inside %u kept %u\n",native_adreno_view_diag[0],
+               native_adreno_view_diag[1],native_adreno_view_diag[2],native_adreno_view_diag[3],native_adreno_view_diag[4],native_adreno_view_diag[5],
+               &native_adreno_view_kept?native_adreno_view_kept:0);
     kills_print();
     owners_print("import",native_adreno_import_owners);
     owners_print("gpu-bo",native_adreno_bo_owners);
