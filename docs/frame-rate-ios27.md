@@ -105,6 +105,25 @@ A is kept. Control Center open is the slowest: its first frame comes 200-380 ms 
 backboardd's encoding thread busy through it (668 of 1000 samples running), partly in pipeline variant compilation
 (`RenderVariant::compiled` under `Device::owned_kernel`).
 
+### What limits Search and Control Center now (root212-root219)
+
+- **Not pipeline compiles.** root212 (`diag=1`, `t-mtdiff.sh`): one Control Center open made no pipeline; three made 9 (12 ms),
+  every driver shader-cache lookup a hit; three Searches made 25 pipelines (50 ms). Search draws ~2900 render passes per run.
+- **Not backboardd.** root213: its CoreAnimation display thread waited for the next vsync in 764 of 1000 samples during Search
+  (637 during Control Center), in `swap_wait_timeout` 26-34. The frames are not produced faster than the content changes.
+- **Spotlight spins.** root214/215 (`ustack` now 20 frames): the Spotlight process's main thread runs at 100 % of a core from the first
+  Search on, idle included (1500 of 1500 samples running; `top` 1018-1019 per mille). Its deepest full stacks:
+  AssistantServices -> `-[UIDictationConnection dictationConnnectionDidChangeAvailability:]` -> `-[UIDictationController
+  postNotificationName:userInfo:]` -> `-[UISystemKeyboardDockController updateDockItemsVisibility]` -> `configuredGlyphWithName:` ->
+  `+[UIImage imageNamed:inBundle:...]` -> `_UIImageCollectImagePathsForPath`: the keyboard dock is rebuilt, its glyphs looked up by
+  path, again and again. Seed `leanlc3` (`com.apple.assistant.support` `Dictation Enabled` and `Assistant Enabled` false, root217)
+  changes the branch taken (`+0x4dc` instead of `+0x510`) but not the spin; launchd logs no lookup storm (root218: 261 lines in
+  12 s); booting without the Wi-Fi arguments (root219) does not stop it either. The trigger is queued to the main queue and is not
+  on these stacks.
+- **assetsd** sometimes sits at ~100 % at idle too (root214/215), and two widget extensions after a data reset.
+- Side observation, one boot: without `wifi=5 wifi-userspace=1` (root219) the warm swipe rounds put 77-82 % of frames within 20 ms
+  against 53-61 % with them; to be A/B tested.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
