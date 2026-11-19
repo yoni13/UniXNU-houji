@@ -30,6 +30,20 @@ encoding stays under 2 ms for most frames. All passes run in GMEM (`RM gmem 1213
 frame, so the cost is per pass or per texture read rather than pixel count. Next: export Turnip's per-pass ring (`tu_pass_ring`:
 mode, size, linear attachments, shader statistics) and find the passes of the blur materials.
 
+### What the per-pass trace shows (root194, `diag=1`, `t-passes.sh` / `decode-pass-trace.py`)
+
+The `mt` "frame-gpu" times are not GPU execution. Turnip's own pass timestamps (frames.trace type 7) put the GPU at 6-7 % busy over
+two Search or Settings runs and 21 % over Control Center; a Search command buffer holds about 2.9 ms of pass time. Per render command
+buffer (pass clock aligned to the CPU clock by the minimum record-to-start gap, so lower bounds): commit to the first pass 1.6-3.7 ms
+(p90 up to 9 ms), first to last pass 4.6 ms for Search and 14.3 ms for Control Center with 2.9 / 5.9 ms of it in passes, GPU end to the
+completion callback 1.3-2.2 ms. Core Animation waits for every render command buffer (`waitUntilCompleted`, one per frame, one thread:
+median 2.7 ms Search, 10.8 ms Control Center), so frames do not overlap and those gaps are frame time. Kernel submissions are not the
+wait: about 60 us each, no wait for an unsubmitted sync, no ring-space waits. `tu-debug=sysmem` (root195) did not change the rates
+(Search 31-34 fps), so GMEM load/store is not the main cost either.
+
+Next: what fills the gaps between passes of one command buffer (its 2.5-3.5 kernel submissions, the presenter's copy, cache
+maintenance), and why Core Animation waits for completion instead of handing the swap a fence.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
