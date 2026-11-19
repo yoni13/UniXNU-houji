@@ -888,8 +888,15 @@ static void owners_print(const char *what,volatile uint32_t (*table)[4])
         printf("HOUJI VM: %s owner %u %s %u MiB in %u\n",what,table[i][0],name,table[i][1]>>10,table[i][2]);
     }
 }
+extern volatile uint64_t houji_adreno_submit_errors[5];
 static void vm_command(void)
 {
+    {
+        uint64_t ago_ms=0;
+        if (houji_adreno_submit_errors[4]) { absolutetime_to_nanoseconds(mach_absolute_time()-houji_adreno_submit_errors[4],&ago_ms);ago_ms/=1000000; }
+        printf("HOUJI VM: gpu submit errors %llu last 0x%llx pid %llu at %llu (1 fence wait, 2 buffer, 3 ring) %llu ms ago\n",
+               houji_adreno_submit_errors[0],houji_adreno_submit_errors[1],houji_adreno_submit_errors[2],houji_adreno_submit_errors[3],ago_ms);
+    }
     kills_print();
     owners_print("import",native_adreno_import_owners);
     owners_print("gpu-bo",native_adreno_bo_owners);
