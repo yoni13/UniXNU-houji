@@ -1,0 +1,13 @@
+--- a/bridge/NativeMetalObjects.rs
++++ b/bridge/NativeMetalObjects.rs
+@@ -39,7 +39,9 @@
+     // A refusal on a lost device names the place in the runtime that first recorded the loss.
+     let why = match metal2vulkan_runtime::Device::lost_at() {
+         // The place within the runtime's sources, not the build tree's path before them.
+-        Some((file, line)) if why.contains("DeviceLost") => {
++        // houji: every refusal once the device was lost (a command buffer refused MadeBeforeRecovery after the recovery too), so the
++        // render server's problem rows name the check or Vulkan call that lost it.
++        Some((file, line)) if !why.contains(" (lost at ") => {
+             let file = file.rfind("/src/").map_or(file, |at| &file[at + 5..]);
+             format!("{why} (lost at {file}:{line})")
+         }
