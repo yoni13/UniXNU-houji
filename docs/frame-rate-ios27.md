@@ -130,6 +130,13 @@ backboardd's encoding thread busy through it (668 of 1000 samples running), part
   functions (0x1992fe714: load a weak reference, call a block; 0x1992fe770: respondsToSelector:, then the delegate method with the
   stored argument). 0x1992fe770 is referenced once, at 0x199305094, in a function (0x199305054) that builds that block and hands it
   to a queue; 0x1992fe714 at 0x19934f058. Who calls 0x199305054, with what availability, is the next step up.
+- **It is the network availability that flips.** The delegate's `-[AFDictationConnection _tellSpeechDelegateAvailabilityChanged]`
+  (found through the relative method list with the cache's selector base, `dsc-method.py`) comes from `networkAvailability:isAvailable:`,
+  whose block announces a change only when the new value differs from `_lastBroadcastNetworkAvailability`: Spotlight's
+  `AFNetworkAvailability` (a path monitor, the `daemon.network.available` notify state, live DNS reachability) flips between
+  available and unavailable hundreds of times a second on this phone, which has no joined network. Seed `leanlc4` (assistantd also
+  removed, root226/227) does not change it: Spotlight 1018 per mille, ~470 device-state reads a second. Next: a joined Wi-Fi network,
+  so every evaluation says available.
 - **assetsd** sometimes sits at ~100 % at idle too (root214/215), and two widget extensions after a data reset.
 - Wi-Fi: one boot without `wifi=5 wifi-userspace=1` (root219) looked smoother, but the A/B over four boots (`t-ab-wifi.sh`,
   root220-root223, seed leanlc3) shows no difference: without / with Wi-Fi, Settings scroll 114-115 / 111-116 fps, home swipe 68-75 /
