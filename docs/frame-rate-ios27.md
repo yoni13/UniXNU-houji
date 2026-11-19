@@ -121,8 +121,10 @@ backboardd's encoding thread busy through it (668 of 1000 samples running), part
   12 s); booting without the Wi-Fi arguments (root219) does not stop it either. The trigger is queued to the main queue and is not
   on these stacks.
 - **assetsd** sometimes sits at ~100 % at idle too (root214/215), and two widget extensions after a data reset.
-- Side observation, one boot: without `wifi=5 wifi-userspace=1` (root219) the warm swipe rounds put 77-82 % of frames within 20 ms
-  against 53-61 % with them; to be A/B tested.
+- Wi-Fi: one boot without `wifi=5 wifi-userspace=1` (root219) looked smoother, but the A/B over four boots (`t-ab-wifi.sh`,
+  root220-root223, seed leanlc3) shows no difference: without / with Wi-Fi, Settings scroll 114-115 / 111-116 fps, home swipe 68-75 /
+  68-75, Control Center close 58-84 / 54-89, Settings close 55-67 / 53-64, Search close 55-69 / 49-66, Search open 35-41 / 40-50,
+  Control Center open 34-38 / 19-62. Wi-Fi stays.
 
 ## Faults found on the way
 
