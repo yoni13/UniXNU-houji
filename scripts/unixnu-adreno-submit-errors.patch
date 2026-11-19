@@ -1,6 +1,43 @@
 --- a/drivers/Adreno740/NativeAdrenoUserClient.cpp
 +++ b/drivers/Adreno740/NativeAdrenoUserClient.cpp
-@@ -410,6 +410,18 @@
+@@ -343,6 +343,28 @@
+     reply->iova=request->iova;
+     return kIOReturnSuccess;
+ }
++/* houji: the newest 256 buffer frees (handle, pid, mach time, KiB) and the last submission that named a missing buffer: its handle,
++ * whether an entry of that handle still existed (unmapped) or none did, and the matching free's time and size if the ring has it. */
++extern "C" {volatile uint64_t houji_adreno_frees[256][4];volatile uint32_t houji_adreno_free_count;
++            volatile uint64_t houji_adreno_missing[6];uint64_t mach_absolute_time(void);}
++static void noteFree(uint64_t handle,uint64_t kib)
++{
++    const uint32_t n=houji_adreno_free_count;
++    volatile uint64_t *row=houji_adreno_frees[n&255];
++    row[0]=handle;row[1]=(uint64_t)proc_selfpid();row[2]=mach_absolute_time();row[3]=kib;
++    houji_adreno_free_count=n+1;
++}
++static void noteMissing(uint64_t handle,bool unmapped)
++{
++    const uint64_t pid=(uint64_t)proc_selfpid(),now=mach_absolute_time();
++    houji_adreno_missing[0]=handle;houji_adreno_missing[1]=pid;houji_adreno_missing[2]=unmapped;houji_adreno_missing[3]=now;
++    houji_adreno_missing[4]=0;houji_adreno_missing[5]=0;
++    const uint32_t n=houji_adreno_free_count;
++    for(uint32_t i=0;i<256 && i<n;++i) {
++        volatile uint64_t *row=houji_adreno_frees[(n-1-i)&255];
++        if(row[0]==handle && row[1]==pid) {houji_adreno_missing[4]=now-row[2];houji_adreno_missing[5]=row[3];break;}
++    }
++}
+ static void noteFreeRefused(bool imported,uint64_t handle,IOReturn status)
+ {
+     if(!imported)return;
+@@ -375,6 +397,7 @@
+         native_adreno_client_bytes[stats_slot_<4?stats_slot_:4][0]=(uint32_t)(owned_bytes_>>20);
+     }
+     if(entry->imported) {native_adreno_import_live[0]=native_adreno_import_live[0]-1;noteImportState(entry->handle,2);}
++    noteFree(entry->handle,bytes>>10);
+     clear(*entry);
+     return kIOReturnSuccess;
+ }
+@@ -410,6 +433,18 @@
      }
      return kIOReturnSuccess;
  }
@@ -19,7 +56,7 @@
  IOReturn NativeAdrenoUserClient::submit(const NativeAdrenoAbiSubmit *request,
      NativeAdrenoAbiSubmitReply *reply,const NativeAdrenoRingClock *clock)
  {
-@@ -425,14 +437,14 @@
+@@ -425,14 +460,14 @@
              (request->wait_timeout_ns>UINT64_C(0xffffffff)*1000u?0xffffffffu:
              (uint32_t)(request->wait_timeout_ns/1000));
          const IOReturn waited=submit_->observeFence((uint32_t)request->wait_fence,clock,wait_us);
@@ -32,11 +69,11 @@
          if(!wire.bytes || (wire.bytes&3))return kIOReturnBadArgument;
          Entry *entry=find(wire.handle);
 -        if(!entry || !entry->mapped_state)return kIOReturnBadArgument;
-+        if(!entry || !entry->mapped_state)return noteSubmitError(kIOReturnBadArgument,2);
++        if(!entry || !entry->mapped_state) {noteMissing(wire.handle,entry!=nullptr);return noteSubmitError(kIOReturnBadArgument,2);}
          buffers[i]={entry->mapped,wire.iova,(size_t)wire.bytes};
      }
      uint32_t fence=0;
-@@ -443,7 +455,7 @@
+@@ -443,7 +478,7 @@
      submit_->nextRole(task_get_gpu_role(current_task()));
      const IOReturn status=submit_->submit(vm_,buffers,request->buffer_count,
          queue_base_+request->queue,&fence,clock);
