@@ -1,0 +1,65 @@
+--- a/src/freedreno/vulkan/tu_knl_darwin.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -11,6 +11,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/mman.h>
++#include <sys/sysctl.h>
+ #include <unistd.h>
+ 
+ #include <IOKit/IOKitLib.h>
+@@ -722,6 +723,33 @@
+  * within a second of entering it, as freedreno's own BO cache keeps a freed BO (freedreno_bo_cache.c, fd_bo_cache_cleanup: "keep things
+  * in cache for at least 1 second", at most once a second). Without the second rule the cache held every BO the render server ever freed
+  * once the kernel stopped refusing allocations (untagged-7c2c611f: backboardd held 3099 MiB, the system's memory ran out). */
++/* houji: boot argument tu-bc=N keeps a freed BO for N seconds (1 to 60) instead of one, under a cap of 256 MiB that evicts the
++ * oldest first. With one second every animation started cold: actions a couple of seconds apart found the cache emptied, and
++ * their first frames paid hundreds of allocations, GPU and CPU maps (root197: 33-52 % hits; Search 491 kernel allocations,
++ * 520 GPU maps at 160 us each per run). Without the argument the cache keeps its one-second rule. */
++static unsigned
++darwin_cache_age_s(void)
++{
++   static int age = -1;
++   if (age < 0) {
++      unsigned value = 1;
++      char args[1024] = {};
++      size_t size = sizeof(args) - 1;
++      if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0) {
++         for (const char *at = args; (at = strstr(at, "tu-bc=")) != NULL; at += 6) {
++            if (at != args && at[-1] != ' ')
++               continue;
++            const unsigned parsed = (unsigned)strtoul(at + 6, NULL, 10);
++            if (parsed >= 1 && parsed <= 60)
++               value = parsed;
++            break;
++         }
++      }
++      age = (int)value;
++   }
++   return (unsigned)age;
++}
++
+ static void
+ darwin_cache_trim(struct tu_device *dev, struct darwin_retire_state *retire)
+ {
+@@ -735,9 +763,19 @@
+    if (now == retire->cache_cleaned_s)
+       return;
+    retire->cache_cleaned_s = now;
++   const unsigned age = darwin_cache_age_s();
+    for (unsigned i = retire->cache_count; i-- > 0;)
+-      if (now - retire->cache[i].freed_s > 1)
++      if (now - retire->cache[i].freed_s > age)
+          darwin_cache_evict(dev, retire, i);
++   /* A longer age keeps more: the oldest go first above the cap. */
++   while (age > 1 && retire->cache_count && retire->cache_bytes > (256ull << 20)) {
++      unsigned oldest = 0;
++      for (unsigned i = 1; i < retire->cache_count; ++i)
++         if (retire->cache[i].stamp < retire->cache[oldest].stamp)
++            oldest = i;
++      if (darwin_cache_evict(dev, retire, oldest) != VK_SUCCESS)
++         break;
++   }
+ }
+ 
+ /* The process's memory-pressure source, made once: libdispatch delivers the kernel's memorystatus levels to it. */
