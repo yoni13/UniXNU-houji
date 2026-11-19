@@ -1,21 +1,13 @@
 --- a/drivers/Adreno740/NativeAdrenoUserClient.cpp
 +++ b/drivers/Adreno740/NativeAdrenoUserClient.cpp
-@@ -375,6 +375,7 @@
-         native_adreno_client_bytes[stats_slot_<4?stats_slot_:4][0]=(uint32_t)(owned_bytes_>>20);
-     }
-     if(entry->imported) {native_adreno_import_live[0]=native_adreno_import_live[0]-1;noteImportState(entry->handle,2);}
-+    noteFree(entry->handle,bytes>>10);
-     clear(*entry);
+@@ -343,6 +343,28 @@
+     reply->iova=request->iova;
      return kIOReturnSuccess;
- }
-@@ -422,6 +423,28 @@
-     }
-     return status;
  }
 +/* houji: the newest 256 buffer frees (handle, pid, mach time, KiB) and the last submission that named a missing buffer: its handle,
 + * whether an entry of that handle still existed (unmapped) or none did, and the matching free's time and size if the ring has it. */
 +extern "C" {volatile uint64_t houji_adreno_frees[256][4];volatile uint32_t houji_adreno_free_count;
-+            volatile uint64_t houji_adreno_missing[6];}
++            volatile uint64_t houji_adreno_missing[6];uint64_t mach_absolute_time(void);}
 +static void noteFree(uint64_t handle,uint64_t kib)
 +{
 +    const uint32_t n=houji_adreno_free_count;
@@ -34,9 +26,17 @@
 +        if(row[0]==handle && row[1]==pid) {houji_adreno_missing[4]=now-row[2];houji_adreno_missing[5]=row[3];break;}
 +    }
 +}
- IOReturn NativeAdrenoUserClient::submit(const NativeAdrenoAbiSubmit *request,
-     NativeAdrenoAbiSubmitReply *reply,const NativeAdrenoRingClock *clock)
+ static void noteFreeRefused(bool imported,uint64_t handle,IOReturn status)
  {
+     if(!imported)return;
+@@ -375,6 +397,7 @@
+         native_adreno_client_bytes[stats_slot_<4?stats_slot_:4][0]=(uint32_t)(owned_bytes_>>20);
+     }
+     if(entry->imported) {native_adreno_import_live[0]=native_adreno_import_live[0]-1;noteImportState(entry->handle,2);}
++    noteFree(entry->handle,bytes>>10);
+     clear(*entry);
+     return kIOReturnSuccess;
+ }
 @@ -444,7 +467,7 @@
          const NativeAdrenoAbiSubmitBuffer &wire=request->buffers[i];
          if(!wire.bytes || (wire.bytes&3))return kIOReturnBadArgument;
