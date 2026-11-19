@@ -288,11 +288,14 @@ void native_legacy_copy_timing_observed(uint64_t ticks,uint64_t bytes) {
 // The time between consecutive delivered frames, in buckets <=20 ms (60 Hz pace), <=34 (30 Hz), <=100 (a visible stutter), <=500 and
 // longer (idle or a stall): console "disp" prints them, "disp reset" clears them. Averages over a window count the pauses between
 // gestures too (root111: 17 fps over 17 s of swipes, while frames.trace showed 62 fps inside each swipe).
-extern "C" {volatile uint64_t houji_frame_intervals[5];volatile uint64_t houji_frame_last;}
+// houji_frame_fast splits the first bucket for high refresh: <=9 ms (120 Hz pace, 8.3 ms plus jitter) and <=12 ms (90 Hz, 11.1 ms).
+extern "C" {volatile uint64_t houji_frame_intervals[5];volatile uint64_t houji_frame_fast[2];volatile uint64_t houji_frame_last;}
 static void houji_frame_interval(void) {
     const uint64_t now=mach_absolute_time(),last=houji_frame_last;houji_frame_last=now;
     if(!last || now<=last)return;
     uint64_t ns=0;absolutetime_to_nanoseconds(now-last,&ns);
+    if(ns<=9000000ull)__atomic_add_fetch(&houji_frame_fast[0],1ULL,__ATOMIC_RELAXED);
+    else if(ns<=12000000ull)__atomic_add_fetch(&houji_frame_fast[1],1ULL,__ATOMIC_RELAXED);
     const uint64_t ms=ns/1000000ull;
     const unsigned bucket=ms<=20?0:ms<=34?1:ms<=100?2:ms<=500?3:4;
     __atomic_add_fetch(&houji_frame_intervals[bucket],1ULL,__ATOMIC_RELAXED);
