@@ -44,6 +44,23 @@ wait: about 60 us each, no wait for an unsubmitted sync, no ring-space waits. `t
 Next: what fills the gaps between passes of one command buffer (its 2.5-3.5 kernel submissions, the presenter's copy, cache
 maintenance), and why Core Animation waits for completion instead of handing the swap a fence.
 
+### BO churn, the BO cache and the wallpaper poster killer (root196-root201)
+
+Console `gm` (GPU driver method counters) around repeated actions: every action allocated, GPU-mapped and CPU-mapped hundreds of
+BOs (root197: Search 491 allocations and 520 GPU maps per run, Control Center 876). backboardd's Turnip BO cache missed them: it
+evicts a freed BO after one second, so each action started cold (33-52 % hits). `turnip-darwin-bo-cache-age.patch`: boot argument
+`tu-bc=N` keeps freed BOs N seconds under a 256 MiB cap; with `tu-bc=8` Search hit 70 % (root201: 937 lookups, 653 hits, its 284
+misses = the kernel's 298 allocations).
+
+`houji_no_posters=1` (kill the wallpaper's MercuryPosterExtension every 3 s) cost more than it saved and caused the wallpaper to go
+dark for about a second at each kill. root199 (killer on) vs root200 (off), both `tu-bc=8`: idle `top` widgets ~93 % each and the
+extension 24 % vs backboardd 7 % and nothing else above 3 %; the mean GPU map 286 -> 57 us, kernel GPU-map time per Search 107.5 ->
+24.9 ms; Settings scroll 95 fps (round 1). The killer is off from root200 on. `diag=1` itself costs smoothness (root201 vs root200:
+18-27 % vs 51-65 % of swipe frames within 20 ms): frame-rate runs go without it.
+
+Search after these (root201 vs root194, per render command buffer): commit to the first kernel submission median 3.1 -> 1.4 ms,
+commit to the last pass 9.9 -> 5.2 ms; the slow tail stays (p90 15-16 ms), and Search renders only about 38 command buffers in 2.6 s.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
