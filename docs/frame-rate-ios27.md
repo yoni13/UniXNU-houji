@@ -120,6 +120,11 @@ backboardd's encoding thread busy through it (668 of 1000 samples running), part
   changes the branch taken (`+0x4dc` instead of `+0x510`) but not the spin; launchd logs no lookup storm (root218: 261 lines in
   12 s); booting without the Wi-Fi arguments (root219) does not stop it either. The trigger is queued to the main queue and is not
   on these stacks.
+- **The key store sees the loop.** Console `aks` (root224/225): `aks_get_device_state` (selector 17) is called about 365-450 times a
+  second by Spotlight (pid 305, `ps`) after a Search, every other selector quiet; our AppleKeyStore sends no notifications, so these
+  calls are the loop's lock-state reads (`deviceStateIsLocked`), not its trigger. Reporting the lock state as unlocked everywhere
+  (`aks-sls=3` left out, root225) does not change the rate. In root224/225 `top` 20 s after the Search no longer lists Spotlight
+  (busiest kernel_task 3.4 %) while the reads go on, against 100 % 10 s after it in root215/217/219: the spin fades, the polling stays.
 - **assetsd** sometimes sits at ~100 % at idle too (root214/215), and two widget extensions after a data reset.
 - Wi-Fi: one boot without `wifi=5 wifi-userspace=1` (root219) looked smoother, but the A/B over four boots (`t-ab-wifi.sh`,
   root220-root223, seed leanlc3) shows no difference: without / with Wi-Fi, Settings scroll 114-115 / 111-116 fps, home swipe 68-75 /
