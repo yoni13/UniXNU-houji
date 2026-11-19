@@ -889,8 +889,18 @@ static void owners_print(const char *what,volatile uint32_t (*table)[4])
     }
 }
 extern volatile uint64_t houji_adreno_submit_errors[5];
+extern volatile uint64_t houji_adreno_missing[6];
+extern volatile uint32_t houji_adreno_free_count;
 static void vm_command(void)
 {
+    if (houji_adreno_missing[3]) {
+        uint64_t ago=0,freed=0;
+        absolutetime_to_nanoseconds(mach_absolute_time()-houji_adreno_missing[3],&ago);
+        absolutetime_to_nanoseconds(houji_adreno_missing[4],&freed);
+        printf("HOUJI VM: gpu missing handle %llu pid %llu %s %llu ms ago; freed %llu us before (%llu KiB; 0 = not in the last 256 of %u frees)\n",
+               houji_adreno_missing[0],houji_adreno_missing[1],houji_adreno_missing[2]?"entry unmapped":"no entry",ago/1000000,freed/1000,
+               houji_adreno_missing[5],houji_adreno_free_count);
+    }
     {
         uint64_t ago_ms=0;
         if (houji_adreno_submit_errors[4]) { absolutetime_to_nanoseconds(mach_absolute_time()-houji_adreno_submit_errors[4],&ago_ms);ago_ms/=1000000; }
