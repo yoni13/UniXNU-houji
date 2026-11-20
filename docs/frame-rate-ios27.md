@@ -143,6 +143,32 @@ backboardd's encoding thread busy through it (668 of 1000 samples running), part
   68-75, Control Center close 58-84 / 54-89, Settings close 55-67 / 53-64, Search close 55-69 / 49-66, Search open 35-41 / 40-50,
   Control Center open 34-38 / 19-62. Wi-Fi stays.
 
+### Targeted drain wake-ups (`m2v-wake=1`, root228-root235)
+
+root228 (Control Center open, seed leanlc4): backboardd's encoding thread ran in `psynch_cvbroad` (syscall 303 under
+`pthread_cond_broadcast`) in 108-114 of 1000 samples (root207: 162-184). The frontend's encoding thread broadcast `idle` after every
+batch, waking a thread in `encodeDrain` that then found its own batch not done and slept again. `adrenometal-drain-wake.patch`
+(boot argument `m2v-wake=1`) wakes the drainers only once the lowest batch one of them waits for is done. root230: 0 samples in
+`psynch_cvbroad`; encoding thread 1622 ms per 8.2 s against 1717.
+
+A/B over four boots (`t-ab-wake.sh`, root231-root234, A with it, B without; all `NOSLS=1`, which is needed to fit the
+1000-byte command line), fps per valid round:
+
+| Operation | A (root231, root233) | B (root232, root234) |
+|---|---|---|
+| Settings scroll | 111, 114, 114 | 118, 112 |
+| Home swipe | 71, 69, 76 (mean 72) | 72, 74, 66, 76 (72) |
+| Control Center close | 62, 87, 61, 88 (75) | 56, 88, 89 (78) |
+| Settings close | 64, 59, 63 (62) | 54, 60, 58, 58 (58) |
+| Search close | 53, 58, 60, 60 (58) | 55, 53, 55 (54) |
+| Control Center open | 50, 33, 66 (50) | 32, 56, 25, 51 (41) |
+| Search open | 31, 40, 43 (38) | 40, 44, 40 (41) |
+
+The wake-ups are gone but frame rates differ only within the run-to-run spread; `m2v-wake=1` stays opt-in.
+root230 also showed 193 samples of a 2016-byte copy into a fresh 9456-byte `RenderLowering` box (`RenderLowering::assemble`), possibly
+page faults on memory xzone malloc's deferred reclaim had returned. root235 did not see it in four captures, and the
+`vm.reclaim.*` sysctls are not writable from the console (error 1), so that lead is closed.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
