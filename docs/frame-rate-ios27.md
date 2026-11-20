@@ -169,6 +169,24 @@ root230 also showed 193 samples of a 2016-byte copy into a fresh 9456-byte `Rend
 page faults on memory xzone malloc's deferred reclaim had returned. root235 did not see it in four captures, and the
 `vm.reclaim.*` sysctls are not writable from the console (error 1), so that lead is closed.
 
+### Render pipeline latency with asynchronous submission (root236)
+
+Pass and command buffer trace (`diag=1`, `NOSLS=1` to fit the command line; seed leanlc4, `gpu-opp=stock vsync=120 tu-bc=8
+m2v-async=1 metal-flow=6`), per render command buffer (`cb-timing.py`):
+
+| | Search, root201 (before) | Search, root236 | Control Center, root236 |
+|---|---|---|---|
+| commit -> first kernel submit, median / p90 | 1.4 / 14.6 ms | 1.9 / 2.5 ms | 1.0 / 3.0 ms |
+| commit -> last pass end, median / p90 / max | 5.2 / 15.7 / 20.0 ms | 2.4 / 3.8 / 5.9 ms | 2.4 / 7.9 / 16.4 ms |
+| GPU busy per command buffer, median / p90 | 0.8 / 4.4 ms | 0.7 / 0.9 ms | 0.7 / 3.5 ms |
+
+Every Search frame now reaches the GPU's end within a 120 Hz frame, so Search's 31-44 fps is limited before the render server (the
+Spotlight network availability loop). Control Center's tail comes from one pass kind: 16 passes of 2.95 ms each (87 draws, 790
+fragment instructions, 10 textures; the Control Center backdrop blur), at 680-903 MHz under the touch boost.
+
+The GPU clock is not the limit during gestures: the governor's touch boost (`gpu-dcvs-boost-ms`, 1000 ms) holds at least 680 MHz
+after every touch; in root234 the GPU spent 30-70 % of each 10 s window at 903 MHz with the GPU zone at 53-61 C, below its cap.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
