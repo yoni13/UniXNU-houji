@@ -39,8 +39,15 @@ Every line is a hardware result on this phone, with the run that showed it. "Not
 - Settings shows the Wi-Fi row only when the device tree has `/chosen unique-chip-id` (pack `UNIQUE_CHIP_ID=1`, a local random seed,
   not the phone's ECID): without it the driver has no stable address, `mac-address-wifi0` is not published and MobileGestalt reports
   no Wi-Fi (root90: no Wi-Fi, Bluetooth or Cellular rows). With it (root91): the Wi-Fi row, the switch on, and opening the page sends
-  a scan (Apple80211 type 10) that returns the nearby networks within 1.5 s, listed in Settings. Join: not verified (needs a
-  password typed on the phone).
+  a scan (Apple80211 type 10) that returns the nearby networks within 1.5 s, listed in Settings. Join (root239, a WPA2 network at
+  -36 dBm, password typed with console `type`): Settings sends the join (Apple80211 type 20, cipher 6, 32-byte key), the driver
+  authenticates and associates (AssocResp status 0), and 6 s later the station leaves (deauthentication reason 3); a retry repeats
+  it. The driver's worker counts 0 received data frames for the whole boot, so the 4-way handshake's EAPOL frames never reach the
+  supplicant (it logs no WPA state): the receive data path is the gap, not the password.
+- Console `type TEXT` (`sheng-hid-keyboard.patch` on ShengHidInput, the key queue in `HidInputProbe.cpp`): NativeHidInput sends the
+  text as boot keyboard reports (report 1), one key every 25 ms tick. iOS then treats the device as a hardware keyboard (no on-screen
+  keyboard). In root239 a 10-character burst arrived as 7 characters; one character per command (each waits for the next tick)
+  arrives whole.
 
 ## Boot images
 
