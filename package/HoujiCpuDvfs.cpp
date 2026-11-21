@@ -451,3 +451,47 @@ unsigned houji_l3_mode_arg(void) {
     if (gL3Mode) IOLog("HOUJI L3: mode %u\n", gL3Mode);
     return gL3Mode;
 }
+
+// Console "ddr Y": an active-only RPMh vote for the DDR (BCM MC0) and the LLCC/system hub (BCM SH0) through TCS 0 of the application
+// processor's RSC DRV 2 (as houji_touch_power), Y the BCM's peak vote (0-16383; 16383 asks for its top level, 0 withdraws the vote).
+// Linux bcm-voter: BCM_TCS_CMD(commit 1 << 30, valid 1 << 29, vote_x << 14, vote_y). Nothing in this kernel votes the CPU's memory path
+// otherwise; the GPU's GMU votes DDR only for the GPU. For measuring whether the CPU waits on memory; not a governor.
+#include "QcomRpmh.h"
+extern "C" void houji_ddr_vote(unsigned y) {
+    static uint32_t mc0, sh0;
+    static IOMemoryMap *rscMap;
+    static volatile uint32_t *rsc;
+    if (!rsc) {
+        uint8_t *db = static_cast<uint8_t *>(IOMallocData(0x20000));
+        IODeviceMemory *m = IODeviceMemory::withRange(0x81c60000ULL, 0x20000);
+        IOMemoryMap *map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+        if (m) m->release();
+        if (db && map) {
+            for (uint64_t i = 0; i < 0x20000; i += 4) {
+                const uint32_t w = *(volatile uint32_t *)(map->getVirtualAddress() + i);
+                memcpy(db + i, &w, 4);
+            }
+            QcomRpmhResource r;
+            if (!qcom_cmd_db_find(db, 0x20000, "MC0", &r)) mc0 = r.address;
+            if (!qcom_cmd_db_find(db, 0x20000, "SH0", &r)) sh0 = r.address;
+        }
+        if (map) map->release();
+        if (db) IOFreeData(db, 0x20000);
+        IODeviceMemory *rm = IODeviceMemory::withRange(0x17a20000ULL, 0x10000);
+        rscMap = rm ? rm->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+        if (rm) rm->release();
+        rsc = rscMap ? (volatile uint32_t *)rscMap->getVirtualAddress() : nullptr;
+        if (!rsc || !mc0 || !sh0) {IOLog("HOUJI DDR: refused (rsc %p mc0 %x sh0 %x)\n", (void *)rsc, mc0, sh0); rsc = nullptr; return;}
+    }
+    if (y > 16383) y = 16383;
+    const QcomRscLayout layout = qcom_rsc_layout(rsc[0]);
+    const uint32_t value = (1u << 30) | ((y ? 1u : 0u) << 29) | y, addresses[2] = {mc0, sh0}, values[2] = {value, value};
+    QcomRpmhWrite writes[16];
+    const unsigned n = qcom_rpmh_active_request(&layout, 0, addresses, values, 2, writes, 16);
+    for (unsigned i = 0; i < n; ++i) rsc[(0xd00 + writes[i].offset) / 4] = writes[i].value;
+    __asm__ volatile("dsb sy" ::: "memory");
+    IOSleep(2);
+    const unsigned m2 = qcom_rpmh_finish(&layout, 0, writes, 16);
+    for (unsigned i = 0; i < m2; ++i) rsc[(0xd00 + writes[i].offset) / 4] = writes[i].value;
+    IOLog("HOUJI DDR: vote %u (cmd %#x) to MC0 %#x and SH0 %#x\n", y, value, mc0, sh0);
+}
