@@ -161,13 +161,13 @@ new file mode 100644
 +    for (i, v) in [
 +        w.shadowed_textures,
 +        w.host_textures_in_place,
-+        w.host_texture_shadows_exact,
 +        w.host_texture_shadows_render_target,
-+        w.host_texture_shadows_shader_write,
-+        w.host_texture_shadows_store_width,
-+        w.host_texture_shadows_check_pending,
-+        w.host_texture_shadows_check_failed,
-+        w.host_texture_shadows_unchecked,
++        w.host_texture_shadows_refused_rows,
++        w.host_texture_shadows_refused_image,
++        w.host_texture_shadows_refused_pitch,
++        w.host_texture_shadows_refused_placement,
++        w.host_texture_shadows_check_failed + w.host_texture_shadows_check_pending + w.host_texture_shadows_unchecked,
++        w.shadow_copies_in_skipped_by_standing,
 +        w.shadow_copies,
 +    ]
 +    .into_iter()
