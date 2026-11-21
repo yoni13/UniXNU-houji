@@ -11,6 +11,7 @@
 #include <libkern/c++/OSKext.h>
 #include <kern/thread.h>
 #include <pexpert/pexpert.h>
+#include <string.h>
 #include <mach/kmod.h>
 #include <mach/mach_time.h>
 extern kmod_info_t g_kernel_kmod_info;
@@ -195,6 +196,49 @@ void native_hid_input_observed(unsigned event,int result) {
         native_touch_report_ring[n&65535]=mach_absolute_time();
         native_touch_report_count=n+1;
     }
+}
+// Console "type": sweet_hid_type queues the text and waits; NativeHidInput's timer takes one key a tick (native_hid_input_key) and sends
+// it as the device's boot keyboard report. Letters, digits, space, Return and - . _ @ ; the text is cleared once typed.
+static char typeText[64];
+static volatile uint32_t typeAt,typeLen;
+static bool keyUsage(char c,unsigned char *modifiers,unsigned char *usage) {
+    *modifiers=0;
+    if(c>='a' && c<='z'){*usage=(unsigned char)(0x04+c-'a');return true;}
+    if(c>='A' && c<='Z'){*usage=(unsigned char)(0x04+c-'A');*modifiers=0x02;return true;}
+    if(c>='1' && c<='9'){*usage=(unsigned char)(0x1e+c-'1');return true;}
+    switch(c) {
+    case '0': *usage=0x27;return true;
+    case '\n': *usage=0x28;return true;
+    case ' ': *usage=0x2c;return true;
+    case '-': *usage=0x2d;return true;
+    case '_': *usage=0x2d;*modifiers=0x02;return true;
+    case '.': *usage=0x37;return true;
+    case '@': *usage=0x1f;*modifiers=0x02;return true;
+    default: return false;
+    }
+}
+extern "C" bool native_hid_input_key(unsigned char *modifiers,unsigned char *usage) {
+    while(typeAt<typeLen) {
+        const char c=typeText[typeAt];
+        typeAt=typeAt+1;
+        if(keyUsage(c,modifiers,usage))return true;
+    }
+    return false;
+}
+extern "C" int sweet_hid_type(const char *text) {
+    if(typeAt<typeLen)return -2;
+    size_t n=strlcpy(typeText,text,sizeof typeText);
+    if(n>=sizeof typeText)n=sizeof typeText-1;
+    typeLen=0;typeAt=0;
+    __asm__ volatile("dmb ish" ::: "memory");
+    typeLen=(uint32_t)n;
+    // The timer runs once a second when idle, then every 25 ms (key down, keys up).
+    for(unsigned ms=0;ms<3000+(unsigned)n*100 && typeAt<typeLen;ms+=20)IOSleep(20);
+    IOSleep(60);   // the last key's release
+    const int typed=(int)typeAt;
+    typeLen=0;typeAt=0;
+    bzero(typeText,sizeof typeText);
+    return typed;
 }
 __attribute__((noinline)) void native_hid_checkpoint(void) { __asm__ volatile("" ::: "memory"); }
 void native_hid_input_probe(void) {

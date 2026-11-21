@@ -1,0 +1,34 @@
+--- a/NativeHidInput.cpp
++++ b/NativeHidInput.cpp
+@@ -21,6 +21,8 @@
+ extern "C" void native_hid_input_observed(unsigned,int);
+ extern "C" void native_hid_live_checkpoint(IOService *);
+ extern "C" bool native_hid_input_requested(void);
++// houji: the next key of the text the board queued (console "type"), as a boot keyboard modifier byte and usage; false when none.
++extern "C" bool native_hid_input_key(unsigned char *modifiers, unsigned char *usage);
+ extern "C" void native_touch_set_sink(void (*)(void *), void *) __attribute__((weak_import));
+ // Optional hardware buttons fed by the board button driver: a mask of report 2 bits, sent on every change.
+ extern "C" void native_buttons_set_sink(void (*)(void *, uint32_t), void *) __attribute__((weak_import));
+@@ -376,6 +378,22 @@
+             return;
+         }
+         native_hid_input_observed(3,1);
++        // houji: typed text, one key a tick as report 1 (the boot keyboard report of this descriptor): the key down, 25 ms later
++        // all keys up, then the next key. Between keys the Home mailbox waits.
++        if(!self->down) {
++            static bool keyDown=false;
++            unsigned char modifiers=0,usage=0;
++            if(keyDown || native_hid_input_key(&modifiers,&usage)) {
++                unsigned char key[]={1,modifiers,0,usage,0,0,0,0,0};
++                IOBufferMemoryDescriptor *keyBuffer=IOBufferMemoryDescriptor::withBytes(key,sizeof(key),kIODirectionNone);
++                IOReturn keyResult=keyBuffer?self->submitReport(keyBuffer):kIOReturnNoMemory;
++                OSSafeReleaseNULL(keyBuffer);
++                native_hid_input_observed(7,keyResult);
++                keyDown=!keyDown;
++                source->setTimeoutMS(25);
++                return;
++            }
++        }
+         if(!self->down && !native_hid_input_requested()) {source->setTimeoutMS(1000);return;}
+         unsigned char report[]={2,static_cast<unsigned char>((self->down?0:1)|self->buttons)};
+         IOBufferMemoryDescriptor *buffer=IOBufferMemoryDescriptor::withBytes(report,sizeof(report),kIODirectionNone);
