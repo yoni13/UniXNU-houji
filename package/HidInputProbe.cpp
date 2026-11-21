@@ -203,9 +203,9 @@ static char typeText[64];
 static volatile uint32_t typeAt,typeLen;
 static bool keyUsage(char c,unsigned char *modifiers,unsigned char *usage) {
     *modifiers=0;
-    if(c>='a' && c<='z'){*usage=(unsigned char)(0x04+c-'a');return true;}
-    if(c>='A' && c<='Z'){*usage=(unsigned char)(0x04+c-'A');*modifiers=0x02;return true;}
-    if(c>='1' && c<='9'){*usage=(unsigned char)(0x1e+c-'1');return true;}
+    if(c>='a' && c<='z'){*usage=(unsigned char)(0x04 + c - 'a');return true;}
+    if(c>='A' && c<='Z'){*usage=(unsigned char)(0x04 + c - 'A');*modifiers=0x02;return true;}
+    if(c>='1' && c<='9'){*usage=(unsigned char)(0x1e + c - '1');return true;}
     switch(c) {
     case '0': *usage=0x27;return true;
     case '\n': *usage=0x28;return true;
