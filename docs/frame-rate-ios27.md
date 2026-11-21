@@ -244,6 +244,20 @@ updates). The render server and the GPU keep 120 Hz. Frame gaps per action from 
 The low rates are in the phases where an application or SpringBoard has to produce new content (Spotlight, Preferences, Control
 Center's first frames) and in 60 Hz stretches of some system animations, not in the render server.
 
+### One fixed 120 Hz refresh (`vsync-fixed=1`, root255-root258) and a shorter test cycle
+
+With `vsync=120` the framebuffer publishes `IOMFBDisplayRefresh` with a 1/120 s minimum and the original 1/24 s maximum interval, a
+24-120 Hz range; `vsync-fixed=1` (an existing GopFramebuffer switch, never measured) publishes one fixed 120 Hz rate. Suspected cause
+of the 60 Hz-paced stretches (gaps of exactly 15-18 ms, `frame-gaps.py`). A/B over four boots (seed leanlc5, trigger 68 C, guard
+74 C): share of 15-18 ms gaps when closing an application 20 / 14 % with it, 24 / 20 % without; home swipe 4-8 % both; frame rates
+within the spread (home swipe 66-74 / 68-80, Search open 38-45 / 40-43, Settings close 56-71 / 57-63, Control Center close 52-74 /
+59-73). Not the cause; it stays off.
+
+Test cycle: the fixed 300 s cool-down in fastboot barely changed the boot (first reading 43-49 C after 61-120 s, 36-48 C after
+300 s, 57-67 C 60 s into the boot either way, root232-root258). `t-round.sh` `COOL=auto` waits 60 s plus 5 s per degree the last
+reading was above 60 C (at most 120 s), and `SETTLE` is now a maximum that ends once the hottest sensor reads `SETTLE_C` (default 50 C),
+after at least 20 s.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
