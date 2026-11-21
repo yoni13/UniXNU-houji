@@ -23,7 +23,7 @@
 #include "BootResetCore.h"
 #include "MhiBoot.h"
 #include "nw_abi.h"
-extern "C" void nw_wifi_rx_state(char *text, int size);   // Ath12kWifi nw_wifi.c: receive ring counters (worker thread only)
+extern "C" void nw_wifi_rx_state(char *text, int size) __asm__("_nwk_nw_wifi_rx_state");   // Ath12kWifi nw_wifi.c (the module's nwk_ prefix): receive ring counters, worker thread only
 #include "WifiFirmware.h"
 #include "WcnPower.h"
 #include "nw_control_endpoint.h"
