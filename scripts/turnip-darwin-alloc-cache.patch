@@ -1,3 +1,4 @@
+diff --git a/src/vulkan/util/vk_alloc.c b/src/vulkan/util/vk_alloc.c
 --- a/src/vulkan/util/vk_alloc.c
 +++ b/src/vulkan/util/vk_alloc.c
 @@ -16,6 +16,96 @@
