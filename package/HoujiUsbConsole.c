@@ -1724,6 +1724,19 @@ static void command_line(void)
         }
     }
     else if (!strcmp(u.command,"dvfs")) { extern void houji_cpu_dvfs_report(void); houji_cpu_dvfs_report(); }
+    else if (!strncmp(u.command,"notes ",6)) {
+        /* "notes N": the newest N rows of the GPU driver's pass log (NativeAdrenoPublish.cpp, NativeAdrenoMethodNote kind 1) whose first
+         * word is the Metal bridge's counter mark 0x4d32434e (NativeMetalCounts.rs, m2v-count=1): pid, then its words. */
+        extern volatile uint32_t *native_adreno_pass_log;extern volatile uint32_t native_adreno_pass_count;
+        unsigned want=0;const char *p=u.command+6;while (*p>='0' && *p<='9') want=want*10+(unsigned)(*p++-'0');
+        volatile uint32_t *rows=native_adreno_pass_log;const uint32_t n=native_adreno_pass_count;unsigned shown=0;
+        for (uint32_t k=0;rows && k<n && k<512 && shown<want;k++) {
+            volatile uint32_t *r=rows+((n-1-k)%512)*32;
+            if (r[2]!=0x4d32434eu) continue;
+            printf("HOUJI NOTE %u: %u %u %u %u %u %u %u %u %u\n",r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11]);shown++;
+        }
+        printf("HOUJI NOTES: %u shown of %u\n",shown,n);
+    }
     else if (!strncmp(u.command,"ddr ",4)) {
         /* HoujiCpuDvfs.cpp houji_ddr_vote: "ddr Y", Y decimal (16383 top, 0 withdraws) */
         extern void houji_ddr_vote(unsigned y);
