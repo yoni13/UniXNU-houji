@@ -317,6 +317,15 @@ opens: 35-41 fps, first frame 165-190 ms.
   (1566 ms of encoding over three opens) draws are 46 % (metal2vulkan `draw_indexed` / `draw_resident`), `end_encoding` 24 %,
   render encoder and command buffer setup most of the rest, with no single hot function: the translation's per-draw cost. Reduce
   Transparency and Reduce Motion were already on in the seed.
+- **Not helping either:** metal2vulkan's lowering thread (`metal-flow=7`): opens 37.9 against 44.4 fps (root298 / root299); the
+  governor's summed load or a 100 % frame floor at run time (console `dvfs set`, root300): 37.5 / 38.5 against 37.0.
+- **Per call** (`adrenometal-zz-counts.patch`, `m2v-count=1`, GPU userspace gpu12, seed leanlc10: the bridge counts its draws, render
+  encoders made and ended and commits with their time, and notes the totals to the kernel's pass log, console `notes`). Control
+  Center open, steady part (root302, 524 ms): 6712 draws at 31 us each (211 ms), 838 render encoders made at 34 us and 879 ended at
+  88 us (105 ms), 79 commits at 181 us (14 ms): 63 % of the time on the encoding thread, about 22 frames, so per frame about 305
+  draws (9.5 ms) and 38 render passes (4.6 ms). A draw's 31 us is spread over `RenderLowering::draw_resident`'s steps (recording,
+  settling the bind state, the pass begun inline at its first draw, binding; root302 cross-call samples) with no single hot function.
+  120 Hz needs about 8 ms a frame: draws at about a third of their cost and passes at about half.
 
 ## Faults found on the way
 
