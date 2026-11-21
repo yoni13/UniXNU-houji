@@ -1,0 +1,114 @@
+--- a/crates/metal2vulkan-runtime/src/render.rs
++++ b/crates/metal2vulkan-runtime/src/render.rs
+@@ -2225,7 +2225,7 @@
+             .as_ref()
+             .map_or(layout.extent, RateMappedPass::area);
+         let lowering = Box::write(
+-            Box::new_uninit(),
++            houji_lowering_box::take(),
+             RenderLowering {
+                 core,
+                 earlier: Vec::new(),
+@@ -4325,6 +4325,9 @@
+         let unnamed_reads =
+             self.barrier_inside || self.reaches_unnamed || !self.executions.is_empty();
+         let rate_mapped = self.rate_map.is_some();
++        // houji: the box goes back for the next render encoder (`houji_lowering_box`); what the
++        // pattern leaves still drops at the end of the pass, as from the box.
++        let ended = houji_lowering_box::give(self);
+         let RenderLowering {
+             mut core,
+             earlier,
+@@ -4364,7 +4367,7 @@
+             pass_start,
+             pinned_through,
+             ..
+-        } = *self;
++        } = ended;
+         // The views and sampler descriptions its binds made or found, which the device's next
+         // render encoder takes (`binding::BindMemo`).
+         core.device().shared().bind_memos.give(bind_memo);
+@@ -13545,3 +13548,83 @@
+         }
+     }
+ }
++
++/// houji: boot argument `m2v-lbox=1` keeps an ended render encoder's lowering box (`RenderLowering`,
++/// about 10 KiB, a libmalloc small block) for the next render encoder. Freed at every pass end, the
++/// block emptied its small chunk, which libmalloc gave back at once with `madvise` on the encoding
++/// thread: 54 of its 79 ms of `madvise` in a Control Center open (root265, `tl`, the free in
++/// `RenderLowering::end_pass` under `Lowering::end_encoding`). At most `KEPT` boxes are kept.
++mod houji_lowering_box {
++    use super::RenderLowering;
++    use std::mem::MaybeUninit;
++    use std::sync::Mutex;
++
++    const KEPT: usize = 8;
++
++    /// A kept box: its memory only, no value.
++    struct Spare(*mut MaybeUninit<RenderLowering>);
++    // SAFETY: an allocation without a value, handed whole to one thread at a time under the lock.
++    unsafe impl Send for Spare {}
++
++    static SPARES: Mutex<Vec<Spare>> = Mutex::new(Vec::new());
++
++    fn on() -> bool {
++        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++        *ON.get_or_init(|| {
++            #[cfg(target_vendor = "apple")]
++            {
++                let mut text = [0u8; 1024];
++                let mut length = text.len() - 1;
++                // SAFETY: a nul-terminated name, and a buffer of `length` bytes the call writes at most.
++                let read = unsafe {
++                    libc::sysctlbyname(
++                        c"kern.bootargs".as_ptr(),
++                        text.as_mut_ptr().cast(),
++                        &mut length,
++                        std::ptr::null_mut(),
++                        0,
++                    )
++                };
++                read == 0
++                    && std::str::from_utf8(&text[..length.min(text.len())]).is_ok_and(|args| {
++                        args.trim_end_matches('\0')
++                            .split(' ')
++                            .any(|arg| arg == "m2v-lbox=1")
++                    })
++            }
++            #[cfg(not(target_vendor = "apple"))]
++            {
++                false
++            }
++        })
++    }
++
++    /// A box for a new lowering: a kept one, else a new allocation.
++    pub(super) fn take() -> Box<MaybeUninit<RenderLowering>> {
++        if on() {
++            if let Some(Spare(raw)) = SPARES.lock().ok().and_then(|mut spares| spares.pop()) {
++                // SAFETY: `raw` came from `Box::into_raw` of a box of this type (`give`).
++                return unsafe { Box::from_raw(raw) };
++            }
++        }
++        Box::new_uninit()
++    }
++
++    /// The lowering out of its box, the box kept for `take` (or freed above `KEPT`).
++    pub(super) fn give(lowering: Box<RenderLowering>) -> RenderLowering {
++        if !on() {
++            return *lowering;
++        }
++        let raw = Box::into_raw(lowering);
++        // SAFETY: `raw` is a live box's value, read once; the box is not used as a
++        // `RenderLowering` again, only as its memory (`MaybeUninit` has `RenderLowering`'s layout).
++        let value = unsafe { std::ptr::read(raw) };
++        let spare = raw.cast::<MaybeUninit<RenderLowering>>();
++        match SPARES.lock() {
++            Ok(mut spares) if spares.len() < KEPT => spares.push(Spare(spare)),
++            // SAFETY: as above; the memory goes back to the allocator without a value to drop.
++            _ => drop(unsafe { Box::from_raw(spare) }),
++        }
++        value
++    }
++}

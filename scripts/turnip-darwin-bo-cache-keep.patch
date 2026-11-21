@@ -1,0 +1,62 @@
+--- a/src/freedreno/vulkan/tu_knl_darwin.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -750,6 +750,33 @@
+    return (unsigned)age;
+ }
+ 
++/* houji: boot argument tu-bk=M (1 to 256) keeps the newest M MiB of the cache past the age above: those BOs go only under memory
++ * pressure or the 256 MiB cap. An action a few seconds after the last one found the cache emptied by age and allocated cold: a Control
++ * Center open spent 72 ms in 70 BoAllocs and 43 ms in 42 BoMaps on backboardd's encoding thread, most from tu_cs_reserve_space
++ * (root265, tl). Without the argument the age rule alone applies. */
++static uint64_t
++darwin_cache_keep_bytes(void)
++{
++   static int64_t keep = -1;
++   if (keep < 0) {
++      uint64_t value = 0;
++      char args[1024] = {};
++      size_t size = sizeof(args) - 1;
++      if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0) {
++         for (const char *at = args; (at = strstr(at, "tu-bk=")) != NULL; at += 6) {
++            if (at != args && at[-1] != ' ')
++               continue;
++            const unsigned parsed = (unsigned)strtoul(at + 6, NULL, 10);
++            if (parsed >= 1 && parsed <= 256)
++               value = (uint64_t)parsed << 20;
++            break;
++         }
++      }
++      keep = (int64_t)value;
++   }
++   return (uint64_t)keep;
++}
++
+ static void
+ darwin_cache_trim(struct tu_device *dev, struct darwin_retire_state *retire)
+ {
+@@ -764,9 +791,22 @@
+       return;
+    retire->cache_cleaned_s = now;
+    const unsigned age = darwin_cache_age_s();
+-   for (unsigned i = retire->cache_count; i-- > 0;)
+-      if (now - retire->cache[i].freed_s > age)
+-         darwin_cache_evict(dev, retire, i);
++   const uint64_t keep = darwin_cache_keep_bytes();
++   if (!keep) {
++      for (unsigned i = retire->cache_count; i-- > 0;)
++         if (now - retire->cache[i].freed_s > age)
++            darwin_cache_evict(dev, retire, i);
++   } else {
++      /* The oldest expired BO first, while the cache holds more than it keeps. */
++      while (retire->cache_bytes > keep) {
++         int oldest = -1;
++         for (unsigned i = 0; i < retire->cache_count; ++i)
++            if (now - retire->cache[i].freed_s > age && (oldest < 0 || retire->cache[i].stamp < retire->cache[oldest].stamp))
++               oldest = (int)i;
++         if (oldest < 0 || darwin_cache_evict(dev, retire, (unsigned)oldest) != VK_SUCCESS)
++            break;
++      }
++   }
+    /* A longer age keeps more: the oldest go first above the cap. */
+    while (age > 1 && retire->cache_count && retire->cache_bytes > (256ull << 20)) {
+       unsigned oldest = 0;
