@@ -1,0 +1,45 @@
+--- a/drivers/Adreno740/NativeAdrenoPublish.cpp
++++ b/drivers/Adreno740/NativeAdrenoPublish.cpp
+@@ -606,6 +606,15 @@
+     if(core_ && !live_) {delete core_;core_=nullptr;}
+     IOUserClient::free();
+ }
++/* houji: gpu-prefault=1 maps a BO's CPU view with kIOMapPrefault: IOKit enters every (wired) page of the view in the client's page table
++ * when it maps it, instead of one page fault per page at its first touch. root247: about 7500 page faults in the render server per
++ * Control Center open, its render threads 17-25 % in the kernel (root249). IOKit prefaults only wired memory and maps the rest lazily. */
++static IOOptionBits prefaultOption()
++{
++    static int on=-1;
++    if(on<0) {unsigned value=0;on=PE_parse_boot_argn("gpu-prefault",&value,sizeof value) && value==1;}
++    return on?kIOMapPrefault:0;
++}
+ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *options,IOMemoryDescriptor **memory)
+ {
+     if(memory)*memory=nullptr;
+@@ -640,7 +649,7 @@
+     View *v=viewSlot(type);
+     if(v && v->descriptor && v->token==type) {
+         v->descriptor->retain();*memory=v->descriptor;
+-        *options=kIOMapAnywhere|(OSDynamicCast(NativeAdrenoPoolView,v->descriptor)?kIOMapWriteCombineCache:kIOMapInhibitCache);
++        *options=kIOMapAnywhere|(OSDynamicCast(NativeAdrenoPoolView,v->descriptor)?kIOMapWriteCombineCache:kIOMapInhibitCache)|prefaultOption();
+         native_adreno_view_diag[2]=native_adreno_view_diag[2]+1;
+         IOLockUnlock(g.lock);
+         return kIOReturnSuccess;
+@@ -653,7 +662,7 @@
+         descriptor->retain();v->token=type;v->descriptor=descriptor;v->bytes=backing->bytes();
+         NativeAdrenoNoteHolder(native_adreno_view_owners,pid_,int64_t(v->bytes));
+         descriptor->retain();*memory=descriptor;
+-        *options=kIOMapAnywhere;
++        *options=kIOMapAnywhere|prefaultOption();
+         native_adreno_view_diag[1]=native_adreno_view_diag[1]+1;
+         status=kIOReturnSuccess;
+     }
+@@ -666,7 +675,7 @@
+             v->token=type;v->descriptor=descriptor;v->bytes=backing->bytes();   /* the cache keeps make()'s reference */
+             NativeAdrenoNoteHolder(native_adreno_view_owners,pid_,int64_t(v->bytes));
+             descriptor->retain();*memory=descriptor;
+-            *options=kIOMapAnywhere|kIOMapWriteCombineCache;
++            *options=kIOMapAnywhere|kIOMapWriteCombineCache|prefaultOption();
+             native_adreno_view_diag[1]=native_adreno_view_diag[1]+1;
+             status=kIOReturnSuccess;
+         }
