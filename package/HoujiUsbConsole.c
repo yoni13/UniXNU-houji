@@ -16,6 +16,8 @@
 #include <mach/thread_act.h>
 #include <mach/host_info.h>
 #include <mach/vm_statistics.h>
+#include <mach/task_info.h>
+extern kern_return_t task_info(task_t,task_flavor_t,task_info_t,mach_msg_type_number_t *);
 #include <kern/sched_prim.h>
 #include <machine/machine_routines.h>
 #include <arm/caches_internal.h>
@@ -598,6 +600,7 @@ static void gesture_sleep_ms(unsigned ms)
 struct top_proc_sample {
     task_t task;
     uint64_t started,elapsed,cpu_start,cpu_delta,permille;
+    uint32_t fault_start,fault_delta;   /* page faults (TASK_EVENTS_INFO) at the start and in the window: "HOUJI TOPF" */
     unsigned thread_begin,thread_initial,threads;
     int pid;
     char name[64];
@@ -616,6 +619,12 @@ struct top_context {
 };
 static int _Atomic top_busy;
 
+static uint32_t top_task_faults(task_t task)
+{
+    task_events_info_data_t e;mach_msg_type_number_t n=TASK_EVENTS_INFO_COUNT;
+    bzero(&e,sizeof e);
+    return task_info(task,TASK_EVENTS_INFO,(task_info_t)&e,&n)==KERN_SUCCESS?(uint32_t)e.faults:0;
+}
 static uint64_t top_task_cpu(task_t task)
 {
     struct recount_usage usage={0};
@@ -1060,7 +1069,7 @@ static int top_collect_proc(proc_t p,void *arg)
     s->pid=proc_pid(p);s->task=task;task_reference(task);
     strlcpy(s->name,proc_best_name(p),sizeof(s->name));
     top_clean_name(s->name,sizeof(s->name),s->pid==0?"kernel_task":"?");
-    s->cpu_start=top_task_cpu(task);s->started=mach_absolute_time();
+    s->cpu_start=top_task_cpu(task);s->fault_start=top_task_faults(task);s->started=mach_absolute_time();
     s->thread_begin=c->thread_count;
     int n=get_task_numacts(task);
     if (n<0) n=0;
@@ -1086,6 +1095,7 @@ static void top_finish_proc(struct top_context *c,unsigned pi)
     s->elapsed=ended-s->started;
     s->cpu_delta=end_cpu>=s->cpu_start?end_cpu-s->cpu_start:0;
     s->permille=top_permille(s->cpu_delta,s->elapsed);
+    s->fault_delta=top_task_faults(s->task)-s->fault_start;
     uint64_t elapsed_ns=0;absolutetime_to_nanoseconds(s->elapsed,&elapsed_ns);
     for (unsigned i=s->thread_begin;i<s->thread_begin+s->thread_initial;++i) {
         struct top_thread_sample *ts=&c->threads[i];
@@ -1118,6 +1128,15 @@ static void top_thread(void *arg,wait_result_t result __unused)
             for (unsigned j=best_n-1;j>at;--j) best[j]=best[j-1];
             best[at]=i;
         }
+    }
+    {   /* the eight tasks with the most page faults in the window */
+        unsigned fb[8],fn=0;
+        for (unsigned i=0;i<c.proc_count;++i) {
+            unsigned at=0;while (at<fn && c.procs[fb[at]].fault_delta>=c.procs[i].fault_delta) at++;
+            if (at<8) { if (fn<8) fn++; for (unsigned j=fn-1;j>at;--j) fb[j]=fb[j-1]; fb[at]=i; }
+        }
+        for (unsigned r=0;r<fn;++r) if (c.procs[fb[r]].fault_delta)
+            printf("HOUJI TOPF: %d %.63s faults %u\n",c.procs[fb[r]].pid,c.procs[fb[r]].name,c.procs[fb[r]].fault_delta);
     }
     for (unsigned rank=0;rank<best_n;++rank) {
         const struct top_proc_sample *s=&c.procs[best[rank]];
