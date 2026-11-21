@@ -33,3 +33,65 @@ int houji_thread_cpu_state(thread_t thread, int *cpu)
 	}
 	return (thread->state & TH_RUN) ? 2 : 0;
 }
+
+/* For the console's thread timeline: the user registers of a thread running on another CPU now. Its saved user state is only as
+ * new as its last kernel entry (a fault, a system call or an interrupt), so samples of a running thread piled up at those places
+ * (root296: 807 of 3691 ms of backboardd's encoding thread "in" the tail of one memcpy, the store that had last faulted). A
+ * cross-call to its CPU interrupts it; the handler reads the state that interrupt saved. One request at a time (one sampler);
+ * returns 0 and pc, lr, fp when the thread was the one running there, -1 otherwise (it moved, or the CPU did not answer within
+ * 200 us; a late answer then lands in the static slot, never on a stack). */
+#include <arm/machine_routines.h>
+static struct {
+	thread_t thread;
+	volatile uint32_t pending, done, found;
+	uint64_t pc, lr, fp;
+} houji_sample_slot;
+
+static void
+houji_sample_cb(void *arg)
+{
+	(void)arg;
+	if (current_thread() == houji_sample_slot.thread) {
+		arm_saved_state_t *ss = get_user_regs(houji_sample_slot.thread);
+		if (ss) {
+			houji_sample_slot.pc = get_saved_state_pc(ss);
+			houji_sample_slot.lr = get_saved_state_lr(ss);
+			houji_sample_slot.fp = get_saved_state_fp(ss);
+			houji_sample_slot.found = 1;
+		}
+	}
+	__atomic_store_n(&houji_sample_slot.done, 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&houji_sample_slot.pending, 0, __ATOMIC_RELEASE);
+}
+
+int houji_sample_running(thread_t thread, int cpu, uint64_t out[3]);
+int
+houji_sample_running(thread_t thread, int cpu, uint64_t out[3])
+{
+	if (cpu < 0 || cpu > ml_get_max_cpu_number() || __atomic_load_n(&houji_sample_slot.pending, __ATOMIC_ACQUIRE)) {
+		return -1;
+	}
+	houji_sample_slot.thread = thread;
+	houji_sample_slot.found = 0;
+	houji_sample_slot.done = 0;
+	__atomic_store_n(&houji_sample_slot.pending, 1, __ATOMIC_RELEASE);
+	if (cpu_xcall(cpu, houji_sample_cb, &houji_sample_slot) != KERN_SUCCESS) {
+		__atomic_store_n(&houji_sample_slot.pending, 0, __ATOMIC_RELEASE);
+		return -1;
+	}
+	uint64_t deadline = 0;
+	nanoseconds_to_absolutetime(200000, &deadline);
+	deadline += mach_absolute_time();
+	while (!__atomic_load_n(&houji_sample_slot.done, __ATOMIC_ACQUIRE)) {
+		if (mach_absolute_time() > deadline) {
+			return -1;
+		}
+	}
+	if (!houji_sample_slot.found) {
+		return -1;
+	}
+	out[0] = houji_sample_slot.pc;
+	out[1] = houji_sample_slot.lr;
+	out[2] = houji_sample_slot.fp;
+	return 0;
+}

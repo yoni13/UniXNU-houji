@@ -1006,6 +1006,7 @@ static void vm_command(void)
 #define TL_RUNS 12000
 struct tl_run { uint64_t t0,t1,pc[TL_DEPTH]; uint8_t thr,run,cpu; };
 int houji_thread_cpu_state(thread_t thread,int *cpu);
+int houji_sample_running(thread_t thread,int cpu,uint64_t out[3]);
 struct tl_thread { int pid; char name[24]; uint64_t tid; task_t task; thread_t th; vm_map_t map; uint64_t start,slide; int last; };
 static struct { unsigned ms,n; struct tl_thread t[TL_THREADS]; } tl;
 static int _Atomic tl_busy;
@@ -1030,7 +1031,7 @@ static uint64_t tl_find_tid(task_t task,const char *name)
 static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
 {
     struct tl_run *runs=kalloc_data(sizeof(struct tl_run)*TL_RUNS,Z_WAITOK|Z_ZERO);
-    unsigned nruns=0,full=0,samples=0;
+    unsigned nruns=0,full=0,samples=0,samples_fresh=0;
     for (unsigned i=0;i<tl.n;i++) {
         struct tl_thread *t=&tl.t[i];
         t->task=TASK_NULL;t->th=THREAD_NULL;t->last=-1;
@@ -1062,9 +1063,14 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
             const uint8_t run=info.pth_run_state==1?(where==2?2:1):0,on=(uint8_t)(cpu<0?255:cpu);
             struct arm_saved_state *ss=get_user_regs(t->th);
             uint64_t pc[TL_DEPTH]={0};
-            if (ss) {
-                pc[0]=ustack_strip(get_saved_state_pc(ss));pc[1]=ustack_strip(get_saved_state_lr(ss));
-                uint64_t fp=get_saved_state_fp(ss);
+            /* A thread on a CPU: its registers now, by a cross-call to that CPU (houji_sample_running); its saved state is only
+             * as new as its last kernel entry. Else, or when that fails, the saved state. */
+            uint64_t now_regs[3]={0};
+            const int fresh=where==1 && houji_sample_running(t->th,cpu,now_regs)==0;
+            if (fresh) samples_fresh++;
+            if (ss || fresh) {
+                pc[0]=ustack_strip(fresh?now_regs[0]:get_saved_state_pc(ss));pc[1]=ustack_strip(fresh?now_regs[1]:get_saved_state_lr(ss));
+                uint64_t fp=fresh?now_regs[2]:get_saved_state_fp(ss);
                 for (int d=2;d<TL_DEPTH && fp && !(fp&7);d++) {
                     uint64_t frame[2];
                     if (copyinmap(t->map,(vm_map_offset_t)fp,frame,sizeof frame)!=KERN_SUCCESS) break;
@@ -1082,7 +1088,7 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
             t->last=(int)nruns++;
         }
     }
-    printf("HOUJI TL: %u ms, %u samples, %u runs, %u not kept (buffer full)\n",tl.ms,samples,nruns,full);
+    printf("HOUJI TL: %u ms, %u samples (%u running ones read by cross-call), %u runs, %u not kept (buffer full)\n",tl.ms,samples,samples_fresh,nruns,full);
     for (unsigned k=0;runs && k<nruns;k++) {
         const struct tl_run *r=&runs[k];
         char line[20*TL_DEPTH];unsigned at=0;line[0]=0;
