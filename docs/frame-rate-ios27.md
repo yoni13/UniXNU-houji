@@ -229,6 +229,21 @@ No consistent gain (Control Center close better, open worse, the rest within the
   Center open 20/48 vs 57/47, Settings scroll 114 vs 112-113. Roughly 40 % more clock moved the rates by a few fps: the limit is not
   CPU throughput.
 
+### Where the frames go: per-frame gaps (root236, root254)
+
+Render command buffer commits (root236 trace, `diag=1`): within an animation the render server commits every 8.3 ms, 26-30 frames in a
+row, each complete 3-5 ms after its commit; between them 100 ms cadence (Control Center at rest) or 33-42 ms (Search, Spotlight's
+updates). The render server and the GPU keep 120 Hz. Frame gaps per action from the swap ring (root254, 0.8 s after the first frame):
+
+- home page swipe and Settings scroll: 7-9 ms almost throughout, single 17-34 ms gaps and a 33 ms tail pull the averages down;
+- Search open: 23-33 ms throughout (Spotlight);
+- Control Center open: 166 ms to the first frame, then 6-41 ms, irregular;
+- Settings open: a 211 ms gap first, irregular, then 8 ms;
+- closing with the bottom swipe: 8 ms, then 15-35 ms including runs of exactly 16-17 ms (60 Hz), then 8 ms again.
+
+The low rates are in the phases where an application or SpringBoard has to produce new content (Spotlight, Preferences, Control
+Center's first frames) and in 60 Hz stretches of some system animations, not in the render server.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
