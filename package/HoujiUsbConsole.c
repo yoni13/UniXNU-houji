@@ -995,6 +995,28 @@ static void vm_command(void)
            native_adreno_client_bytes[4][0],native_adreno_client_bytes[4][1],native_adreno_client_stats[0][2],native_adreno_client_stats[1][2],
            native_adreno_client_stats[2][2],native_adreno_client_stats[3][2]);
 }
+/* "zbench": what zeroing a page costs here. A zero-fill page fault zeroes the new page through the kernel's physical aperture
+ * (pmap_zero_page); root247: about 7500 faults in backboardd per Control Center open at an estimated ~50 us each. Times 64 rounds of
+ * pmap_zero_page on the pages of a kernel buffer against bzero of the same buffer through its ordinary cached mapping. */
+extern void pmap_zero_page(ppnum_t);
+extern ppnum_t pmap_find_phys(pmap_t,addr64_t);
+static void zbench_command(void)
+{
+    const vm_size_t size=4*PAGE_SIZE;
+    char *buf=kalloc_data(size,Z_WAITOK|Z_ZERO);
+    if (!buf) { printf("HOUJI ZBENCH: allocation failed\n");return; }
+    ppnum_t pages[4];
+    for (int i=0;i<4;i++) pages[i]=pmap_find_phys(kernel_pmap,(addr64_t)(uintptr_t)(buf+i*PAGE_SIZE));
+    uint64_t t0=mach_absolute_time();
+    for (int r=0;r<64;r++) bzero(buf,size);
+    uint64_t t1=mach_absolute_time();
+    for (int r=0;r<64;r++) for (int i=0;i<4;i++) if (pages[i]) pmap_zero_page(pages[i]);
+    uint64_t t2=mach_absolute_time();
+    uint64_t a=0,b=0;absolutetime_to_nanoseconds(t1-t0,&a);absolutetime_to_nanoseconds(t2-t1,&b);
+    printf("HOUJI ZBENCH: page %u bytes; bzero cached %llu ns/page; pmap_zero_page %llu ns/page (pages %x %x %x %x)\n",(unsigned)PAGE_SIZE,
+           a/256,b/256,pages[0],pages[1],pages[2],pages[3]);
+    kfree_data(buf,size);
+}
 /* houji_no_posters=1 (opt-in): the wallpaper gallery's poster extensions are killed (SIGKILL) whenever found, every 3 s.
  * Data is a fresh RAM seed on every boot, so PosterBoard builds its gallery again each time: seven such extensions held about
  * 1.3 GB (houji root151) on a 4 GiB phone whose wired memory leaves ~0.5 GB pageable, and every swipe stalled in page faults.
@@ -1521,6 +1543,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"ustack ",7)) ustack_command(u.command+7);
     else if (!strncmp(u.command,"threads ",8)) threads_command(u.command+8);
     else if (!strcmp(u.command,"vm")) vm_command();
+    else if (!strcmp(u.command,"zbench")) zbench_command();
     else if (!strcmp(u.command,"gm")) gm_command();
     else if (!strcmp(u.command,"aks")) { extern void native_aks_report(void) __attribute__((weak_import)); if (native_aks_report) native_aks_report(); else printf("HOUJI AKS: unavailable\n"); }
     else if (!strcmp(u.command,"io")) io_command();
