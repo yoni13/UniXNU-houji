@@ -292,6 +292,32 @@ and nothing in this kernel changed it. root283: L3 at 365 MHz, opens 24-44 fps (
 (65), closes 93-98 (95). root284: left at 1555 MHz opens mean 49, closes 86; `houji_l3=1` (new: the top row while touched or drawing,
 else the lowest row at or above the fastest CPU domain's request) 64 / 96; always the top row 55 / 95.
 
+**Those Control Center numbers were mostly its music page.** Screenshots after every open (`t-actions.sh` `CCSHOTS=1`, root286-root288):
+only the first open of a boot showed the main page. The open drag to y=1500 carried on into Control Center's pages once it was warm,
+and it reopens on the last page shown. A drag to y=700 opens the main page every time (eight opens in a row, root288); the bottom-edge
+swipe closes it. `t-cc1.sh` (one boot, settings switched per round through console commands) uses these from root288 on. Real main-page
+opens: 35-41 fps, first frame 165-190 ms.
+
+- **DDR / LLCC vote** (console `ddr Y`, RPMh BCM MC0 and SH0 through the application RSC): top vote against none, opens 55 / 61 and
+  65 / 51 fps (root285, root286): no gain, and the hottest sensor rose from 48 to 66 C within seconds. Not used.
+- **Turnip host allocations** (`turnip-darwin-alloc-cache.patch`, `tu-ac=1`, GPU userspace gpu10, seed leanlc8): Turnip makes and frees
+  a 7072-byte `tu_framebuffer` per render pass (`tu_CreateFramebuffer` -> `vk_object_multizalloc`); the boot argument keeps freed
+  4-64 KiB blocks of Mesa's default allocator per malloc size class (8 MiB in all). Opens 41-47 fps, mean 44.8, against 33-38, mean
+  35.5 (root290 / root291, eight opens each, `houji_l3=1` both). Kept.
+- **Metal bridge allocations** (`adrenometal-recycle-alloc.patch`, `m2v-ac=1`, gpu11, seed leanlc9: a recycling global allocator for
+  the Rust bridge): opens 44.0 against 42.9 fps (root294 / root295). No gain.
+- **The `tl` sampler was biased.** It read a running thread's saved user state, which is only as new as the thread's last kernel entry,
+  so running samples piled up where the thread had last faulted or called the kernel: root296 put 807 of 3691 ms of the encoding thread
+  in the last store of one 456-byte `memcpy`, while `threads` showed that thread at 4.5 % system time over three opens. From kernel
+  `7e515eb9` `tl` reads a running thread's registers by a cross-call to its CPU (`houji_sample_running`, HoujiCpuIdle.c; 2100 of 7500
+  samples a capture). The madvise and malloc slow-path shares measured with the old sampler (root261-root296) are overstated.
+- **What limits the open now** (root297, cross-call samples, seed leanlc9, `tu-ac=1`): the first frame 37-189 ms (SpringBoard's main
+  thread, mostly UIKit layout); the first ten or so frames at 6-12 ms; then from about +320 to +950 ms every frame lasts as long as
+  backboardd's encoding thread works on it (17-30 ms, never waiting for a CPU), against 3-5 ms in the fast frames. Over that stretch
+  (1566 ms of encoding over three opens) draws are 46 % (metal2vulkan `draw_indexed` / `draw_resident`), `end_encoding` 24 %,
+  render encoder and command buffer setup most of the rest, with no single hot function: the translation's per-draw cost. Reduce
+  Transparency and Reduce Motion were already on in the seed.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
