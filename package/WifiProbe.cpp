@@ -23,6 +23,7 @@
 #include "BootResetCore.h"
 #include "MhiBoot.h"
 #include "nw_abi.h"
+extern "C" void nw_wifi_rx_state(char *text, int size);   // Ath12kWifi nw_wifi.c: receive ring counters (worker thread only)
 #include "WifiFirmware.h"
 #include "WcnPower.h"
 #include "nw_control_endpoint.h"
@@ -1263,7 +1264,7 @@ void wifiStack(volatile uint32_t *m, uint64_t barBytes) {
     nw_wifi_irq_mode(gMsiAttached);
     pLog(6, msi ? "wifi: MSI line not attached, polling" : "wifi: MSI line attached (SPI 141), sleeping between interrupts");
     if (msi) native_wifi_logf(4, "wifi: MSI attach result %d", msi);
-    uint64_t nextReport = 0, sliceStarted = pNowNs(), reportStarted = sliceStarted;
+    uint64_t nextReport = 0, nextJoinReport = 0, sliceStarted = pNowNs(), reportStarted = sliceStarted;
     uint64_t activeNs = 0, longestStep = 0, rounds = 0, yields = 0, reportedCpu = thread_get_runtime_self();
     uint32_t reportedFrames = 0, reportedMsis = 0;
     for (uint64_t n = 0;; ++n) {
@@ -1283,6 +1284,17 @@ void wifiStack(volatile uint32_t *m, uint64_t barBytes) {
             thread_yield_to_preemption(); yields++; sliceStarted = pNowNs();
         }
         const uint64_t now = pNow();
+        // Between authentication and an authorized port (the 4-way handshake, up to 30 s), once a second: the receive rings' counters
+        // (frames per destination ring, error pushes, free refill entries), so a join that stops there shows whether the access
+        // point's handshake frames reached the driver at all. nw_wifi_rx_state must run on this thread.
+        if (now >= nextJoinReport) {
+            nextJoinReport = now + 1000;
+            nw_wifi_status js{}; nw_wifi_status_get(&js);
+            if (js.state >= NW_STA_AUTH && js.state < NW_STA_UP) {
+                char rx[240]; nw_wifi_rx_state(rx, sizeof rx);
+                native_wifi_logf(6, "wifi: joining (state %u) rx %.200s", js.state, rx);
+            }
+        }
         if (now >= nextReport) {
             nextReport = now + 30000;
             native_wifi_logf(6, "wifi: %u MSIs so far, vectors seen %08x", gMsiCount, gMsiBits);

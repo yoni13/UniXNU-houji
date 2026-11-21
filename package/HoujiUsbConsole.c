@@ -1355,10 +1355,11 @@ static void type_thread(void *arg __unused,wait_result_t result __unused)
 static void type_command(const char *text)
 {
     if (!os_atomic_cmpxchg(&type_busy,0,1,acquire)) { printf("HOUJI DEBUG: typing busy\n");return; }
-    /* "\n" in the text is the Return key */
+    /* "\n" in the text is the Return key, "\b" Backspace */
     size_t o=0;
     for (const char *c=text;*c && o<sizeof(type_text)-1;c++) {
         if (c[0]=='\\' && c[1]=='n') { type_text[o++]='\n'; c++; }
+        else if (c[0]=='\\' && c[1]=='b') { type_text[o++]='\b'; c++; }
         else type_text[o++]=*c;
     }
     type_text[o]=0;

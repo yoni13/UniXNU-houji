@@ -198,7 +198,7 @@ void native_hid_input_observed(unsigned event,int result) {
     }
 }
 // Console "type": sweet_hid_type queues the text and waits; NativeHidInput's timer takes one key a tick (native_hid_input_key) and sends
-// it as the device's boot keyboard report. Letters, digits, space, Return and - . _ @ ; the text is cleared once typed.
+// it as the device's boot keyboard report. Letters, digits, space, Return, Backspace and - . _ @ ; the text is cleared once typed.
 static char typeText[64];
 static volatile uint32_t typeAt,typeLen;
 static bool keyUsage(char c,unsigned char *modifiers,unsigned char *usage) {
@@ -209,6 +209,7 @@ static bool keyUsage(char c,unsigned char *modifiers,unsigned char *usage) {
     switch(c) {
     case '0': *usage=0x27;return true;
     case '\n': *usage=0x28;return true;
+    case '\b': *usage=0x2a;return true;
     case ' ': *usage=0x2c;return true;
     case '-': *usage=0x2d;return true;
     case '_': *usage=0x2d;*modifiers=0x02;return true;
