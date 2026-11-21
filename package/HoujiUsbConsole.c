@@ -1733,7 +1733,8 @@ static void command_line(void)
         for (uint32_t k=0;rows && k<n && k<512 && shown<want;k++) {
             volatile uint32_t *r=rows+((n-1-k)%512)*32;
             if (r[2]!=0x4d32434eu) continue;
-            printf("HOUJI NOTE %u: %u %u %u %u %u %u %u %u %u\n",r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11]);shown++;
+            printf("HOUJI NOTE %u: %u %u %u %u %u %u %u %u %u | %u %u %u %u %u %u %u %u %u %u\n",r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],
+                   r[12],r[13],r[14],r[15],r[16],r[17],r[18],r[19],r[20],r[21]);shown++;
         }
         printf("HOUJI NOTES: %u shown of %u\n",shown,n);
     }

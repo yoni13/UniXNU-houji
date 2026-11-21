@@ -21,7 +21,15 @@ diff --git a/bridge/NativeMetalObjects.rs b/bridge/NativeMetalObjects.rs
      guard(false, || {
          // The committing thread submits where no other pass is under way, with no wake of the scheduler thread between commit and GPU.
          let command_buffer = &get(command_buffer)?.0;
-@@ -2981,6 +2982,7 @@
+@@ -2721,6 +2722,7 @@
+         } else {
+             command_buffer.commit().map_err(e("commit"))?;
+         }
++        crate::counts::note(command_buffer.device());
+         Ok(true)
+     })
+ }
+@@ -2981,6 +2983,7 @@
  #[unsafe(no_mangle)]
  pub extern "C" fn nmb_render_encoder_new(command_buffer: *mut NmbCommandBuffer, descriptor: *const NmbRenderPassDescriptor)
                                           -> *mut NmbEncoder {
@@ -29,7 +37,7 @@ diff --git a/bridge/NativeMetalObjects.rs b/bridge/NativeMetalObjects.rs
      guard(std::ptr::null_mut(), || {
          let d = get(descriptor)?;
          let mut pass = RenderPassDescriptor::new();
-@@ -3041,6 +3043,7 @@
+@@ -3041,6 +3044,7 @@
  
  #[unsafe(no_mangle)]
  pub extern "C" fn nmb_encoder_end(encoder: *mut NmbEncoder) -> bool {
@@ -37,7 +45,7 @@ diff --git a/bridge/NativeMetalObjects.rs b/bridge/NativeMetalObjects.rs
      guard(false, || {
          if encoder.is_null() {
              return Err("null encoder".into());
-@@ -3325,6 +3328,7 @@
+@@ -3325,6 +3329,7 @@
  #[unsafe(no_mangle)]
  pub extern "C" fn nmb_render_draw(encoder: *mut NmbEncoder, primitive: u64, start: u32, count: u32, instances: u32, base_instance: u32)
                                    -> bool {
@@ -45,7 +53,7 @@ diff --git a/bridge/NativeMetalObjects.rs b/bridge/NativeMetalObjects.rs
      guard(false, || {
          render(encoder)?.draw_primitives(raw::<PrimitiveType>(primitive, "primitive")?, start, count, instances, base_instance)
              .map_err(e("draw"))?;
-@@ -3336,6 +3340,7 @@
+@@ -3336,6 +3341,7 @@
  #[allow(clippy::too_many_arguments)]
  pub extern "C" fn nmb_render_draw_indexed(encoder: *mut NmbEncoder, primitive: u64, count: u32, index_type: u64, indices: *mut NmbBuffer,
                                            offset: u64, instances: u32, base_vertex: i32, base_instance: u32) -> bool {
@@ -57,10 +65,10 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,115 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
-+//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals to the kernel's pass log
++//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
 +//! (`tu_darwin_note`, kind 1, first word 0x4d32434e "M2CN"), which the console prints (`notes`). For the cost of one draw and the
 +//! draws in a frame of backboardd's encoding thread (root297: Control Center frames of 17-30 ms of encoding).
 +
@@ -120,15 +128,16 @@ new file mode 100644
 +        let Some((kind, at)) = self.0 else { return };
 +        CALLS[kind].fetch_add(1, Ordering::Relaxed);
 +        NANOS[kind].fetch_add(at.elapsed().as_nanos() as u64, Ordering::Relaxed);
-+        if kind == COMMIT {
-+            note();
-+        }
 +    }
 +}
 +
 +type NoteFn = unsafe extern "C" fn(u32, *const u32, u32) -> bool;
 +
-+fn note() {
++/// After a commit: every 100 ms or more, the totals and `device`'s shadow counts, noted to the kernel.
++pub fn note(device: &metal2vulkan_runtime::Device) {
++    if !on() {
++        return;
++    }
 +    let now = start().elapsed().as_millis() as u64;
 +    let last = LAST_NOTE_MS.load(Ordering::Relaxed);
 +    if now < last + 100 || LAST_NOTE_MS.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_err() {
@@ -140,12 +149,31 @@ new file mode 100644
 +    if f == 0 {
 +        return;
 +    }
-+    let mut words = [0u32; 10];
++    let mut words = [0u32; 20];
 +    words[0] = 0x4d32434e;
 +    words[1] = now as u32;
 +    for k in 0..4 {
 +        words[2 + 2 * k] = CALLS[k].load(Ordering::Relaxed) as u32;
 +        words[3 + 2 * k] = (NANOS[k].load(Ordering::Relaxed) / 1000) as u32;
++    }
++    // Why textures go through shadows (`shadow.rs`): an image copied in from and back to their bytes around the passes that use them.
++    let w = device.work_counts();
++    for (i, v) in [
++        w.shadowed_textures,
++        w.host_textures_in_place,
++        w.host_texture_shadows_exact,
++        w.host_texture_shadows_render_target,
++        w.host_texture_shadows_shader_write,
++        w.host_texture_shadows_store_width,
++        w.host_texture_shadows_check_pending,
++        w.host_texture_shadows_check_failed,
++        w.host_texture_shadows_unchecked,
++        w.shadow_copies,
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        words[10 + i] = v as u32;
 +    }
 +    // SAFETY: `tu_darwin_note(kind, words, count)` reads `count` words.
 +    unsafe {
