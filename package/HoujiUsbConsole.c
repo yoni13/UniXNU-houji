@@ -999,12 +999,13 @@ static void vm_command(void)
 /* "tl MS SPEC...": a timeline of up to six threads, for lining their work up with individual frames (console "swaps"). SPEC is PID:0 (the
  * process's main thread) or PID:NAME (its first thread whose name starts with NAME). Every millisecond each thread's run state and its
  * top TL_DEPTH user frames (unslid like ustack's) are taken; consecutive identical samples of a thread make one run, kept in a buffer and
- * printed at the end: "HOUJI TL R thread start-us end-us running pc...", times from "HOUJI TL BASE" (mach time in ns, the clock of
+ * printed at the end: "HOUJI TL R2 thread start-us end-us state cpu pc..." (state 1 on a CPU, 2 runnable, 0 waiting), times from "HOUJI TL BASE" (mach time in ns, the clock of
  * "GESTURE AT" and the swaps). ustack adds a thread's samples up over seconds; this keeps when each one happened. */
 #define TL_THREADS 6
 #define TL_DEPTH 10
 #define TL_RUNS 12000
-struct tl_run { uint64_t t0,t1,pc[TL_DEPTH]; uint8_t thr,run; };
+struct tl_run { uint64_t t0,t1,pc[TL_DEPTH]; uint8_t thr,run,cpu; };
+int houji_thread_cpu_state(thread_t thread,int *cpu);
 struct tl_thread { int pid; char name[24]; uint64_t tid; task_t task; thread_t th; vm_map_t map; uint64_t start,slide; int last; };
 static struct { unsigned ms,n; struct tl_thread t[TL_THREADS]; } tl;
 static int _Atomic tl_busy;
@@ -1055,7 +1056,10 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
             if (t->th==THREAD_NULL) continue;
             struct proc_threadinfo_internal info={0};
             if (fill_taskthreadinfo(t->task,t->tid,true,&info,NULL,NULL)) { t->th=THREAD_NULL;continue; }
-            const uint8_t run=info.pth_run_state==1;
+            /* 1 on a CPU, 2 runnable and waiting for one (pth_run_state alone counts both as running), 0 waiting. */
+            int cpu=-1;
+            const int where=houji_thread_cpu_state(t->th,&cpu);
+            const uint8_t run=info.pth_run_state==1?(where==2?2:1):0,on=(uint8_t)(cpu<0?255:cpu);
             struct arm_saved_state *ss=get_user_regs(t->th);
             uint64_t pc[TL_DEPTH]={0};
             if (ss) {
@@ -1072,9 +1076,9 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
             }
             samples++;
             struct tl_run *last=t->last>=0?&runs[t->last]:NULL;
-            if (last && last->run==run && !memcmp(last->pc,pc,sizeof pc)) { last->t1=us;continue; }
+            if (last && last->run==run && last->cpu==on && !memcmp(last->pc,pc,sizeof pc)) { last->t1=us;continue; }
             if (nruns>=TL_RUNS) { full++;continue; }
-            struct tl_run *r=&runs[nruns];r->t0=r->t1=us;r->thr=(uint8_t)i;r->run=run;memcpy(r->pc,pc,sizeof pc);
+            struct tl_run *r=&runs[nruns];r->t0=r->t1=us;r->thr=(uint8_t)i;r->run=run;r->cpu=on;memcpy(r->pc,pc,sizeof pc);
             t->last=(int)nruns++;
         }
     }
@@ -1083,7 +1087,7 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
         const struct tl_run *r=&runs[k];
         char line[20*TL_DEPTH];unsigned at=0;line[0]=0;
         for (int d=0;d<TL_DEPTH && at+20<sizeof line;d++) at+=(unsigned)snprintf(line+at,sizeof line-at," %llx",r->pc[d]);
-        printf("HOUJI TL R %u %llu %llu %u%s\n",r->thr,(unsigned long long)r->t0,(unsigned long long)r->t1,r->run,line);
+        printf("HOUJI TL R2 %u %llu %llu %u %u%s\n",r->thr,(unsigned long long)r->t0,(unsigned long long)r->t1,r->run,r->cpu,line);
         delay(1500);
     }
     printf("HOUJI TL: end\n");

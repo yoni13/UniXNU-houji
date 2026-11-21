@@ -18,3 +18,18 @@ uint64_t houji_cpu_idle_mach(int cpu)
 	recount_processor_usage(&processor->pr_recount, &usage, &idle_time);
 	return idle_time;
 }
+
+/* For the console's thread timeline (HoujiUsbConsole.c "tl"): where a thread is now. 1 on a CPU (the processor it last ran on is
+ * running it), 2 runnable but waiting for a CPU, 0 waiting; *cpu is the processor it last ran on (-1 for none). Read without locks: a
+ * sample may be off by a switch. */
+#include <kern/thread.h>
+int houji_thread_cpu_state(thread_t thread, int *cpu);
+int houji_thread_cpu_state(thread_t thread, int *cpu)
+{
+	processor_t processor = thread->last_processor;
+	*cpu = processor != PROCESSOR_NULL ? processor->cpu_id : -1;
+	if (processor != PROCESSOR_NULL && processor->active_thread == thread) {
+		return 1;
+	}
+	return (thread->state & TH_RUN) ? 2 : 0;
+}
