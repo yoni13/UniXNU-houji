@@ -1718,6 +1718,12 @@ static void command_line(void)
         }
     }
     else if (!strcmp(u.command,"dvfs")) { extern void houji_cpu_dvfs_report(void); houji_cpu_dvfs_report(); }
+    else if (!strcmp(u.command,"l3") || !strncmp(u.command,"l3 vote ",8) || !strncmp(u.command,"l3 perf ",8)) {
+        /* HoujiCpuDvfs.cpp houji_cpu_l3: the L3 clock's table and state; "l3 vote N" / "l3 perf N" write row N */
+        extern void houji_cpu_l3(int op,unsigned value);
+        unsigned v=0;const char *p=u.command[2]?u.command+8:"";while (*p>='0' && *p<='9') v=v*10+(unsigned)(*p++-'0');
+        houji_cpu_l3(!u.command[2]?0:u.command[3]=='v'?1:2,v);
+    }
     else if (!strncmp(u.command,"dvfs set ",9)) {
         /* "dvfs set NAME VALUE" (HoujiCpuDvfs.cpp houji_cpu_dvfs_set) */
         extern void houji_cpu_dvfs_set(const char *name,int value);

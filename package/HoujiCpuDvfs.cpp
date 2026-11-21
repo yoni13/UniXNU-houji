@@ -376,3 +376,35 @@ extern "C" void houji_cpu_dvfs_set(const char *name, int value) {
     IOLog("HOUJI CPU DVFS SET: %s %d %s (frame %u%% touch %u%% loadsum %u skin offset %d C)\n", name, value, ok ? "ok" : "refused",
           gFramePct, gTouchPct, gLoadSum ? 1u : 0u, gSkinOffsetC);
 }
+
+// Console "l3" / "l3 vote N" / "l3 perf N": the EPSS L3 (CPU shared cache) clock at 0x17d90000 (Linux sm8650.dtsi epss_l3,
+// drivers/interconnect/qcom/osm-l3.c: LUT rows at 0x100, 4 bytes each, L value bits 7:0 times 19.2 MHz when the source bits 31:30
+// are set, else the 300 MHz alternate; the vote at 0x90, the perf state at 0x320). Nothing here votes for it otherwise: whether the
+// shared cache runs slow while the CPU clusters run fast (root277-root282: 20-44 % more CPU clock left Control Center's frame rate
+// unchanged).
+extern "C" void houji_cpu_l3(int op, unsigned value) {
+    static IOMemoryMap *map;
+    static uintptr_t va;
+    if (!va) {
+        IODeviceMemory *m = IODeviceMemory::withRange(0x17d90000ULL, 0x1000);
+        map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+        if (m) m->release();
+        va = map ? map->getVirtualAddress() : 0;
+        if (!va) {IOLog("HOUJI L3: not mapped\n"); return;}
+    }
+    volatile uint32_t *r = (volatile uint32_t *)va;
+    unsigned rows = 0;
+    uint32_t khz[40] = {};
+    for (unsigned i = 0; i < 40; i++) {
+        const uint32_t info = r[(0x100 + i * 4) / 4];
+        khz[i] = (info >> 30) ? (info & 255) * 19200 : 300000;
+        if (i && khz[i] == khz[i - 1]) break;
+        rows = i + 1;
+    }
+    if (op == 1 && value < rows) r[0x90 / 4] = value;
+    if (op == 2 && value < rows) r[0x320 / 4] = value;
+    __asm__ volatile("dsb sy" ::: "memory");
+    IOLog("HOUJI L3: enable %#x state %#x (%u kHz) vote %u perf %u; %u rows kHz %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
+          r[0], r[0x20 / 4], (r[0x20 / 4] & 255) * 19200, r[0x90 / 4], r[0x320 / 4], rows, khz[0], khz[1], khz[2], khz[3], khz[4], khz[5],
+          khz[6], khz[7], khz[8], khz[9], khz[10], khz[11], khz[12], khz[13], khz[14], khz[15], khz[16], khz[17], khz[18], khz[19]);
+}
