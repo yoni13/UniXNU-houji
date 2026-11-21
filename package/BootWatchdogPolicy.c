@@ -10,6 +10,7 @@
 #include <sys/fcntl.h>
 #include <sys/stat.h>
 #include <pexpert/pexpert.h>
+#include <stdbool.h>
 
 static const char policy_head[] =
  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -100,6 +101,10 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  PE_parse_boot_argn("disable-watchdogd",&enabled,sizeof(enabled));
  if(!PE_parse_boot_argn("disable-jobs",jobs,sizeof(jobs)))jobs[0]=0;jobs[sizeof(jobs)-1]=0;
  int lite=0;PE_parse_boot_argn("lite",&lite,sizeof(lite));if(lite!=1 && lite!=2)lite=0;
+ // houji: vrc=0 turns off the VM's deferred reclamation for every process started from here on (vm_reclaim_enabled, writable on this
+ // DEVELOPMENT kernel; libmalloc asks for its reclaim buffer at process start). root237: SpringBoard's main thread spent 37 % of its
+ // running samples of a Control Center open in xzone malloc's slow path; a block whose pages went back to the VM faults on reuse.
+ {int vrc=1;if(PE_parse_boot_argn("vrc",&vrc,sizeof(vrc)) && vrc==0){extern bool vm_reclaim_enabled;vm_reclaim_enabled=false;printf("HOUJI VM: deferred reclaim off (vrc=0)\n");}}
  if(enabled!=1)enabled=0;
  for(const char *c=jobs;*c;++c)if(!((*c>='a'&&*c<='z')||(*c>='A'&&*c<='Z')||(*c>='0'&&*c<='9')||*c=='.'||*c=='-'||*c==','))return EINVAL;
  int setup=0,reset=0;
