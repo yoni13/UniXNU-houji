@@ -187,6 +187,28 @@ fragment instructions, 10 textures; the Control Center backdrop blur), at 680-90
 The GPU clock is not the limit during gestures: the governor's touch boost (`gpu-dcvs-boost-ms`, 1000 ms) holds at least 680 MHz
 after every touch; in root234 the GPU spent 30-70 % of each 10 s window at 903 MHz with the GPU zone at 53-61 C, below its cap.
 
+### Deferred reclaim off (`vrc=0`, root237, root241-root245)
+
+root237 (SpringBoard main thread, inclusive over its running samples): Control Center opens 39 % in `CA::Transaction::commit`, 30 % in
+`CA::Context::retain_all_contexts`, 37 % in xzone malloc's slow path (`__xzm_xzone_malloc_freelist_outlined`); home swipes 15 % commit,
+44 % UIKit's update scheduler. Suspecting page faults on blocks whose pages the deferred reclaim had returned, `vrc=0` (in the
+Data-mount hook before launchd: `vm_reclaim_enabled = false`, writable on this DEVELOPMENT kernel; the `vm.reclaim.*` sysctls
+answer error 1 to the console) starts every process without a reclaim buffer. A/B (`t-ab-vrc.sh`, `NOSLS=1`, settle 90 s;
+root243 hit the 70 C guard before measuring and was replaced by root245), mean fps of the rounds:
+
+| Operation | A `vrc=0` (root241, root245) | B (root242, root244) |
+|---|---|---|
+| Settings scroll | 114 | 111 |
+| Home swipe | 70 | 72 |
+| Control Center close | 79 | 65 |
+| Search close | 68 (59 without one 95) | 61 |
+| Settings close | 53 | 53 |
+| Settings open | 48 | 52 |
+| Search open | 40 | 38 |
+| Control Center open | 31 | 41 |
+
+No consistent gain (Control Center close better, open worse, the rest within the spread); `vrc=0` stays opt-in and off.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
