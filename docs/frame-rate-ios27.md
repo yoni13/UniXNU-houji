@@ -209,6 +209,26 @@ root243 hit the 70 C guard before measuring and was replaced by root245), mean f
 
 No consistent gain (Control Center close better, open worse, the rest within the spread); `vrc=0` stays opt-in and off.
 
+### Page faults, assetsd and the thermal caps (root246-root254)
+
+- **Faults.** System faults (console `vm`): 1300-2000/s at idle, 3400-6200/s through Control Center opens (root246). Per task
+  (console `top` now lists `HOUJI TOPF`, TASK_EVENTS_INFO faults; root247): assetsd ~2000/s at all times (and a full core), backboardd
+  ~7500 and SpringBoard ~3200 per Control Center open. Page zeroing is not the cost (console `zbench`: `pmap_zero_page` ~70 ns per
+  4 KiB, root248), and SpringBoard's main thread spends 8 % of its CPU in the kernel through Control Center opens (`threads` now prints
+  system time, root249: 296 of 3720 ms), backboardd's render threads 17-25 %. `gpu-pf=1` (`unixnu-adreno-prefault.patch`,
+  kIOMapPrefault on BO CPU views) did not lower backboardd's faults (root253: 19997 over two opens): IOKit prefaults only memory
+  wired through prepare(), and device-pager views are populated at map time already, so the BO views are not the source. Next
+  suspect: IOSurface imports (host-pointer BOs) of new layer surfaces.
+- **assetsd** removed in seed `leanlc5` (launchd cache CDHash 8bbe3068...); no other effect seen yet (root251).
+- **Thermal.** With `houji_thermal_trigger_c=60` the governor sat at levels 1-2 through the tests (hottest TSENS 60-66 C) and capped the
+  big clusters at 1.4-2.0 GHz. `t-round.sh` now uses `TRIG` (default 68) and the guard `GUARD_C` 74 (below the governor's 75 C
+  TSENS emergency); a 68 C trigger under a 70 C guard tripped the guard during boot (root252, 72 C). root254 (68/74, leanlc5): no guard
+  trip (peak 73.5 C at boot), level 0 through most of the actions, clusters at 2.2-2.4 GHz, now capped by the stock skin table
+  (battery 37 C on USB power: 2.19-2.32 GHz; the table never allows more than 2.63 GHz). Frame rates against root251 (throttled):
+  home swipe 71/78 vs 68/71, Control Center close 58/88 vs 63/85, Settings close 58/64 vs 61/58, Search 39-52 vs 33-50, Control
+  Center open 20/48 vs 57/47, Settings scroll 114 vs 112-113. Roughly 40 % more clock moved the rates by a few fps: the limit is not
+  CPU throughput.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
