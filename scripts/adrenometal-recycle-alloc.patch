@@ -1,0 +1,199 @@
+diff --git a/bridge/NativeMetalBridge.rs b/bridge/NativeMetalBridge.rs
+--- a/bridge/NativeMetalBridge.rs
++++ b/bridge/NativeMetalBridge.rs
+@@ -12,6 +12,13 @@
+ pub mod objects;
+ #[path = "NativeMetalPurge.rs"]
+ pub mod purge;
++#[path = "NativeMetalRecycle.rs"]
++mod recycle;
++
++// houji: the system allocator, with boot argument m2v-ac=1 keeping freed 1-64 KiB blocks for the next allocation of their size
++// class (NativeMetalRecycle.rs).
++#[global_allocator]
++static ALLOCATOR: recycle::Recycle = recycle::Recycle;
+ 
+ // The system allocator: mimalloc reserved its arenas with large mmaps, and on iPadOS 27 the kernel stopped the render server and
+ // SpringBoard with an exception inside that mmap (unix_mmap_prim_aligned from mi_arena_reserve), so the shell resprung.
+diff --git a/bridge/NativeMetalRecycle.rs b/bridge/NativeMetalRecycle.rs
+new file mode 100644
+--- /dev/null
++++ b/bridge/NativeMetalRecycle.rs
+@@ -0,0 +1,177 @@
++// SPDX-License-Identifier: MIT
++//! houji: the bridge's global allocator. The system allocator, except that with boot argument `m2v-ac=1` a freed block of 1-64 KiB
++//! (by its malloc size) is kept, up to 64 a size class and 16 MiB in all, for the next allocation of the same malloc size class.
++//! libmalloc's xzone allocator gives an emptied small chunk's pages back at once (madvise) and the next allocation faults them in
++//! again: the runtime boxes a 2320-byte tuple per render pass (`EncoderCore::retain` from `RenderLowering::end_pass`), and its
++//! copy into the new box was a fifth of backboardd's encoding thread while Control Center stayed open (root292, tl: 442 of
++//! 2045 ms). Blocks only ever come from and go back to malloc, so `free` and `realloc` stay valid for every pointer.
++
++use std::alloc::{GlobalAlloc, Layout};
++use std::cell::UnsafeCell;
++use std::sync::atomic::{AtomicI8, Ordering};
++
++extern "C" {
++    fn malloc_size(ptr: *const libc::c_void) -> libc::size_t;
++    fn malloc_good_size(size: libc::size_t) -> libc::size_t;
++}
++
++const MIN: usize = 1024;
++const MAX: usize = 65536;
++const CLASSES: usize = 96;
++const DEPTH: usize = 64;
++const CAP: usize = 16 << 20;
++
++struct Class {
++    size: usize,
++    count: usize,
++    ptrs: [*mut u8; DEPTH],
++}
++
++struct State {
++    lock: UnsafeCell<libc::os_unfair_lock>,
++    inner: UnsafeCell<(usize, [Class; CLASSES])>,
++}
++
++// SAFETY: `inner` is only reached under `lock`.
++unsafe impl Sync for State {}
++
++const EMPTY: Class = Class { size: 0, count: 0, ptrs: [std::ptr::null_mut(); DEPTH] };
++static STATE: State = State {
++    lock: UnsafeCell::new(libc::OS_UNFAIR_LOCK_INIT),
++    inner: UnsafeCell::new((0, [EMPTY; CLASSES])),
++};
++static ON: AtomicI8 = AtomicI8::new(-1);
++
++fn on() -> bool {
++    let known = ON.load(Ordering::Relaxed);
++    if known >= 0 {
++        return known == 1;
++    }
++    let mut text = [0u8; 1024];
++    let mut length = text.len() - 1;
++    // SAFETY: a nul-terminated name, and a buffer of `length` bytes the call writes at most; no allocation.
++    let read = unsafe {
++        libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
++    };
++    let args = &text[..length.min(text.len())];
++    let found = read == 0
++        && args.windows(8).enumerate().any(|(at, w)| {
++            w == b"m2v-ac=1"
++                && (at == 0 || args[at - 1] == b' ')
++                && matches!(args.get(at + 8), None | Some(&b' ') | Some(&0))
++        });
++    ON.store(found as i8, Ordering::Relaxed);
++    found
++}
++
++fn with<R>(f: impl FnOnce(&mut (usize, [Class; CLASSES])) -> R) -> R {
++    // SAFETY: the lock serializes every reach of `inner`; nothing under it allocates or re-enters.
++    unsafe {
++        libc::os_unfair_lock_lock(STATE.lock.get());
++        let r = f(&mut *STATE.inner.get());
++        libc::os_unfair_lock_unlock(STATE.lock.get());
++        r
++    }
++}
++
++fn take(size: usize) -> *mut u8 {
++    if !(MIN..=MAX).contains(&size) || !on() {
++        return std::ptr::null_mut();
++    }
++    // SAFETY: a plain query.
++    let good = unsafe { malloc_good_size(size) };
++    with(|(bytes, classes)| {
++        for c in classes.iter_mut() {
++            if c.size == good && c.count > 0 {
++                c.count -= 1;
++                *bytes -= good;
++                return c.ptrs[c.count];
++            }
++        }
++        std::ptr::null_mut()
++    })
++}
++
++fn give(ptr: *mut u8) -> bool {
++    if ptr.is_null() || !on() {
++        return false;
++    }
++    // SAFETY: `ptr` is a live malloc block.
++    let size = unsafe { malloc_size(ptr.cast()) };
++    if !(MIN..=MAX).contains(&size) {
++        return false;
++    }
++    with(|(bytes, classes)| {
++        if *bytes + size > CAP {
++            return false;
++        }
++        let slot = classes.iter().position(|c| c.size == size).or_else(|| classes.iter().position(|c| c.count == 0));
++        match slot {
++            Some(i) if classes[i].count < DEPTH => {
++                let c = &mut classes[i];
++                c.size = size;
++                c.ptrs[c.count] = ptr;
++                c.count += 1;
++                *bytes += size;
++                true
++            }
++            _ => false,
++        }
++    })
++}
++
++pub struct Recycle;
++
++// SAFETY: every block comes from malloc or posix_memalign and goes back to free (directly or after a stay in the cache), as the
++// standard library's System allocator does on Apple platforms (malloc for alignments up to 16).
++unsafe impl GlobalAlloc for Recycle {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        if layout.align() <= 16 {
++            let kept = take(layout.size());
++            if !kept.is_null() {
++                return kept;
++            }
++            return libc::malloc(layout.size()).cast();
++        }
++        let mut out = std::ptr::null_mut();
++        if libc::posix_memalign(&mut out, layout.align(), layout.size()) != 0 {
++            return std::ptr::null_mut();
++        }
++        out.cast()
++    }
++
++    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
++        if layout.align() <= 16 {
++            let kept = take(layout.size());
++            if !kept.is_null() {
++                std::ptr::write_bytes(kept, 0, layout.size());
++                return kept;
++            }
++            return libc::calloc(1, layout.size()).cast();
++        }
++        let p = self.alloc(layout);
++        if !p.is_null() {
++            std::ptr::write_bytes(p, 0, layout.size());
++        }
++        p
++    }
++
++    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++        if layout.align() <= 16 && give(ptr) {
++            return;
++        }
++        libc::free(ptr.cast());
++    }
++
++    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
++        if layout.align() <= 16 {
++            return libc::realloc(ptr.cast(), new_size).cast();
++        }
++        let new = self.alloc(Layout::from_size_align_unchecked(new_size, layout.align()));
++        if !new.is_null() {
++            std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
++            libc::free(ptr.cast());
++        }
++        new
++    }
++}
