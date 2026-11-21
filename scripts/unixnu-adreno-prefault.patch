@@ -4,13 +4,13 @@
      if(core_ && !live_) {delete core_;core_=nullptr;}
      IOUserClient::free();
  }
-+/* houji: gpu-prefault=1 maps a BO's CPU view with kIOMapPrefault: IOKit enters every (wired) page of the view in the client's page table
++/* houji: gpu-pf=1 maps a BO's CPU view with kIOMapPrefault: IOKit enters every (wired) page of the view in the client's page table
 + * when it maps it, instead of one page fault per page at its first touch. root247: about 7500 page faults in the render server per
 + * Control Center open, its render threads 17-25 % in the kernel (root249). IOKit prefaults only wired memory and maps the rest lazily. */
 +static IOOptionBits prefaultOption()
 +{
 +    static int on=-1;
-+    if(on<0) {unsigned value=0;on=PE_parse_boot_argn("gpu-prefault",&value,sizeof value) && value==1;}
++    if(on<0) {unsigned value=0;on=PE_parse_boot_argn("gpu-pf",&value,sizeof value) && value==1;}
 +    return on?kIOMapPrefault:0;
 +}
  IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *options,IOMemoryDescriptor **memory)
