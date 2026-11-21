@@ -16,6 +16,8 @@ extern "C" int houji_thermal_hottest(void);   // HoujiThermal.cpp: deci-C, -1000
 extern "C" uint64_t houji_cpu_idle_mach(int cpu);   // HoujiCpuIdle.c: accumulated idle time, 0 for a CPU not started
 extern "C" uint64_t houji_cpu_touch_time(void);   // HoujiTouchHid.c: latest down/move contact
 extern "C" uint64_t houji_cpu_frame_activity(void);   // LegacyDisplayProbe.cpp: accepted frame swaps
+extern "C" void houji_cpu_l3_follow(bool busy, uint32_t cpuKhz);   // below: the L3 clock with the CPU (houji_l3)
+unsigned houji_l3_mode_arg(void);   // below: boot argument houji_l3
 extern "C" volatile int32_t native_houji_battery_stats[16];   // HoujiBattery.cpp; temperature [4] is in centi-C
 
 namespace {
@@ -266,6 +268,12 @@ void worker(void *, wait_result_t) {
             }
         }
         apply(level, framing, touching);
+        {
+            uint32_t top = 0;
+            for (unsigned id = 1; id < kDomains; id++)
+                if (d[id].ok && d[id].khz[d[id].cur] > top) top = d[id].khz[d[id].cur];
+            houji_cpu_l3_follow(framing || touching, top);
+        }
         if (++ticks % reportTicks == 0) {   // every 5 s
             uint32_t req[kDomains], state[kDomains];
             const unsigned skinAbs = gSkinDeci < 0 ? (unsigned)-gSkinDeci : (unsigned)gSkinDeci;
@@ -305,6 +313,7 @@ extern "C" void houji_cpu_dvfs_start(void) {
     unsigned enabled = 0;
     if (gStarted || !PE_parse_boot_argn("houji_dvfs", &enabled, sizeof(enabled)) || !(enabled & 1)) return;
     gStarted = 1;
+    houji_l3_mode_arg();
     char policy[16] = {};
     gStock = PE_parse_boot_argn("houji_cpu_policy", policy, sizeof(policy)) && !strcmp(policy, "stock");
     if (gStock) gMaxPct = 100;
@@ -377,35 +386,68 @@ extern "C" void houji_cpu_dvfs_set(const char *name, int value) {
           gFramePct, gTouchPct, gLoadSum ? 1u : 0u, gSkinOffsetC);
 }
 
-// Console "l3" / "l3 vote N" / "l3 perf N": the EPSS L3 (CPU shared cache) clock at 0x17d90000 (Linux sm8650.dtsi epss_l3,
-// drivers/interconnect/qcom/osm-l3.c: LUT rows at 0x100, 4 bytes each, L value bits 7:0 times 19.2 MHz when the source bits 31:30
-// are set, else the 300 MHz alternate; the vote at 0x90, the perf state at 0x320). Nothing here votes for it otherwise: whether the
-// shared cache runs slow while the CPU clusters run fast (root277-root282: 20-44 % more CPU clock left Control Center's frame rate
-// unchanged).
-extern "C" void houji_cpu_l3(int op, unsigned value) {
-    static IOMemoryMap *map;
-    static uintptr_t va;
-    if (!va) {
-        IODeviceMemory *m = IODeviceMemory::withRange(0x17d90000ULL, 0x1000);
-        map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
-        if (m) m->release();
-        va = map ? map->getVirtualAddress() : 0;
-        if (!va) {IOLog("HOUJI L3: not mapped\n"); return;}
-    }
-    volatile uint32_t *r = (volatile uint32_t *)va;
-    unsigned rows = 0;
-    uint32_t khz[40] = {};
+// The EPSS L3 (CPU shared cache) clock at 0x17d90000 (Linux sm8650.dtsi epss_l3, drivers/interconnect/qcom/osm-l3.c: LUT rows at
+// 0x100, 4 bytes each, L value bits 7:0 times 19.2 MHz when the source bits 31:30 are set, else the 300 MHz alternate; the vote at
+// 0x90, the perf state at 0x320). The bootloader leaves the vote at row 12 (1555 MHz); nothing changed it before. root283, one boot,
+// Control Center opens and closes alternating the vote: at row 0 (365 MHz) opens 24-44 fps (mean 36), closes 60-86 (69); at the
+// top row (2035 MHz) opens 48-85 (65), closes 93-98 (95).
+static IOMemoryMap *gL3Map;
+static uintptr_t gL3Va;
+static unsigned gL3Rows, gL3Vote = ~0u;
+static uint32_t gL3Khz[40];
+static unsigned gL3Mode;   // houji_l3: 0 leave it, 1 follow the CPU (top while touched or drawing), 2 always the top row
+
+static bool l3Map(void) {
+    if (gL3Va) return true;
+    IODeviceMemory *m = IODeviceMemory::withRange(0x17d90000ULL, 0x1000);
+    gL3Map = m ? m->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (m) m->release();
+    gL3Va = gL3Map ? gL3Map->getVirtualAddress() : 0;
+    if (!gL3Va) {IOLog("HOUJI L3: not mapped\n"); return false;}
+    volatile uint32_t *r = (volatile uint32_t *)gL3Va;
     for (unsigned i = 0; i < 40; i++) {
         const uint32_t info = r[(0x100 + i * 4) / 4];
-        khz[i] = (info >> 30) ? (info & 255) * 19200 : 300000;
-        if (i && khz[i] == khz[i - 1]) break;
-        rows = i + 1;
+        gL3Khz[i] = (info >> 30) ? (info & 255) * 19200 : 300000;
+        if (i && gL3Khz[i] == gL3Khz[i - 1]) break;
+        gL3Rows = i + 1;
     }
-    if (value >= rows && rows) value = rows - 1;   // past the table: its top row
-    if (op == 1 && rows) r[0x90 / 4] = value;
-    if (op == 2 && rows) r[0x320 / 4] = value;
+    return gL3Rows != 0;
+}
+
+// Called by the governor after each sample (houji_l3=1 or 2): the lowest row at or above the fastest CPU domain's request, the top
+// row while touched or drawing frames (1), or always the top row (2).
+extern "C" void houji_cpu_l3_follow(bool busy, uint32_t cpuKhz) {
+    if (!gL3Mode || !l3Map()) return;
+    unsigned row = gL3Rows - 1;
+    if (gL3Mode == 1 && !busy) {
+        row = 0;
+        while (row + 1 < gL3Rows && gL3Khz[row] < cpuKhz) ++row;
+    }
+    if (row == gL3Vote) return;
+    ((volatile uint32_t *)gL3Va)[0x90 / 4] = row;
+    gL3Vote = row;
+}
+
+// Console "l3" / "l3 vote N" / "l3 perf N" / "l3 mode N": the table and state; write row N (past the table: its top row); the mode.
+extern "C" void houji_cpu_l3(int op, unsigned value) {
+    if (op == 3) {gL3Mode = value <= 2 ? value : gL3Mode; gL3Vote = ~0u;}
+    if (!l3Map()) return;
+    volatile uint32_t *r = (volatile uint32_t *)gL3Va;
+    const unsigned rows = gL3Rows;
+    uint32_t *khz = gL3Khz;
+    if (value >= rows) value = rows - 1;
+    if (op == 1) r[0x90 / 4] = value;
+    if (op == 2) r[0x320 / 4] = value;
     __asm__ volatile("dsb sy" ::: "memory");
-    IOLog("HOUJI L3: enable %#x state %#x (%u kHz) vote %u perf %u; %u rows kHz %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
-          r[0], r[0x20 / 4], (r[0x20 / 4] & 255) * 19200, r[0x90 / 4], r[0x320 / 4], rows, khz[0], khz[1], khz[2], khz[3], khz[4], khz[5],
-          khz[6], khz[7], khz[8], khz[9], khz[10], khz[11], khz[12], khz[13], khz[14], khz[15], khz[16], khz[17], khz[18], khz[19]);
+    IOLog("HOUJI L3: mode %u enable %#x state %#x (%u kHz) vote %u perf %u; %u rows kHz %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
+          gL3Mode, r[0], r[0x20 / 4], (r[0x20 / 4] & 255) * 19200, r[0x90 / 4], r[0x320 / 4], rows, khz[0], khz[1], khz[2], khz[3], khz[4],
+          khz[5], khz[6], khz[7], khz[8], khz[9], khz[10], khz[11], khz[12], khz[13], khz[14], khz[15], khz[16], khz[17], khz[18], khz[19]);
+}
+
+// Boot argument houji_l3=1|2 (houji_cpu_l3_follow).
+unsigned houji_l3_mode_arg(void) {
+    unsigned mode = 0;
+    if (PE_parse_boot_argn("houji_l3", &mode, sizeof(mode)) && mode <= 2) gL3Mode = mode;
+    if (gL3Mode) IOLog("HOUJI L3: mode %u\n", gL3Mode);
+    return gL3Mode;
 }
