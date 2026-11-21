@@ -996,6 +996,129 @@ static void vm_command(void)
            native_adreno_client_bytes[4][0],native_adreno_client_bytes[4][1],native_adreno_client_stats[0][2],native_adreno_client_stats[1][2],
            native_adreno_client_stats[2][2],native_adreno_client_stats[3][2]);
 }
+/* "tl MS SPEC...": a timeline of up to six threads, for lining their work up with individual frames (console "swaps"). SPEC is PID:0 (the
+ * process's main thread) or PID:NAME (its first thread whose name starts with NAME). Every millisecond each thread's run state and its
+ * top TL_DEPTH user frames (unslid like ustack's) are taken; consecutive identical samples of a thread make one run, kept in a buffer and
+ * printed at the end: "HOUJI TL R thread start-us end-us running pc...", times from "HOUJI TL BASE" (mach time in ns, the clock of
+ * "GESTURE AT" and the swaps). ustack adds a thread's samples up over seconds; this keeps when each one happened. */
+#define TL_THREADS 6
+#define TL_DEPTH 10
+#define TL_RUNS 12000
+struct tl_run { uint64_t t0,t1,pc[TL_DEPTH]; uint8_t thr,run; };
+struct tl_thread { int pid; char name[24]; uint64_t tid; task_t task; thread_t th; vm_map_t map; uint64_t start,slide; int last; };
+static struct { unsigned ms,n; struct tl_thread t[TL_THREADS]; } tl;
+static int _Atomic tl_busy;
+static uint64_t tl_find_tid(task_t task,const char *name)
+{
+    uint64_t found=0;
+    uint64_t *tids=kalloc_data(sizeof(uint64_t)*512,Z_WAITOK|Z_ZERO);
+    if (!tids) return 0;
+    int n=get_task_numacts(task);if (n>512) n=512;
+    const int got=n>0?fill_taskthreadlist(task,tids,n,true)/(int)sizeof(uint64_t):0;
+    for (int i=0;i<got;i++) {
+        if (!tids[i]) continue;
+        if (name[0] && strcmp(name,"0")) {
+            struct proc_threadinfo_internal info={0};
+            if (fill_taskthreadinfo(task,tids[i],true,&info,NULL,NULL) || strncmp(info.pth_name,name,strlen(name))) continue;
+        }
+        if (!found || tids[i]<found) found=tids[i];
+    }
+    kfree_data(tids,sizeof(uint64_t)*512);
+    return found;
+}
+static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
+{
+    struct tl_run *runs=kalloc_data(sizeof(struct tl_run)*TL_RUNS,Z_WAITOK|Z_ZERO);
+    unsigned nruns=0,full=0,samples=0;
+    for (unsigned i=0;i<tl.n;i++) {
+        struct tl_thread *t=&tl.t[i];
+        t->task=TASK_NULL;t->th=THREAD_NULL;t->last=-1;
+        proc_t p=proc_find(t->pid);
+        if (p) { t->task=proc_task(p);if (t->task!=TASK_NULL) task_reference(t->task);proc_rele(p); }
+        if (t->task==TASK_NULL) continue;
+        t->tid=tl_find_tid(t->task,t->name);
+        t->th=t->tid?task_findtid(t->task,t->tid):THREAD_NULL;
+        struct vm_shared_region *sr=vm_shared_region_get(t->task);
+        t->start=0;if (sr) { (void)vm_shared_region_start_address(sr,&t->start);vm_shared_region_deallocate(sr); }
+        t->slide=t->start>=0x180000000ull?t->start-0x180000000ull:0;
+        t->map=get_task_map(t->task);
+        printf("HOUJI TL THREAD %u pid %d tid %llu %s\n",i,t->pid,(unsigned long long)t->tid,t->name);
+    }
+    uint64_t base=mach_absolute_time(),base_ns=0;absolutetime_to_nanoseconds(base,&base_ns);
+    printf("HOUJI TL BASE %llu\n",(unsigned long long)base_ns);
+    for (unsigned elapsed=0;runs && elapsed<tl.ms;elapsed++) {
+        gesture_sleep_ms(1);
+        uint64_t now_ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&now_ns);
+        const uint64_t us=(now_ns-base_ns)/1000;
+        for (unsigned i=0;i<tl.n;i++) {
+            struct tl_thread *t=&tl.t[i];
+            if (t->th==THREAD_NULL) continue;
+            struct proc_threadinfo_internal info={0};
+            if (fill_taskthreadinfo(t->task,t->tid,true,&info,NULL,NULL)) { t->th=THREAD_NULL;continue; }
+            const uint8_t run=info.pth_run_state==1;
+            struct arm_saved_state *ss=get_user_regs(t->th);
+            uint64_t pc[TL_DEPTH]={0};
+            if (ss) {
+                pc[0]=ustack_strip(get_saved_state_pc(ss));pc[1]=ustack_strip(get_saved_state_lr(ss));
+                uint64_t fp=get_saved_state_fp(ss);
+                for (int d=2;d<TL_DEPTH && fp && !(fp&7);d++) {
+                    uint64_t frame[2];
+                    if (copyinmap(t->map,(vm_map_offset_t)fp,frame,sizeof frame)!=KERN_SUCCESS) break;
+                    pc[d]=ustack_strip(frame[1]);
+                    if (frame[0]<=fp) break;
+                    fp=frame[0];
+                }
+                for (int d=0;d<TL_DEPTH;d++) if (pc[d]>=t->start && t->start && pc[d]-t->slide<0x300000000ull) pc[d]-=t->slide;
+            }
+            samples++;
+            struct tl_run *last=t->last>=0?&runs[t->last]:NULL;
+            if (last && last->run==run && !memcmp(last->pc,pc,sizeof pc)) { last->t1=us;continue; }
+            if (nruns>=TL_RUNS) { full++;continue; }
+            struct tl_run *r=&runs[nruns];r->t0=r->t1=us;r->thr=(uint8_t)i;r->run=run;memcpy(r->pc,pc,sizeof pc);
+            t->last=(int)nruns++;
+        }
+    }
+    printf("HOUJI TL: %u ms, %u samples, %u runs, %u not kept (buffer full)\n",tl.ms,samples,nruns,full);
+    for (unsigned k=0;runs && k<nruns;k++) {
+        const struct tl_run *r=&runs[k];
+        char line[20*TL_DEPTH];unsigned at=0;line[0]=0;
+        for (int d=0;d<TL_DEPTH && at+20<sizeof line;d++) at+=(unsigned)snprintf(line+at,sizeof line-at," %llx",r->pc[d]);
+        printf("HOUJI TL R %u %llu %llu %u%s\n",r->thr,(unsigned long long)r->t0,(unsigned long long)r->t1,r->run,line);
+        delay(1500);
+    }
+    printf("HOUJI TL: end\n");
+    if (runs) kfree_data(runs,sizeof(struct tl_run)*TL_RUNS);
+    for (unsigned i=0;i<tl.n;i++) {
+        if (tl.t[i].th!=THREAD_NULL) thread_deallocate(tl.t[i].th);
+        if (tl.t[i].task!=TASK_NULL) task_deallocate(tl.t[i].task);
+    }
+    os_atomic_store(&tl_busy,0,release);
+    thread_terminate(current_thread());
+}
+static void tl_command(const char *args)
+{
+    if (!os_atomic_cmpxchg(&tl_busy,0,1,acquire)) { printf("HOUJI TL: busy\n");return; }
+    tl.ms=(unsigned)strtoq(args,NULL,10);if (tl.ms<10 || tl.ms>10000) tl.ms=3000;
+    tl.n=0;
+    const char *c=strchr(args,' ');
+    while (c && tl.n<TL_THREADS) {
+        while (*c==' ') c++;
+        if (!*c) break;
+        struct tl_thread *t=&tl.t[tl.n];bzero(t,sizeof *t);
+        t->pid=(int)strtoq(c,NULL,10);
+        const char *colon=strchr(c,':'),*end=strchr(c,' ');
+        if (colon && (!end || colon<end)) {
+            size_t len=(end?(size_t)(end-colon-1):strlen(colon+1));if (len>=sizeof t->name) len=sizeof t->name-1;
+            memcpy(t->name,colon+1,len);t->name[len]=0;
+        } else strlcpy(t->name,"0",sizeof t->name);
+        if (t->pid>0) tl.n++;
+        c=end;
+    }
+    if (!tl.n) { printf("HOUJI TL: tl MS PID:0|PID:NAME ...\n");os_atomic_store(&tl_busy,0,release);return; }
+    thread_t th;
+    if (kernel_thread_start(tl_thread_main,NULL,&th)!=KERN_SUCCESS) { os_atomic_store(&tl_busy,0,release);return; }
+    thread_deallocate(th);
+}
 /* "zbench": what zeroing a page costs here. A zero-fill page fault zeroes the new page through the kernel's physical aperture
  * (pmap_zero_page); root247: about 7500 faults in backboardd per Control Center open at an estimated ~50 us each. Times 64 rounds of
  * pmap_zero_page on the pages of a kernel buffer against bzero of the same buffer through its ordinary cached mapping. */
@@ -1545,6 +1668,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"threads ",8)) threads_command(u.command+8);
     else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"zbench")) zbench_command();
+    else if (!strncmp(u.command,"tl ",3)) tl_command(u.command+3);
     else if (!strcmp(u.command,"gm")) gm_command();
     else if (!strcmp(u.command,"aks")) { extern void native_aks_report(void) __attribute__((weak_import)); if (native_aks_report) native_aks_report(); else printf("HOUJI AKS: unavailable\n"); }
     else if (!strcmp(u.command,"io")) io_command();
