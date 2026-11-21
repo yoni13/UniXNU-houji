@@ -61,6 +61,10 @@ bool gStock, gEmergency, gSkinFallbackLogged;
 unsigned gBatteryMode, gStockState[kDomains], gStockCaps[kDomains];
 int gSkinOffsetC, gSkinDeci;
 unsigned gSampleMs = 200, gFramePct = 45, gTouchPct = 65, gTouchMs = 300;
+// houji_cpu_load_sum=1: a domain's load is the sum of its cores' busy shares (at most 100 %), not the busiest core's. A single thread
+// moving among the cores of a cluster (SpringBoard's main thread over CPUs 2-6 while Control Center opens, root273) left every core
+// 20-40 % busy, and the governor asked 1.4-1.5 GHz for a thread that ran all the time.
+bool gLoadSum;
 
 uint32_t rd(Domain &w, unsigned off) {return *(volatile uint32_t *)(w.va + off);}
 
@@ -230,7 +234,10 @@ void worker(void *, wait_result_t) {
                     if (idle && gLastIdle[cpu] && span) {
                         const uint64_t idleSpan = idle > gLastIdle[cpu] ? idle - gLastIdle[cpu] : 0;
                         const unsigned busy = idleSpan >= span ? 0 : (unsigned)(1000 - idleSpan * 1000 / span);
-                        if (busy > load[kCpuDomain[cpu]]) load[kCpuDomain[cpu]] = busy;
+                        if (gLoadSum) {
+                            load[kCpuDomain[cpu]] += busy;
+                            if (load[kCpuDomain[cpu]] > 1000) load[kCpuDomain[cpu]] = 1000;
+                        } else if (busy > load[kCpuDomain[cpu]]) load[kCpuDomain[cpu]] = busy;
                     }
                     gLastIdle[cpu] = idle;
                 }
@@ -311,6 +318,7 @@ extern "C" void houji_cpu_dvfs_start(void) {
         if (PE_parse_boot_argn("houji_cpu_frame_pct", &value, sizeof(value)) && value <= 100) gFramePct = value;
         if (PE_parse_boot_argn("houji_cpu_touch_pct", &value, sizeof(value)) && value <= 100) gTouchPct = value;
         if (PE_parse_boot_argn("houji_cpu_touch_ms", &value, sizeof(value)) && value >= 50 && value <= 1500) gTouchMs = value;
+        if (PE_parse_boot_argn("houji_cpu_load_sum", &value, sizeof(value)) && value) gLoadSum = true;
         if (gFramePct > gMaxPct) gFramePct = gMaxPct;
         if (gTouchPct > gMaxPct) gTouchPct = gMaxPct;
         IOLog("HOUJI CPU DVFS: interactive sample %u ms frame %u%% touch %u%%/%u ms (max %u%%; thermal caps override floors)\n",

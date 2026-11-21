@@ -258,6 +258,29 @@ Test cycle: the fixed 300 s cool-down in fastboot barely changed the boot (first
 reading was above 60 C (at most 120 s), and `SETTLE` is now a maximum that ends once the hottest sensor reads `SETTLE_C` (default 50 C),
 after at least 20 s.
 
+### Control Center open: thread timelines, BO cache floor and lowering box reuse (root261-root273)
+
+Console `tl` (1 ms samples of chosen threads with their user stacks; root261 on) with `tl-view.py` (per frame gap), `tl-cat.py`
+(per category) and `tl-first.py` (gesture to first frame). Control Center open, backboardd's encoding thread, root265 (2 s after the
+gesture): `m2v-wake=1` cut its condition-variable broadcasts 190 -> 16 ms (root264 vs root265) and stays on. Of what was left, 72 ms
+were 70 Turnip `BoAlloc` calls and 43 ms 42 `BoMap` calls, nearly all for command stream chunks (`tu_cs_reserve_space` ->
+`tu_bo_init_new_explicit_iova` -> `darwin_bo_init`, symbolized with the unstripped Turnip): the BO cache had aged out its BOs
+(`tu-bc=8`) since the last action. And 54 of its 79 ms of `madvise` were libmalloc returning an emptied small chunk at once after
+freeing metal2vulkan's `RenderLowering` box (about 10 KiB) at every pass end (`RenderLowering::end_pass`, symbolized with the plugin's
+link map). `MallocXzoneDeferSmall=1` for SpringBoard and backboardd (seed leanlc6) changed nothing measurable.
+
+Two opt-in fixes (GPU userspace gpu9, seed leanlc7): `tu-bk=M` keeps the newest M MiB of the BO cache past its age
+(`turnip-darwin-bo-cache-keep.patch`; memory pressure and the 256 MiB cap still empty it) and `m2v-lbox=1` keeps up to 8 ended
+lowering boxes for the next render encoders (`m2v-lowering-box.patch`). Encoding thread `madvise` in an open 87 -> 30 ms (root267 vs
+root268). Control Center only A/B (`t-ab-cc.sh`: six opens 12 s apart, home button between them): with both, opens at 23-54 and
+34-81 fps (root269, root271, mean 52); without, 21-54 fps (root270, mean 42). Kept on.
+
+What the open waits for now (root273, `tl` with each run's CPU and runnable waits): from the gesture to the first frame 167-312 ms, of
+which SpringBoard's main thread ran 116-240 ms on the big cores (CPUs 2-6, moving among five of them), waiting for a CPU at most 7 ms;
+backboardd's threads ran under 10 ms. The later gaps of 58-180 ms are the same thread. It is CPU-bound in SpringBoard's own building of
+the Control Center views (UIKit, CoreAnimation, malloc). The governor log shows the stock skin table capping the clusters at
+2.03 / 2.19 / 1.82 (prime) / 2.19 GHz at a 38 C battery on USB power.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
