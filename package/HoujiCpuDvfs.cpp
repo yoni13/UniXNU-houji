@@ -401,8 +401,9 @@ extern "C" void houji_cpu_l3(int op, unsigned value) {
         if (i && khz[i] == khz[i - 1]) break;
         rows = i + 1;
     }
-    if (op == 1 && value < rows) r[0x90 / 4] = value;
-    if (op == 2 && value < rows) r[0x320 / 4] = value;
+    if (value >= rows && rows) value = rows - 1;   // past the table: its top row
+    if (op == 1 && rows) r[0x90 / 4] = value;
+    if (op == 2 && rows) r[0x320 / 4] = value;
     __asm__ volatile("dsb sy" ::: "memory");
     IOLog("HOUJI L3: enable %#x state %#x (%u kHz) vote %u perf %u; %u rows kHz %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n",
           r[0], r[0x20 / 4], (r[0x20 / 4] & 255) * 19200, r[0x90 / 4], r[0x320 / 4], rows, khz[0], khz[1], khz[2], khz[3], khz[4], khz[5],
