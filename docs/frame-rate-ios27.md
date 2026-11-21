@@ -281,6 +281,17 @@ backboardd's threads ran under 10 ms. The later gaps of 58-180 ms are the same t
 the Control Center views (UIKit, CoreAnimation, malloc). The governor log shows the stock skin table capping the clusters at
 2.03 / 2.19 / 1.82 (prime) / 2.19 GHz at a 38 C battery on USB power.
 
+More CPU clock did not help (Wi-Fi off, `t-ab-cc.sh` / `t-ab-ccf.sh`, open fps means per boot): C (the two fixes) 61 / 44 / 60,
+D (+ `houji_skin_offset_c=-14`, caps 2.63 GHz) 58 / 48, E (+ `houji_cpu_frame_pct=100`) 57, F (+ `houji_cpu_load_sum=1`, new: a
+domain's load summed over its cores) 50. The Control Center close swipe sometimes paged Control Center to its music page; the tests
+close it with the home button from root281 on.
+
+The shared L3 cache clock does (console `l3`, `l3 vote N`, `l3 mode N`; one boot alternating settings per round, `t-cc1.sh` with
+console `dvfs set` / `l3` commands, no reboot per setting). The bootloader leaves the EPSS L3 vote at row 12 (1555 MHz of 365-2035)
+and nothing in this kernel changed it. root283: L3 at 365 MHz, opens 24-44 fps (mean 36), closes 60-86 (69); at 2035 MHz opens 48-85
+(65), closes 93-98 (95). root284: left at 1555 MHz opens mean 49, closes 86; `houji_l3=1` (new: the top row while touched or drawing,
+else the lowest row at or above the fastest CPU domain's request) 64 / 96; always the top row 55 / 95.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a

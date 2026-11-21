@@ -1,0 +1,119 @@
+--- a/src/vulkan/util/vk_alloc.c
++++ b/src/vulkan/util/vk_alloc.c
+@@ -16,6 +16,96 @@
+ #define MAX_ALIGN alignof(uint64_t)
+ #endif
+ 
++#ifdef __APPLE__
++/* houji: boot argument tu-ac=1 keeps freed blocks of 4-64 KiB for the next allocation of the same malloc size class, up to 32 a class
++ * and 8 MiB in all. libmalloc's xzone allocator gives an emptied small chunk's pages back at once (madvise) and the next allocation
++ * faults them in again: Turnip makes and frees a 7 KiB tu_framebuffer for every render pass, and zeroing it was a third of
++ * backboardd's encoding thread in Control Center opens (root288, tl: 961 of 2808 ms in vk_object_multizalloc, its memset). */
++#include <malloc/malloc.h>
++#include <os/lock.h>
++#include <string.h>
++#include <sys/sysctl.h>
++
++#define VK_AC_CLASSES 64
++#define VK_AC_DEPTH 32
++static struct {
++   os_unfair_lock lock;
++   int on; /* -1 unread */
++   size_t bytes;
++   struct { size_t size; unsigned count; void *ptrs[VK_AC_DEPTH]; } classes[VK_AC_CLASSES];
++} vk_ac = { OS_UNFAIR_LOCK_INIT, -1 };
++
++static int
++vk_ac_on(void)
++{
++   if (__builtin_expect(vk_ac.on >= 0, 1))
++      return vk_ac.on;
++   char args[1024] = {0};
++   size_t length = sizeof(args) - 1;
++   int on = 0;
++   if (sysctlbyname("kern.bootargs", args, &length, NULL, 0) == 0) {
++      for (const char *at = args; (at = strstr(at, "tu-ac=1")) != NULL; at += 7) {
++         if ((at == args || at[-1] == ' ') && (at[7] == ' ' || at[7] == 0)) {
++            on = 1;
++            break;
++         }
++      }
++   }
++   vk_ac.on = on;
++   return on;
++}
++
++static void *
++vk_ac_take(size_t size)
++{
++   if (size < 4096 || size > 65536 || !vk_ac_on())
++      return NULL;
++   const size_t good = malloc_good_size(size);
++   void *ptr = NULL;
++   os_unfair_lock_lock(&vk_ac.lock);
++   for (unsigned i = 0; i < VK_AC_CLASSES; i++) {
++      if (vk_ac.classes[i].size == good && vk_ac.classes[i].count) {
++         ptr = vk_ac.classes[i].ptrs[--vk_ac.classes[i].count];
++         vk_ac.bytes -= good;
++         break;
++      }
++   }
++   os_unfair_lock_unlock(&vk_ac.lock);
++   return ptr;
++}
++
++static int
++vk_ac_give(void *ptr)
++{
++   if (!ptr || !vk_ac_on())
++      return 0;
++   const size_t size = malloc_size(ptr);
++   if (size < 4096 || size > 65536)
++      return 0;
++   int kept = 0;
++   os_unfair_lock_lock(&vk_ac.lock);
++   if (vk_ac.bytes + size <= (8u << 20)) {
++      int slot = -1;
++      for (unsigned i = 0; i < VK_AC_CLASSES; i++) {
++         if (vk_ac.classes[i].size == size) { slot = (int)i; break; }
++         if (slot < 0 && !vk_ac.classes[i].count) slot = (int)i;
++      }
++      if (slot >= 0 && (vk_ac.classes[slot].size == size || !vk_ac.classes[slot].count) &&
++          vk_ac.classes[slot].count < VK_AC_DEPTH) {
++         vk_ac.classes[slot].size = size;
++         vk_ac.classes[slot].ptrs[vk_ac.classes[slot].count++] = ptr;
++         vk_ac.bytes += size;
++         kept = 1;
++      }
++   }
++   os_unfair_lock_unlock(&vk_ac.lock);
++   return kept;
++}
++#else
++static void *vk_ac_take(size_t size) { (void)size; return NULL; }
++static int vk_ac_give(void *ptr) { (void)ptr; return 0; }
++#endif
++
+ static VKAPI_ATTR void * VKAPI_CALL
+ vk_default_alloc(void *pUserData,
+                  size_t size,
+@@ -23,7 +113,8 @@
+                  VkSystemAllocationScope allocationScope)
+ {
+    assert(MAX_ALIGN % alignment == 0);
+-   return malloc(size);
++   void *kept = vk_ac_take(size);
++   return kept ? kept : malloc(size);
+ }
+ 
+ static VKAPI_ATTR void * VKAPI_CALL
+@@ -40,7 +131,8 @@
+ static VKAPI_ATTR void VKAPI_CALL
+ vk_default_free(void *pUserData, void *pMemory)
+ {
+-   free(pMemory);
++   if (!vk_ac_give(pMemory))
++      free(pMemory);
+ }
+ 
+ const VkAllocationCallbacks *
