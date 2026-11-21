@@ -19,7 +19,7 @@ diff --git a/bridge/NativeMetalRecycle.rs b/bridge/NativeMetalRecycle.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalRecycle.rs
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,185 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: the bridge's global allocator. The system allocator, except that with boot argument `m2v-ac=1` a freed block of 1-64 KiB
 +//! (by its malloc size) is kept, up to 64 a size class and 16 MiB in all, for the next allocation of the same malloc size class.
@@ -32,7 +32,7 @@ new file mode 100644
 +use std::cell::UnsafeCell;
 +use std::sync::atomic::{AtomicI8, Ordering};
 +
-+extern "C" {
++unsafe extern "C" {
 +    fn malloc_size(ptr: *const libc::c_void) -> libc::size_t;
 +    fn malloc_good_size(size: libc::size_t) -> libc::size_t;
 +}
@@ -148,52 +148,60 @@ new file mode 100644
 +// standard library's System allocator does on Apple platforms (malloc for alignments up to 16).
 +unsafe impl GlobalAlloc for Recycle {
 +    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-+        if layout.align() <= 16 {
-+            let kept = take(layout.size());
-+            if !kept.is_null() {
-+                return kept;
++        unsafe {
++            if layout.align() <= 16 {
++                let kept = take(layout.size());
++                if !kept.is_null() {
++                    return kept;
++                }
++                return libc::malloc(layout.size()).cast();
 +            }
-+            return libc::malloc(layout.size()).cast();
++            let mut out = std::ptr::null_mut();
++            if libc::posix_memalign(&mut out, layout.align(), layout.size()) != 0 {
++                return std::ptr::null_mut();
++            }
++            out.cast()
 +        }
-+        let mut out = std::ptr::null_mut();
-+        if libc::posix_memalign(&mut out, layout.align(), layout.size()) != 0 {
-+            return std::ptr::null_mut();
-+        }
-+        out.cast()
 +    }
 +
 +    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-+        if layout.align() <= 16 {
-+            let kept = take(layout.size());
-+            if !kept.is_null() {
-+                std::ptr::write_bytes(kept, 0, layout.size());
-+                return kept;
++        unsafe {
++            if layout.align() <= 16 {
++                let kept = take(layout.size());
++                if !kept.is_null() {
++                    std::ptr::write_bytes(kept, 0, layout.size());
++                    return kept;
++                }
++                return libc::calloc(1, layout.size()).cast();
 +            }
-+            return libc::calloc(1, layout.size()).cast();
++            let p = self.alloc(layout);
++            if !p.is_null() {
++                std::ptr::write_bytes(p, 0, layout.size());
++            }
++            p
 +        }
-+        let p = self.alloc(layout);
-+        if !p.is_null() {
-+            std::ptr::write_bytes(p, 0, layout.size());
-+        }
-+        p
 +    }
 +
 +    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-+        if layout.align() <= 16 && give(ptr) {
-+            return;
++        unsafe {
++            if layout.align() <= 16 && give(ptr) {
++                return;
++            }
++            libc::free(ptr.cast());
 +        }
-+        libc::free(ptr.cast());
 +    }
 +
 +    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-+        if layout.align() <= 16 {
-+            return libc::realloc(ptr.cast(), new_size).cast();
++        unsafe {
++            if layout.align() <= 16 {
++                return libc::realloc(ptr.cast(), new_size).cast();
++            }
++            let new = self.alloc(Layout::from_size_align_unchecked(new_size, layout.align()));
++            if !new.is_null() {
++                std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
++                libc::free(ptr.cast());
++            }
++            new
 +        }
-+        let new = self.alloc(Layout::from_size_align_unchecked(new_size, layout.align()));
-+        if !new.is_null() {
-+            std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
-+            libc::free(ptr.cast());
-+        }
-+        new
 +    }
 +}
