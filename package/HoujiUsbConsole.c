@@ -802,8 +802,9 @@ static void threads_command(const char *args)
     for (int i=0;i<got;i++) {
         struct proc_threadinfo_internal info={0};
         if (!tids[i] || fill_taskthreadinfo(task,tids[i],true,&info,NULL,NULL)) continue;
-        printf("HOUJI THREADS %d %llu cpu %llu ms state %d pri %d %.32s\n",pid,(unsigned long long)tids[i],
-            (unsigned long long)((info.pth_user_time+info.pth_system_time)/1000000ull),info.pth_run_state,info.pth_curpri,info.pth_name);
+        printf("HOUJI THREADS %d %llu cpu %llu ms state %d pri %d sys %llu %.32s\n",pid,(unsigned long long)tids[i],
+            (unsigned long long)((info.pth_user_time+info.pth_system_time)/1000000ull),info.pth_run_state,info.pth_curpri,
+            (unsigned long long)(info.pth_system_time/1000000ull),info.pth_name);
         delay(2000);
     }
     printf("HOUJI THREADS: pid %d, %d threads\n",pid,got);
