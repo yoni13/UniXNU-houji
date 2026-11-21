@@ -1718,6 +1718,16 @@ static void command_line(void)
         }
     }
     else if (!strcmp(u.command,"dvfs")) { extern void houji_cpu_dvfs_report(void); houji_cpu_dvfs_report(); }
+    else if (!strncmp(u.command,"dvfs set ",9)) {
+        /* "dvfs set NAME VALUE" (HoujiCpuDvfs.cpp houji_cpu_dvfs_set) */
+        extern void houji_cpu_dvfs_set(const char *name,int value);
+        char name[16]={0};const char *p=u.command+9;unsigned k=0;
+        while (*p && *p!=' ' && k+1<sizeof name) name[k++]=*p++;
+        while (*p==' ') p++;
+        int neg=0;if (*p=='-') { neg=1;p++; }
+        int v=0;while (*p>='0' && *p<='9') v=v*10+(*p++-'0');
+        houji_cpu_dvfs_set(name,neg?-v:v);
+    }
     else if (!strcmp(u.command,"temp")) { extern void houji_thermal_report(void); houji_thermal_report(); }
     else if (!strcmp(u.command,"hid")) {
         /* NativeHidInput's report counters (HidInputProbe.cpp): 0 init 1 attach 2 start 3 timer 4 key-down/buttons 5 key-up 6 touch 7 fail. */

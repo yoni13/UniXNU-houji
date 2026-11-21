@@ -363,3 +363,16 @@ extern "C" void houji_cpu_dvfs_report(void) {
               (rd(d[id], 0x20) & 255) * 19200, d[id].changes, d[id].bad);
     }
 }
+
+// Console "dvfs set NAME VALUE": the interaction settings changed while running, so one boot can compare them (each a boot argument
+// otherwise): framepct, touchpct (0-100, under the max), loadsum (0/1), skin (the skin offset, -100 to 100 C).
+extern "C" void houji_cpu_dvfs_set(const char *name, int value) {
+    bool ok = true;
+    if (!strcmp(name, "framepct") && value >= 0 && value <= 100) gFramePct = (unsigned)value > gMaxPct ? gMaxPct : (unsigned)value;
+    else if (!strcmp(name, "touchpct") && value >= 0 && value <= 100) gTouchPct = (unsigned)value > gMaxPct ? gMaxPct : (unsigned)value;
+    else if (!strcmp(name, "loadsum") && (value == 0 || value == 1)) gLoadSum = value;
+    else if (!strcmp(name, "skin") && value >= -100 && value <= 100) gSkinOffsetC = value;
+    else ok = false;
+    IOLog("HOUJI CPU DVFS SET: %s %d %s (frame %u%% touch %u%% loadsum %u skin offset %d C)\n", name, value, ok ? "ok" : "refused",
+          gFramePct, gTouchPct, gLoadSum ? 1u : 0u, gSkinOffsetC);
+}
