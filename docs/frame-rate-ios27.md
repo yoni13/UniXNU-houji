@@ -541,6 +541,21 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   answered by its interrupt a median 10.7-14.3 ms later; the union of those spans covers 55-60 % of the frames (13-16 ms a frame), an
   upper bound on the GPU's work. The GPU DCVS reads 8-14 % busy at its top level (903 MHz) over 10 s windows that hold about 1-1.5 s
   of opens: the 5-8 % read before was the window's idle, not the frames'. Swaps retire 36-68 ms after their submission.
+- **hakios-arm64e-dada's in-place rendering of padded targets** (its `metal2vulkan-720ef1c-dada.patch`, `texture.rs`
+  `stores_stay_in_rows`: one slice and level, height a multiple of 4, the 16-aligned row within the pitch, the last aligned row within
+  the buffer), against root354's census of shadowed textures (`CNS0`-`CNS5`, 457 of the 533 with their shapes): 1 passes (187x52 A8),
+  0.2 % of the textures and 0.0017 % of their texels. 456 fail the height (275 at height % 4 = 1, 180 at 2, 1 at 3: the 178 full-screen
+  1200x2670 layers, the 216 256x1, the 273- and 1077-row ones), 609x273 the row too; with the height test swapped for "the 4-row tail
+  fits the buffer" 3 tiny A8 ones pass (the full-screen buffers keep 384 bytes past 2670 rows). dada's panel is 1200x2670 too
+  (`base/common/devices/dada.platform.c`): its full-screen layers are shadowed as well. Not ported.
+- **Render pass objects per pass** (metal2vulkan 555b13d, the base on the Mac): `render_target::final_pass` makes a new `VkRenderPass`
+  at every pass end (`render.rs` 5449, 5847, 6126; released with the pass) and `shared_compatible_pass` one more per encoder
+  (`render.rs` 2046): about two creates and destroys a pass. dada keeps final passes by shape and operations (`kept_final_pass`, 256).
+- **The prime core's domain** (code audit, `HoujiCpuDvfs.cpp`): EPSS domains 0-3 are cpu0-1, cpu5-6, cpu7, cpu2-4 (`kCpuDomain`,
+  `kCounts`, the stock tables' order); cpu7 is domain 2 (table cap 3052.8 MHz). The opt-in `p7cap` / `p7pin` (root366, root367) acted
+  on domain 3, cpu2-4, and `cpub` and `framebud.py` named the domains as if cpu7 were 3: root366's Q7 shows cpu2-4 at 3149 MHz and
+  cpu7 at 2630 (`framebud.py` corrected), root367's sweep pinned cpu2-4 while timing cpu7. Corrected (`kPrime = kCpuDomain[7]`);
+  cpu7's scaling is untested so far.
 
 ## Faults found on the way
 
