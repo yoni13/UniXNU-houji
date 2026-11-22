@@ -1738,6 +1738,11 @@ static void command_line(void)
                        r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13]&0x7fffffffu,(r[13]>>31)?"made":"refused");shown++;
                 continue;
             }
+            if (r[2]==0x524f5753u) {
+                /* the runtime's textures refused in place for shared rows (m2v-lowering-box.patch, in_place_image.rs) */
+                printf("HOUJI ROWS %u: desc %ux%u | offset %u pitch %u row bytes %u rows %u slices %u\n",r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9]);
+                shown++;continue;
+            }
             if (r[2]!=0x4d32434eu) continue;
             printf("HOUJI NOTE %u: %u %u %u %u %u %u %u %u %u | %u %u %u %u %u %u %u %u %u %u\n",r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],
                    r[12],r[13],r[14],r[15],r[16],r[17],r[18],r[19],r[20],r[21]);shown++;
