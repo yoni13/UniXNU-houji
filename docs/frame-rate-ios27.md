@@ -327,6 +327,28 @@ opens: 35-41 fps, first frame 165-190 ms.
   settling the bind state, the pass begun inline at its first draw, binding; root302 cross-call samples) with no single hot function.
   120 Hz needs about 8 ms a frame: draws at about a third of their cost and passes at about half.
 
+### Compositor fast path: the census (milestone 1, root316-root319)
+
+The largest command buffer of a steady Control Center frame carries 62 % of the frame's encoding work (median of 16 frames,
+`m2v-count=2` per-commit notes, `cb-split.py`, root317): too little to split for parallel encoding to reach 8 ms a frame, so the plan
+is a reduced translation path for the render server's simple passes. Its census (`m2v-lowering-box.patch` `houji_census.rs`, the bridge's
+census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`, `census.py`), five Control Center opens and closes
+(root319, backboardd, 24679 passes, 121226 draws):
+
+- **Passes:** 80.3 % use none of the features counted (rate map, instance splits, stencil shadow, depth stand-in, imageblock, tile
+  dispatches, executions, pending pipelines, the replay log, colour groups, barriers inside, unnamed memory reads, visibility queries);
+  19.7 % read input attachments (framebuffer fetch), and those hold 81 % of the draws. Encoding time from a pass's making to its end,
+  its draws included: 4663 ms for the input-attachment passes (959 us each), 4079 ms for the plain ones (206 us each).
+- **Draws:** none uses a counted feature (tessellation, meshes, shader tests, memoryless textures, barriers, the replay log, colour
+  groups, rerouting, replaying, extended range); 24.4 % are the existing "drawn again" path at 14 us each (420 ms), 75.6 % the full path
+  at 49 us each (4458 ms). 21 % of draws use the pipeline of the draw before; 137 pipelines since boot, 11 cover 50 % of draws, 46 90 %,
+  85 99 %.
+- **Set calls per draw:** 1.10 buffers, 1.27 buffer offsets, 0.60 textures, 0.40 samplers, 0.86 pipelines, 0.60 viewport/scissor, 0.01
+  bytes; 550 ms in all against 4878 ms of draws (a pipeline set 2.2 us, the rest 0.4-1.2 us; bytes 23.6 us but rare).
+- **Where a draw's and a pass's time goes** (root319, three opens, cross-call samples, `split.py`, by the innermost own frame): draws
+  81 % metal2vulkan and the bridge, 12 % the system (libmalloc, memcpy, locks, kernel), 7 % Turnip; render encoders made 51 / 37 / 12 %,
+  ended 55 / 32 / 13 %.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
