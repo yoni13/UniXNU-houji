@@ -553,7 +553,22 @@ diff --git a/crates/metal2vulkan-runtime/src/render/carried.rs b/crates/metal2vu
 diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal2vulkan-runtime/src/render/draw_again.rs
 --- a/crates/metal2vulkan-runtime/src/render/draw_again.rs
 +++ b/crates/metal2vulkan-runtime/src/render/draw_again.rs
-@@ -407,7 +407,9 @@
+@@ -317,6 +317,14 @@
+     }
+ }
+ 
++/// houji: whether two indexed draws read indices of the same type.
++fn same_index_type(kept: &DrawCall, draw: &DrawCall) -> bool {
++    matches!(
++        (kept, draw),
++        (DrawCall::Indexed { index_type: a, .. }, DrawCall::Indexed { index_type: b, .. }) if a == b
++    )
++}
++
+ /// An execution record's parts (`Execution::new`): the same where its pipeline and shape are
+ /// the same objects.
+ pub(super) struct KeptExecution {
+@@ -407,7 +415,9 @@
  
      /// Forget every kept draw, the last direct draw's and those set aside with other pipeline
      /// states' bind states (a call came, a draw that kept nothing, or the encoder's end).
@@ -563,7 +578,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal
          self.again.kept = None;
          self.again.epoch = Stamp::fresh();
      }
-@@ -434,7 +436,9 @@
+@@ -434,7 +444,9 @@
  
      /// Let go of the last direct draw's kept draw alone, which the draw about to take every step
      /// keeps itself in place of where it can: those set aside stay kept.
@@ -573,7 +588,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal
          self.again.kept = None;
      }
  
-@@ -474,14 +478,24 @@
+@@ -474,14 +486,24 @@
          else {
              return;
          };
@@ -600,7 +615,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal
          if let Some(kept) = self.again.kept.as_mut() {
              kept.between = true;
          }
-@@ -513,6 +527,7 @@
+@@ -513,6 +535,7 @@
          checked: &mut Option<Checked>,
      ) -> Again {
          let Some(kept) = self.again.kept.as_ref() else {
@@ -608,9 +623,22 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal
              return Again::No;
          };
          let index = buffers.index.as_ref().map(KeptIndex::of);
-@@ -551,10 +566,29 @@
+@@ -549,12 +572,41 @@
+                     command_buffer: kept.command_buffer != self.current.draws,
+                     under: kept.under != self.under(),
                  };
-                 reargued = why.arguments_alone() && !empty;
+-                reargued = why.arguments_alone() && !empty;
++                // houji milestone 2: with the fast tier on, another index buffer of the same index type read in place is of other
++                // arguments too (`metal2vulkan::bind::HOUJI_ANY_INDEX_BUFFER`): a draw rebound binds it as every step does
++                // (`reargue_kept`), and makes its uses whole (`binding::patch_command_uses` meets another key).
++                let index_alone = crate::houji_census::fast()
++                    && why.index_buffer
++                    && !copied
++                    && index.is_some()
++                    && kept.index.is_some()
++                    && same_index_type(&kept.draw, draw)
++                    && !(why.pipeline || why.call || why.tessellation || why.command_buffer || why.under);
++                reargued = (why.arguments_alone() || index_alone) && !empty;
                  if !reargued {
 +                    // houji: which fields differ (`houji_census::why`).
 +                    let bits = [
@@ -638,7 +666,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal
                  return Again::No;
              }
          }
-@@ -566,6 +600,7 @@
+@@ -566,6 +618,7 @@
                      self.draw_rebound(live, call, drawn, buffers, stamps, checked)
                  }
                  false => {
@@ -738,11 +766,43 @@ diff --git a/crates/metal2vulkan-runtime/src/live_bind.rs b/crates/metal2vulkan-
      /// Set `kept` aside with the state in place, its pipeline state's (the field's docs).
      pub(super) fn set_aside_kept(&mut self, kept: Option<DrawKept>) {
          self.draw_kept = kept;
+diff --git a/crates/metal2vulkan/src/bind/mod.rs b/crates/metal2vulkan/src/bind/mod.rs
+--- a/crates/metal2vulkan/src/bind/mod.rs
++++ b/crates/metal2vulkan/src/bind/mod.rs
+@@ -223,6 +223,10 @@
+     extended_canonical_module, extended_range_canonical, ExtendedCanonicalModule,
+ };
+ pub use extended_shadow::{extended_shadow_module, ExtendedShadowModule};
++
++/// houji milestone 2: whether a draw of other arguments may also take another index buffer of the same index type
++/// (`redraw_apart_into`): set by the runtime's fast tier (`metal2vulkan_runtime::houji_census::set_fast`).
++pub static HOUJI_ANY_INDEX_BUFFER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ pub use graphics::{
+     DrawCall, DrawCommands, IndexOverrun, MeshDispatch, MeshGroups, MeshRecordsRegion, SlotRebinds,
+     TessellationDispatch, TessellationRecords,
+diff --git a/crates/metal2vulkan/src/bind/graphics.rs b/crates/metal2vulkan/src/bind/graphics.rs
+--- a/crates/metal2vulkan/src/bind/graphics.rs
++++ b/crates/metal2vulkan/src/bind/graphics.rs
+@@ -5243,7 +5243,13 @@
+                 index_buffer,
+                 ..
+             },
+-        ) => (from_type, from_buffer) == (index_type, index_buffer),
++        // houji: or another index buffer of the type where the fast tier lets it (`HOUJI_ANY_INDEX_BUFFER`): the Vulkan draw, its
++        // overrun and the draw's own uses are made of `draw`'s buffer below.
++        ) => {
++            from_type == index_type
++                && (from_buffer == index_buffer
++                    || super::HOUJI_ANY_INDEX_BUFFER.load(std::sync::atomic::Ordering::Relaxed))
++        }
+         _ => false,
+     };
+     if other_reads || !pair {
 diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulkan-runtime/src/houji_census.rs
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,523 @@
+@@ -0,0 +1,524 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -908,6 +968,7 @@ new file mode 100644
 +
 +pub fn set_fast(on: bool) {
 +    FAST.store(on, Ordering::Relaxed);
++    metal2vulkan::bind::HOUJI_ANY_INDEX_BUFFER.store(on, Ordering::Relaxed);
 +}
 +
 +pub fn fast() -> bool {
