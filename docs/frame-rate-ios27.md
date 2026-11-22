@@ -581,6 +581,12 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
 - **A GPU hang in a diag=1 boot** (root370): one, no fault, no guilty job, at fence 6383, the job after the last one of an open's
   settle (fences 5883-6382): a Control Center hang. root369 (gtl from the console, diag=0) had none in 24 opens. diag=1 stays a
   measurement boot only.
+- **cpu7 at 3052.8 MHz** (root372, `t-bal.sh` P4 / P7 twice traced, then untraced; `sko=4` held the stock caps: skin 28.5-29.3 C,
+  cpu2-6 at 2630.4 MHz; P7 lifts cpu7's alone, `dvfs set p7cap 3053`; `cpub 7` timed 3049 MHz there): traced P4 40.8 fps (6 opens,
+  34.7-46.7), P7 43.3 (41.4-45.7); cpu7 averaged 2.68-3.00 GHz over P7's frames; the compositing thread 6.4 -> 5.4 ms a frame, the
+  encoding thread 8.4 -> 7.4. The GPU stayed 95-97 % busy, 20.5-23.4 ms a frame (P4 77-97 %, 21.2-23.9). Untraced P4 42.6 (3 opens);
+  P7's first untraced open (39.1 fps) read 75 C and `t-bal.sh` stopped at its 70 C limit. 0 GPU hangs, 0 faults in 15 opens. About 6 %
+  traced, not confirmed untraced, at a thermal cost: `p7c` stays opt-in and off. The GPU sets the frame time.
 
 ## Faults found on the way
 
