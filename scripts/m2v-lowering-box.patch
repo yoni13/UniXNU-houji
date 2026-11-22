@@ -450,11 +450,126 @@ diff --git a/crates/metal2vulkan-runtime/src/render/carried.rs b/crates/metal2vu
  
  /// `carried` where it fits the encoder `opening` opens (`carried_fits`), its device's sampler
  /// IDs' slots changed `samplers` times, else `None`, let go to `device` and counted.
+diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal2vulkan-runtime/src/render/draw_again.rs
+--- a/crates/metal2vulkan-runtime/src/render/draw_again.rs
++++ b/crates/metal2vulkan-runtime/src/render/draw_again.rs
+@@ -407,7 +407,9 @@
+ 
+     /// Forget every kept draw, the last direct draw's and those set aside with other pipeline
+     /// states' bind states (a call came, a draw that kept nothing, or the encoder's end).
++    #[track_caller]
+     pub(super) fn forget_again(&mut self) {
++        crate::houji_census::forgot(std::panic::Location::caller());
+         self.again.kept = None;
+         self.again.epoch = Stamp::fresh();
+     }
+@@ -434,7 +436,9 @@
+ 
+     /// Let go of the last direct draw's kept draw alone, which the draw about to take every step
+     /// keeps itself in place of where it can: those set aside stay kept.
++    #[track_caller]
+     pub(super) fn drop_kept(&mut self) {
++        crate::houji_census::forgot(std::panic::Location::caller());
+         self.again.kept = None;
+     }
+ 
+@@ -480,8 +484,16 @@
+         live.set_aside_kept(self.again.kept.take());
+         live.select(pipeline);
+         let epoch = self.again.epoch;
+-        self.again.kept =
+-            (live.take_kept()).filter(|kept| kept.epoch == epoch && kept.pipeline.is(pipeline));
++        let aside = live.take_kept();
++        // houji: why a return to this pipeline state finds no kept draw (`houji_census::forgot_code`).
++        match &aside {
++            None => crate::houji_census::forgot_code(crate::houji_census::FORGOT_NONE_ASIDE),
++            Some(kept) if !(kept.epoch == epoch && kept.pipeline.is(pipeline)) => {
++                crate::houji_census::forgot_code(crate::houji_census::FORGOT_OTHER_EPOCH)
++            }
++            Some(_) => {}
++        }
++        self.again.kept = aside.filter(|kept| kept.epoch == epoch && kept.pipeline.is(pipeline));
+         if let Some(kept) = self.again.kept.as_mut() {
+             kept.between = true;
+         }
+@@ -513,6 +525,7 @@
+         checked: &mut Option<Checked>,
+     ) -> Again {
+         let Some(kept) = self.again.kept.as_ref() else {
++            crate::houji_census::why(crate::houji_census::WHY_NO_KEPT, 0);
+             return Again::No;
+         };
+         let index = buffers.index.as_ref().map(KeptIndex::of);
+@@ -551,10 +564,19 @@
+                 };
+                 reargued = why.arguments_alone() && !empty;
+                 if !reargued {
++                    // houji: which fields differ (`houji_census::why`).
++                    let bits = [why.pipeline, why.call, why.counts, why.index_buffer, why.index_offset, why.command_buffer, why.under]
++                        .iter()
++                        .enumerate()
++                        .fold(0u32, |m, (i, b)| m | ((*b as u32) << i));
++                    crate::houji_census::why(crate::houji_census::WHY_UNLIKE, bits);
+                     self.core.counts().draw_unlike_kept(why);
+                 }
+             }
+             if !reargued {
++                if buffers.indirect.is_some() {
++                    crate::houji_census::why(crate::houji_census::WHY_OTHER, 0);
++                }
+                 return Again::No;
+             }
+         }
+@@ -566,6 +588,7 @@
+                     self.draw_rebound(live, call, drawn, buffers, stamps, checked)
+                 }
+                 false => {
++                    crate::houji_census::why(crate::houji_census::WHY_NOT_REBINDS, 0);
+                     if reargued {
+                         let why = ArgumentsStop::Other;
+                         self.core.counts().draw_rebind_stopped_arguments(why);
+diff --git a/crates/metal2vulkan-runtime/src/render/draw_again/rebound.rs b/crates/metal2vulkan-runtime/src/render/draw_again/rebound.rs
+--- a/crates/metal2vulkan-runtime/src/render/draw_again/rebound.rs
++++ b/crates/metal2vulkan-runtime/src/render/draw_again/rebound.rs
+@@ -364,7 +364,9 @@
+         };
+         let other = (ArgumentsStop::Other, CarryStop::Other);
+         // Of other arguments, routed as the kept draw.
++        use crate::houji_census as census;
+         if reargued && !self.routed_as_kept(assembly, draw) {
++            census::why(census::WHY_STOPPED, census::STOP_ROUTE);
+             return stopped(self, (ArgumentsStop::Route, CarryStop::Other));
+         }
+         // After a call set the encoder's render state, what it decides derived again
+@@ -372,19 +374,23 @@
+         let restated =
+             (self.again.kept.as_ref()).is_some_and(|kept| kept.stated != self.again.stated);
+         if restated && !self.restate_kept(live, call, assembly, draw) {
++            census::why(census::WHY_STOPPED, census::STOP_RESTATE);
+             return stopped(self, other);
+         }
+         // A carried draw: every slot its bind state holds bound, the encoder's calls bound
+         // (`render/carried.rs`).
+         if carried && self.carried_stale(live) {
++            census::why(census::WHY_STOPPED, census::STOP_STALE);
+             return stopped(self, (ArgumentsStop::Other, CarryStop::Stale));
+         }
+         let Some(changed) = self.bring_in(live, stamps, carried) else {
++            census::why(census::WHY_STOPPED, census::STOP_BRING_IN);
+             return stopped(self, other);
+         };
+         let mut stop = other;
+         let drawn = (draw, buffers, (reargued, carried));
+         let Some(rebinding) = self.rebind(call, live, &changed, drawn, &mut stop) else {
++            census::why(census::WHY_STOPPED, census::STOP_REBIND);
+             return stopped(self, stop);
+         };
+         if reargued {
 diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulkan-runtime/src/houji_census.rs
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,425 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -586,6 +701,7 @@ new file mode 100644
 +pub(crate) fn set_pass_class(class: u8) {
 +    PASS_CLASS.with(|c| c.set(class));
 +    ENCODER_PIPELINES.with(|seen| seen.borrow_mut().clear());
++    FORGOT.with(|f| f.set(0));
 +}
 +
 +/// The draw counts so far.
@@ -720,6 +836,7 @@ new file mode 100644
 +        place
 +    });
 +    x(place);
++    account_why(place, again);
 +    if fetch {
 +        x(X_FETCH_DRAWS);
 +        if place == X_RETURN {
@@ -763,4 +880,118 @@ new file mode 100644
 +
 +pub fn cross_snapshot() -> [u64; X_COUNTS] {
 +    std::array::from_fn(|i| X[i].load(Ordering::Relaxed))
++}
++
++/// houji milestone 2, step 1: why a draw took every step, by its pipeline's place in its encoder ([`cross`]; rows "CNSW" and "CNSL").
++/// The kinds: no kept draw (the last call site that forgot it, [`forgot`], or a pipeline's draw set aside under another epoch, or
++/// none set aside), unlike the kept draw (which fields), a kept draw that does not rebind, its rebind stopped (where), other.
++pub(crate) const WHY_NO_KEPT: u8 = 1;
++pub(crate) const WHY_UNLIKE: u8 = 2;
++pub(crate) const WHY_NOT_REBINDS: u8 = 3;
++pub(crate) const WHY_STOPPED: u8 = 4;
++pub(crate) const WHY_OTHER: u8 = 5;
++/// [`WHY_STOPPED`]'s places in `draw_rebound`.
++pub(crate) const STOP_ROUTE: u32 = 0;
++pub(crate) const STOP_RESTATE: u32 = 1;
++pub(crate) const STOP_STALE: u32 = 2;
++pub(crate) const STOP_BRING_IN: u32 = 3;
++pub(crate) const STOP_REBIND: u32 = 4;
++/// [`forgot`]'s codes for a pipeline's return that found no draw set aside, or one of another epoch.
++pub(crate) const FORGOT_NONE_ASIDE: u32 = 1;
++pub(crate) const FORGOT_OTHER_EPOCH: u32 = 2;
++
++thread_local! {
++    static WHY: std::cell::Cell<(u8, u32)> = const { std::cell::Cell::new((0, 0)) };
++    /// The last call site that forgot the encoder's kept draw: its file's index * 100000 + its line, or a code above; 0 none since
++    /// the encoder's opening.
++    static FORGOT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++}
++
++/// Why the draw being lowered takes every step.
++pub(crate) fn why(kind: u8, detail: u32) {
++    if on() {
++        WHY.with(|w| w.set((kind, detail)));
++    }
++}
++
++/// The kept draw forgotten at `at` (or a code).
++pub(crate) fn forgot(at: &std::panic::Location<'_>) {
++    if on() {
++        let file = match at.file().rsplit('/').next().unwrap_or("") {
++            "render.rs" => 1,
++            "draw_again.rs" => 2,
++            "rebound.rs" => 3,
++            "restated.rs" => 4,
++            "carried.rs" => 5,
++            "replay.rs" => 6,
++            _ => 9,
++        };
++        FORGOT.with(|f| f.set(file * 100000 + at.line().min(99999)));
++    }
++}
++
++pub(crate) fn forgot_code(code: u32) {
++    if on() {
++        FORGOT.with(|f| f.set(code));
++    }
++}
++
++/// Counts by place (same, return, first) and kind (1..=5); the unlike fields (pipeline, call, counts, index buffer, index offset,
++/// command buffer, under) and the stop places of the same and return draws.
++static WHY_COUNT: [AtomicU64; 15] = [const { AtomicU64::new(0) }; 15];
++static UNLIKE_BITS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
++static STOPS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
++static FORGOT_AT: std::sync::Mutex<Option<std::collections::HashMap<u32, u64>>> = std::sync::Mutex::new(None);
++
++fn account_why(place: usize, again: bool) {
++    let (kind, detail) = WHY.with(|w| w.replace((0, 0)));
++    if again || kind > 5 {
++        return;
++    }
++    let kind = if kind == 0 { WHY_OTHER } else { kind };
++    let row = match place {
++        X_SAME => 0,
++        X_RETURN => 1,
++        _ => 2,
++    };
++    WHY_COUNT[row * 5 + kind as usize - 1].fetch_add(1, Ordering::Relaxed);
++    if kind == WHY_NO_KEPT {
++        let code = FORGOT.with(|f| f.get());
++        if let Ok(mut map) = FORGOT_AT.lock() {
++            *map.get_or_insert_with(Default::default).entry(row as u32 * 1_000_000 + code).or_insert(0) += 1;
++        }
++    }
++    if row < 2 {
++        match kind {
++            WHY_UNLIKE => {
++                for (bit, count) in UNLIKE_BITS.iter().enumerate() {
++                    if detail & (1 << bit) != 0 {
++                        count.fetch_add(1, Ordering::Relaxed);
++                    }
++                }
++            }
++            WHY_STOPPED => {
++                STOPS[(detail as usize).min(4)].fetch_add(1, Ordering::Relaxed);
++            }
++            _ => {}
++        }
++    }
++}
++
++/// The "CNSW" row: the 15 place-and-kind counts, the 7 unlike fields, the 5 stop places.
++pub fn why_snapshot() -> Vec<u64> {
++    let load = |a: &[AtomicU64]| a.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<u64>>();
++    let mut row = load(&WHY_COUNT);
++    row.extend(load(&UNLIKE_BITS));
++    row.extend(load(&STOPS));
++    row
++}
++
++/// The "CNSL" row: the 14 commonest (place * 1000000 + forget code, count) pairs of the draws that found no kept draw.
++pub fn forgot_snapshot() -> Vec<u64> {
++    let Ok(map) = FORGOT_AT.lock() else { return Vec::new() };
++    let Some(map) = map.as_ref() else { return Vec::new() };
++    let mut pairs: Vec<(u32, u64)> = map.iter().map(|(k, v)| (*k, *v)).collect();
++    pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
++    pairs.iter().take(14).flat_map(|(k, v)| [*k as u64, *v]).collect()
 +}
