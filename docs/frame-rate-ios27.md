@@ -429,6 +429,21 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   than its memory holds from the texels on (the last: 8192 bytes at offset 64 of 8128 bytes of room). A pass takes 1.02 copies, all in,
   each the texture's first in its command buffer (95 % of the texels IOSurfaces'), none skipped; 5118 passes in a window render into a
   shadowed attachment.
+- **The placements' spread** (root354, census `CNSG`, `CNS0`-`CNS5`, 533 misses): all size, all in memory that ends on a 4 KiB page, the
+  driver's pitch the texture's in every one. The excess is Turnip's: `fd6_layout.c` rounds a last level's height to 4 rows (the GMEM
+  blits' 16x4 over-fetch) for every linear image, and, for a 2D image it lays out itself, its size to a page. Full-screen 1200x2670
+  BGRA8 layers (178 of them, most of the copied texels) are 2 rows over, RGBA16F 256x1 / 609x273 / 633x273 / 831x1077 ones 3 rows,
+  small A8 ones a page at offset 64. Upstream's `turnip-render-mode-for-attachment-memory.patch` already loads and stores a linear
+  attachment over host or explicit-layout memory over its texels alone where its height is not whole blocks
+  (`tu_attachment_unpadded`), in GMEM; the IOSurfaces themselves are Apple's IOSurface kext's.
+- **Unpadded linear images** (`turnip-tight-linear.patch`, boot argument `tt=1`: such an image, linear, one level, one layer, 2D, no UBWC or
+  sparse, by the same test as `tu_attachment_unpadded`, takes no over-fetch rows and no page rounding). Census (root356, gpu35, census on,
+  unthrottled): 0 placement misses (837 fit), 0 shadowed textures, shadow copies 0.42 a pass (from 1.03), a pass ended in 76.8 us (from
+  93.5-101.6, root353/root354), made in 34.6 us (from 36.9-39.4), a commit 296 us (from 412-437); no GPU hang, restart or SMMU fault
+  (console `gpuf`), no crash. Control Center (root357 against root358, the same seed, `tu-ac=1`, `l3 mode 1`, five rounds each, the same
+  thermals, GPU busy 6 % both): opens 36.4 against 36.8 fps, closes 66.4 against 69.0 fps; the first frame's delay bimodal in both (3-30 or
+  130-176 ms; 1 of 5 slow against 3 of 5). Not yet checked: the pixels, the copies left (no texture shadowed for its placement), and
+  Turnip's render-mode counters, which read 0.
 
 ## Faults found on the way
 
