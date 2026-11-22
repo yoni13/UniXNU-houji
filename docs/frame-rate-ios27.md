@@ -467,6 +467,16 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   4.1-5.7 ms): the frame is no longer its own. SpringBoard's main thread 11.9-14.9 ms a frame beside it, the render thread about 1.3 ms;
   no runnable time to speak of. The boot also had one GPU hang and restart at fence 519, at boot before the sides, with one SMMU
   translation fault (FSR 0x80000002, FAR 0x11d6680), console `gpuf`; root356 (also `tt=1`) had none.
+- **GPU hangs with and without `tt=1`** (root362-1 to -4, `t-hang.sh`, tt 0/1/0/1, the best config, console `gpuf` and `gpus` after the
+  boot's settle and after eight Control Center opens): at boot, hangs in both (tt=0: 2 and 0; tt=1: 2 and 3, and 1 in root361), the
+  faults at low or null addresses (0, 0x5ae1000, 0x1ad7340): an older fault, not this patch's. During the opens: none with tt=0, 2 and 1
+  with tt=1, read faults at user addresses (0x15a770a40, 0x158ac8940), the CP stalled at the same IB's start both times (event writes
+  0x19, 0x18, 0x28, 0x33, then a wait for idle). `tt=1` stays off until those are understood.
+- **What the encoding thread waits for on the prime core** (root361, `waits.py`, the tl samples' waiting stacks): one run segment a frame,
+  each woken in the bridge's encode thread loop, where it waits 12.8 ms a frame bound against 2.2 ms unbound: it is starved, waiting for
+  the render server's next frame of commands, not for a fence or the vsync. SpringBoard's main thread runs 15.1 ms a frame, 6.5 ms of it
+  while the encoding thread runs (unbound: 10.6 of 11.8 ms); the render thread waits about 92 % of the time in a kernel trap (a message
+  receive, as far as the unsymbolized stack shows).
 
 ## Faults found on the way
 
