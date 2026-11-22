@@ -386,6 +386,26 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   projected hit 100 % against 72.9 %. Per draw 39.9 / 38.5 us on against 47.9 / 39.1 us off (the second window of a boot reads high in
   every run): no clear gain yet, as the full path's draws left are the dearer ones (50-52 us against 47-58 us).
 
+### Compositor fast path: milestone 2, what a first use costs (root341-root347)
+
+- **Per draw by path** (root345, gpu29, fat LTO, `m2v-count` census on): drawn again 14 us, rebound with its input attachments made again
+  18 us, every step of a pipeline the same as the draw before's 26 us, back to an earlier one's 33-37 us, the **first use of a pipeline
+  state in its encoder 58-62 us**: half the draws and about three quarters of draw time. The same-pass draws the input attachment rebind
+  took were already cheap (26-37 us), so the mean moved little.
+- **What a cross-frame entry could hold.** A kept draw's bind state holds the bound buffers and textures themselves, its descriptor
+  writes, vertex buffers and recording raw Vulkan handles (`VkImageView`, `VkBuffer`, `VkPipeline`), all of a frame; stripped of those,
+  an entry holds the settle alone (variant, plan, shape, facts), which a pipeline state keeps already (`GraphicsState::settle_shape`, 4
+  settles).
+- **The settle hits** (root347, gpu30, first uses that took every step): 93 % by identity, 5-8 % by an equal shape, 1.5 % made again.
+- **48 set-aside states** (`m2v fast` bit 1, windows 1/3/1/3, no throttling): a first use finds its pipeline state held 93 % of the time
+  against 30 %, but a held one is no cheaper (56-65 us against 53-54 us), the mean per draw 42.9 / 38.1 us against 38.3 / 37.9 us, and
+  passes cost the same (made 38-40 us, ended 85-101 us).
+- **Where a first use goes** (root347, two opens, cross-call samples under `houji_first_use`, `firstuse.py`; 79 % of draw time):
+  spread over the steps, none above 11 %. Turnip's recording 11 % (and 2 % beginning the pass's first instance), `draw_resident` itself
+  9 %, the settle's checks of the bind state (`settle_draw`: shape, `refresh_reading`, comparisons) about 14 %, instantiating the plan's
+  commands 6 %, the pass's first instance (`inline_begin`, its framebuffer) 4 %, the push of set 0 4 %, the uses 3 %; by leaf 71 %
+  metal2vulkan, 15 % the system (allocation, copies), 14 % Turnip.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
