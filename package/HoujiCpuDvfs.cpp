@@ -404,8 +404,13 @@ extern "C" void houji_cpu_dvfs_lut(void) {
     for (unsigned id = 0; id < kDomains; id++) {
         Domain &w = d[id];
         if (!w.va) {IOLog("HOUJI CPU LUT: d=%u not mapped\n", id); continue;}
-        IOLog("HOUJI CPU LUT: d=%u cpus %u enable %08x state %08x (%u kHz) control %08x votes %08x %08x %08x cur-row %u\n", id, kCounts[id],
-              rd(w, 0), rd(w, 0x20), (rd(w, 0x20) & 255) * 19200, rd(w, 0xb0), rd(w, 0x320), rd(w, 0x324), rd(w, 0x328),
+        // Only the vote words the domain has (one per core with per-core voting, control bit 0, else one): root369 reset the phone
+        // reading 0x324 and 0x328 of every domain.
+        const unsigned votes = (rd(w, 0xb0) & 1) ? kCounts[id] : 1;
+        uint32_t v[3] = {0, 0, 0};
+        for (unsigned c = 0; c < votes && c < 3; c++) v[c] = rd(w, 0x320 + c * 4);
+        IOLog("HOUJI CPU LUT: d=%u cpus %u enable %08x state %08x (%u kHz) control %08x votes(%u) %08x %08x %08x cur-row %u\n", id,
+              kCounts[id], rd(w, 0), rd(w, 0x20), (rd(w, 0x20) & 255) * 19200, rd(w, 0xb0), votes, v[0], v[1], v[2],
               w.ok ? w.index[w.cur] : 255);
         uint32_t prev = 0;
         for (unsigned i = 0; i < kRows; i++) {
