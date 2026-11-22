@@ -1772,6 +1772,16 @@ static void command_line(void)
         unsigned v=0;const char *p=u.command+4;while (*p>='0' && *p<='9') v=v*10+(unsigned)(*p++-'0');
         houji_ddr_vote(v);
     }
+    else if (!strcmp(u.command,"gpuf")) {
+        /* NativeAdrenoPublish.cpp: GPU hangs and restarts (hangs, restarts, failed restarts, last hung fence, last restart's IOReturn,
+         * submissions replayed, hangs with a guilty job, hangs of the kernel's VM) and the SMMU context faults ended before a restart
+         * (count, then the last one's FSR, FAR lo, FAR hi, FSYNR0): a GPU page fault that stalls shows here */
+        extern volatile uint32_t native_adreno_recovery[8];extern volatile uint32_t native_adreno_recovery_fault[5];
+        printf("HOUJI GPUF: hangs %u restarts %u failed %u fence %u ret %x replayed %u guilty %u kvm %u | faults %u fsr %x far %x%08x fsynr0 %x\n",
+               native_adreno_recovery[0],native_adreno_recovery[1],native_adreno_recovery[2],native_adreno_recovery[3],native_adreno_recovery[4],
+               native_adreno_recovery[5],native_adreno_recovery[6],native_adreno_recovery[7],native_adreno_recovery_fault[0],
+               native_adreno_recovery_fault[1],native_adreno_recovery_fault[3],native_adreno_recovery_fault[2],native_adreno_recovery_fault[4]);
+    }
     else if (!strncmp(u.command,"m2v fast ",9)) {
         /* metal2vulkan's fast tier (m2v-lowering-box.patch), a digit 0-3, bit 0 the tier, bit 1 48 set-aside bind states: the kernel's host name
          * set to m2v-fast-N, which the render server's bridge reads (gethostname) at most every 50 ms at a commit; any other name

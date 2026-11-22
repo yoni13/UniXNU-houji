@@ -1,0 +1,106 @@
+diff --git a/src/freedreno/fdl/freedreno_layout.h b/src/freedreno/fdl/freedreno_layout.h
+--- a/src/freedreno/fdl/freedreno_layout.h
++++ b/src/freedreno/fdl/freedreno_layout.h
+@@ -112,6 +112,12 @@
+ 
+    bool force_disable_linear_fallback;
+ 
++   /* houji (boot argument tt=1): a linear image over memory its owner laid out (an imported host allocation, an IOSurface's
++    * pages, or an explicit DRM modifier layout) that tu_attachment_unpadded loads and stores over its texels alone: its one level
++    * takes no over-fetch rows and its size no page rounding, so it fits the owner's bytes.
++    */
++   bool unpadded;
++
+    uint32_t plane;
+ };
+ 
+diff --git a/src/freedreno/fdl/fd6_layout.c b/src/freedreno/fdl/fd6_layout.c
+--- a/src/freedreno/fdl/fd6_layout.c
++++ b/src/freedreno/fdl/fd6_layout.c
+@@ -172,6 +172,13 @@
+       layout->tile_all = true;
+    }
+ 
++   /* houji: the image params->unpadded names (tu_image.cc, tt=1), where its one level is linear: the one tu_attachment_unpadded
++    * finds by the same image and tile mode, so every GMEM load and store of it goes over its texels alone.
++    */
++   const bool unpadded = params->unpadded && layout->tile_mode == TILE6_LINEAR && !layout->ubwc &&
++                         params->mip_levels == 1 && params->array_size == 1 && params->depth0 == 1 &&
++                         !params->is_3d && !params->sparse;
++
+    /* in layer_first layout, the level (slice) contains just one
+     * layer (since in fact the layer contains the slices)
+     */
+@@ -288,7 +295,7 @@
+        * The pitch is already sufficiently aligned, but height
+        * may not be. note this only matters if last level is linear
+        */
+-      if (level == params->mip_levels - 1)
++      if (level == params->mip_levels - 1 && !unpadded)
+          nblocksy = align(nblocksy, 4);
+ 
+       slice->offset = offset + layout->size;
+@@ -378,7 +385,9 @@
+             (sparse_blocksize - mip_tail_size) % sparse_blocksize;
+       }
+ 
+-      layout->size = layout->layer_size * params->array_size;
++      /* houji: an unpadded image's one layer ends with its last row. */
++      if (!unpadded)
++         layout->size = layout->layer_size * params->array_size;
+    }
+ 
+    /* Place the UBWC slices before the uncompressed slices, because the
+diff --git a/src/freedreno/vulkan/tu_image.cc b/src/freedreno/vulkan/tu_image.cc
+--- a/src/freedreno/vulkan/tu_image.cc
++++ b/src/freedreno/vulkan/tu_image.cc
+@@ -20,6 +20,36 @@
+ #include "vulkan/vulkan_core.h"
+ 
+ #include "common/freedreno_lrz.h"
++
++#include <string.h>
++#include <sys/sysctl.h>
++
++/* houji: boot argument tt=1 lays a linear image over memory its owner laid out without the over-fetch rows and page rounding
++ * fdl6_layout gives every other image (fdl_image_params::unpadded), so an IOSurface's texture fits its pages and renders and samples
++ * in place: without it, every such texture whose height is not a multiple of 4 rows went through a shadow copied in at every pass
++ * (root354: 533 of them, 1.03 copies a pass, 7 billion texels in a window of five Control Center opens). Its GMEM loads and stores
++ * take draws and 2D blits over its texels alone (tu_attachment_unpadded), as before.
++ */
++static bool
++tu_houji_tight(void)
++{
++   static int tight = -1;
++   if (tight < 0) {
++      char args[1024] = {};
++      size_t size = sizeof(args) - 1;
++      bool on = false;
++      if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0) {
++         for (const char *at = args; (at = strstr(at, "tt=")) != NULL; at += 3) {
++            if (at != args && at[-1] != ' ')
++               continue;
++            on = at[3] == '1' && (at[4] == ' ' || at[4] == 0);
++            break;
++         }
++      }
++      tight = on;
++   }
++   return tight;
++}
+ #include "fdl/fd6_format_table.h"
+ #include "fdl/freedreno_layout.h"
+ #include "tu_buffer.h"
+@@ -760,6 +790,12 @@
+          .sparse = image->vk.create_flags &
+             VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
+          .force_disable_linear_fallback = force_disable_linear_fallback,
++         /* houji: the images tu_attachment_unpadded names, by the same test of the image (fdl6_layout_image adds its tile mode). */
++         .unpadded = tu_houji_tight() &&
++            (image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT ||
++             (image->vk.external_handle_types &
++              (VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT |
++               VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT))),
+          .plane = i,
+       };
+ 

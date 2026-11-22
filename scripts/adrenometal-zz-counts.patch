@@ -186,7 +186,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,344 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -502,6 +502,20 @@ new file mode 100644
 +    ]);
 +    row(0x434e5341, &census::placement_snapshot());
 +    row(0x434e5347, &census::placement_aggregate());
++    // Turnip's render modes (tu_render_mode_stats, the upstream render-mode patch): GMEM passes and their thousands of pixels, SYSMEM
++    // ones the autotuner chose and others, and GMEM passes with an attachment loaded or stored over its texels alone ("CNSM").
++    {
++        type StatsFn = unsafe extern "C" fn(*mut u64);
++        static STATS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
++        // SAFETY: a nul-terminated symbol name.
++        let at = *STATS.get_or_init(|| unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"tu_render_mode_stats".as_ptr()) as usize });
++        if at != 0 {
++            let mut out = [0u64; 8];
++            // SAFETY: `tu_render_mode_stats(out)` writes 8 words.
++            unsafe { std::mem::transmute::<usize, StatsFn>(at)(out.as_mut_ptr()) };
++            row(0x434e534d, &out);
++        }
++    }
 +    for i in 0..6 {
 +        let misses = census::placement_misses(i);
 +        if !misses.is_empty() {

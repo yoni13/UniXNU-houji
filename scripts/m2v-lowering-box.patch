@@ -461,7 +461,7 @@ diff --git a/crates/metal2vulkan-runtime/src/texture/in_place_image.rs b/crates/
              return Ok(Err(refused));
          }
          let make = |plan: &ImagePlan| match self.unplaced(plan, texels, class, facts)? {
-@@ -588,6 +632,25 @@
+@@ -588,6 +632,26 @@
              );
              return Ok(Err((Refusal::Pitch, why)));
          }
@@ -470,7 +470,8 @@ diff --git a/crates/metal2vulkan-runtime/src/texture/in_place_image.rs b/crates/
 +            [
 +                plan.extent[0] as u64,
 +                plan.extent[1] as u64,
-+                plan.format.as_raw() as u64,
++                // houji: bit 31 marks memory the caller imported (an IOSurface's pages, a no-copy buffer's), else the runtime's own.
++                plan.format.as_raw() as u64 | ((texels.buffer.caller_memory().is_some() as u64) << 31),
 +                layout.offset,
 +                layout.row_pitch,
 +                layout.row_bytes,
@@ -487,7 +488,7 @@ diff --git a/crates/metal2vulkan-runtime/src/texture/in_place_image.rs b/crates/
          if let Err(refused) = placed(&made.requirements, at, room, type_index) {
              // SAFETY: the image is live and unbound, and no command uses it.
              unsafe { release::object(self.shared().vk(), made.raw) };
-@@ -616,6 +679,25 @@
+@@ -616,6 +680,26 @@
              Ok(made) => made,
              Err(refused) => return Ok(Err(refused)),
          };
@@ -496,7 +497,8 @@ diff --git a/crates/metal2vulkan-runtime/src/texture/in_place_image.rs b/crates/
 +            [
 +                plan.extent[0] as u64,
 +                plan.extent[1] as u64,
-+                plan.format.as_raw() as u64,
++                // houji: bit 31 marks memory the caller imported (an IOSurface's pages, a no-copy buffer's), else the runtime's own.
++                plan.format.as_raw() as u64 | ((texels.buffer.caller_memory().is_some() as u64) << 31),
 +                layout.offset,
 +                layout.row_pitch,
 +                layout.row_bytes,
@@ -513,7 +515,7 @@ diff --git a/crates/metal2vulkan-runtime/src/texture/in_place_image.rs b/crates/
          if let Err(refused) = placed(&made.requirements, at, room, type_index) {
              // SAFETY: the image is live and unbound, and no command uses it.
              unsafe { release::object(self.shared().vk(), made.raw) };
-@@ -1393,6 +1475,19 @@
+@@ -1393,6 +1477,19 @@
      room: u64,
      type_index: u32,
  ) -> Result<(), (Refusal, String)> {
@@ -1074,7 +1076,7 @@ diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulk
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,704 @@
+@@ -0,0 +1,707 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -1735,7 +1737,7 @@ new file mode 100644
 +/// image over a texture's bytes, the texture (its extent, format, offset, pitch, row bytes and rows), its buffer's length and the room
 +/// from the texels to its memory's end, and the driver's image (its subresource's pitch, size and offset, and the memory it requires).
 +/// Kept: counts of the misses by what they share, and up to 12 distinct missing textures, each with its count.
-+static PLACE_AGG: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
++static PLACE_AGG: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
 +static PLACE_MISSES: std::sync::Mutex<Vec<([u64; 13], u64)>> = std::sync::Mutex::new(Vec::new());
 +
 +pub(crate) fn placement_detail(v: [u64; 13], (at, alignment): (u64, u64)) {
@@ -1757,6 +1759,9 @@ new file mode 100644
 +    count(4, size > report_size);
 +    count(5, (at + room) % 4096 == 0);
 +    count(6, size > room && size - room <= 4096);
++    // Over memory the caller imported (bit 31 of the format word) or the runtime's own buffer.
++    count(8, v[2] >> 31 & 1 == 1);
++    count(9, v[2] >> 31 & 1 == 0);
 +    if let Ok(mut kept) = PLACE_MISSES.lock() {
 +        // The same texture shape (extent, format, offset, pitch) once, counted.
 +        match kept.iter().position(|(k, _)| k[..5] == v[..5]) {
