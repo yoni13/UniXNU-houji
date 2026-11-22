@@ -186,7 +186,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,322 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -479,6 +479,27 @@ new file mode 100644
 +    row(0x434e5352, &census::keep_snapshot());
 +    // The draws of each timing class ("CNSN"), whose microseconds are "CNST"'s.
 +    row(0x434e534e, &DRAW_CLASS_N.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<u64>>());
++    // Milestone 3: why textures are shadowed and what their copies do ("CNSH", "CNSI"; texels in thousands).
++    let k = |v: u64| v / 1000;
++    row(0x434e5348, &[
++        w.shadowed_textures, w.host_texture_shadows_check_pending, w.host_texture_shadows_check_failed, w.host_texture_shadows_unchecked,
++        w.host_texture_shadows_refused_rows, w.host_texture_shadows_refused_image, w.host_texture_shadows_refused_pitch,
++        w.host_texture_shadows_refused_placement, w.host_texture_shadows_refused_source, w.host_texture_shadows_refused_dma_buf,
++        w.host_texture_shadows_refused_detached, w.host_texture_shadows_render_target, w.host_texture_shadows_shader_write,
++        w.host_texture_shadows_store_width, w.host_texture_shadows_exact, w.host_textures_moved_in_place,
++        w.host_texture_shadows_freed_after_move, w.shadow_copies, w.shadow_copies_in_against_standing, w.shadow_copies_in_skipped_by_standing,
++        k(w.shadow_texels_copied_in), k(w.shadow_texels_copied_back), k(w.shadow_texels_skipped_by_standing),
++        k(w.shadow_texels_unskipped_unstanding), k(w.shadow_texels_unskipped_between_instances), k(w.shadow_texels_unskipped_after_encoder_writes),
++        k(w.shadow_texels_unskipped_command_buffer), k(w.shadow_texels_unskipped_truth_written), k(w.shadow_texels_unskipped_image_written),
++    ]);
++    row(0x434e5349, &[
++        w.shadow_copies_back_dispatched, w.shadow_copies_in_dispatched, w.shadow_attachment_passes, w.shadow_attachment_textures,
++        w.shadow_attachment_loads_whole, w.shadow_attachment_loads_within, w.shadow_attachment_loads_untouched,
++        k(w.shadow_texels_first_copied_in), k(w.shadow_texels_first_copied_in_surfaces), k(w.shadow_texels_recopied_after_writes),
++        k(w.shadow_texels_recopied_after_changes), k(w.shadow_texels_recopied_in_surfaces), k(w.shadow_texels_unskipped_never_stood),
++        k(w.shadow_texels_unskipped_stood), k(w.shadow_texels_unskipped_let_go), k(w.shadow_texels_unskipped_recorded_whole),
++        k(w.shadow_texels_unskipped_unnamed_since), k(w.shadow_texels_kept), w.bounded_shadow_copies, w.shadows_sharing_truth,
++    ]);
 +    // The settle's steps of first uses ("CNSS").
 +    row(0x434e5353, &census::steps_snapshot());
 +    // Render encoders made and ended and commits, with their microseconds ("CNSE").
