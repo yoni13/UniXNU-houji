@@ -1,7 +1,17 @@
 diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-runtime/src/render.rs
 --- a/crates/metal2vulkan-runtime/src/render.rs
 +++ b/crates/metal2vulkan-runtime/src/render.rs
-@@ -2225,7 +2225,7 @@
+@@ -2194,7 +2194,8 @@
+         carried: Option<Box<carried::Carried>>,
+     ) -> Lowering {
+         let samplers = core.generation().sampler_slots_changed();
+-        let carried = carried::fitting(carried, &opening, (core.device(), samplers));
++        let carried =
++            carried::shelved_fitting(carried, &opening, core.command_buffer(), (core.device(), samplers));
+         let Opening {
+             layout,
+             render_target_array_length,
+@@ -2225,7 +2226,7 @@
              .as_ref()
              .map_or(layout.extent, RateMappedPass::area);
          let lowering = Box::write(
@@ -10,7 +20,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
              RenderLowering {
                  core,
                  earlier: Vec::new(),
-@@ -4325,6 +4325,32 @@
+@@ -4325,6 +4326,32 @@
          let unnamed_reads =
              self.barrier_inside || self.reaches_unnamed || !self.executions.is_empty();
          let rate_mapped = self.rate_map.is_some();
@@ -43,7 +53,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          let RenderLowering {
              mut core,
              earlier,
-@@ -4364,7 +4390,7 @@
+@@ -4364,7 +4391,7 @@
              pass_start,
              pinned_through,
              ..
@@ -52,7 +62,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          // The views and sampler descriptions its binds made or found, which the device's next
          // render encoder takes (`binding::BindMemo`).
          core.device().shared().bind_memos.give(bind_memo);
-@@ -7917,8 +7943,47 @@
+@@ -7917,8 +7944,47 @@
          self.select_kept(live);
          let mut checked = None;
          let drawn = (&draw, empty);
@@ -101,7 +111,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
              #[cfg(debug_assertions)]
              draw_again::Again::Check => {}
              draw_again::Again::No => {}
-@@ -7974,6 +8039,9 @@
+@@ -7974,6 +8040,9 @@
              self.degrade_ycbcr_blends();
          }
          self.draw_calls += 1;
@@ -111,7 +121,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          self.command_encoded(reads);
          self.called = true;
          self.drew |= !empty && rasterizes;
-@@ -13545,3 +13613,83 @@
+@@ -13545,3 +13614,83 @@
          }
      }
  }
@@ -267,11 +277,166 @@ diff --git a/crates/metal2vulkan-runtime/src/lib.rs b/crates/metal2vulkan-runtim
  mod address_map;
  mod address_pool;
  mod allocations;
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+--- a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+@@ -684,6 +684,9 @@
+     /// encoder's bind state (`render/carried.rs`): let go by every call that settles the end
+     /// ([`CommandBuffer::settle_end`]) but a render encoder's opening, which takes it.
+     carried: Option<Box<Carried>>,
++    /// houji: earlier render encoders' carried bind states of other pass shapes, newest first, kept while `houji_census::fast` holds
++    /// for a later encoder of their shape (`render/carried.rs`, `shelved_fitting`): let go as `carried` is.
++    shelf: [Option<Box<Carried>>; 4],
+     /// The commits' own work fails this many more times (a device test's injection of an out of
+     /// memory, `tests::deferred_calls`).
+     #[cfg(all(test, any(m2v_gpu, m2v_cpu_icd)))]
+@@ -2131,6 +2134,7 @@
+                 ending: None,
+                 end_lowered: false,
+                 carried: None,
++                shelf: Default::default(),
+                 #[cfg(all(test, any(m2v_gpu, m2v_cpu_icd)))]
+                 failures_injected: 0,
+                 #[cfg(all(test, any(m2v_gpu, m2v_cpu_icd)))]
+@@ -2523,9 +2527,43 @@
+         }
+     }
+ 
++    /// houji: put `carried`, which the opening render encoder's pass does not fit, on the shelf, newest first: the oldest, where
++    /// the shelf is full, let go to the device's spares.
++    pub(crate) fn shelve(&self, carried: Box<Carried>) {
++        let oldest = {
++            let mut state = self.state();
++            let shelf = &mut state.shelf;
++            let oldest = shelf[shelf.len() - 1].take();
++            shelf.rotate_right(1);
++            shelf[0] = Some(carried);
++            oldest
++        };
++        if let Some(oldest) = oldest {
++            crate::houji_census::shelf_count(crate::houji_census::SHELF_EVICTED, 1);
++            oldest.let_go(&self.0.device);
++        }
++    }
++
++    /// houji: the newest shelved carried bind state `fits` takes, off the shelf.
++    pub(crate) fn take_shelved(&self, fits: impl Fn(&Carried) -> bool) -> Option<Box<Carried>> {
++        let mut state = self.state();
++        let shelf = &mut state.shelf;
++        let at = shelf.iter().position(|c| c.as_deref().is_some_and(&fits))?;
++        let taken = shelf[at].take();
++        shelf[at..].rotate_left(1);
++        taken
++    }
++
+     /// Let go of the kept draw the last render encoder carried, where it holds one, to the
+     /// device's spares, counted as `why` says where it says (`render/carried.rs`).
+     fn let_go_carried(&self, why: Option<CarryDropped>) {
++        let shelf = std::mem::take(&mut self.state().shelf);
++        let mut shelved = 0;
++        for carried in shelf.into_iter().flatten() {
++            shelved += 1;
++            carried.let_go(&self.0.device);
++        }
++        crate::houji_census::shelf_count(crate::houji_census::SHELF_LET_GO, shelved);
+         let carried = self.state().carried.take();
+         if let Some(carried) = carried {
+             if let Some(why) = why {
+diff --git a/crates/metal2vulkan-runtime/src/render/carried.rs b/crates/metal2vulkan-runtime/src/render/carried.rs
+--- a/crates/metal2vulkan-runtime/src/render/carried.rs
++++ b/crates/metal2vulkan-runtime/src/render/carried.rs
+@@ -87,17 +87,7 @@
+ /// Whether `carried` fits the render encoder `opening` opens, its device's sampler IDs' slots
+ /// changed `samplers` times (the module docs); else why it is let go.
+ fn carried_fits(carried: &Carried, opening: &Opening, samplers: u64) -> Result<(), CarryDropped> {
+-    let layout = &opening.layout;
+-    let colors = layout.colors.iter().flatten();
+-    let same_pass = opening.shape == carried.shape
+-        && layout.layers == carried.layers
+-        && opening.rate_map.is_none()
+-        && opening.grouped.is_none()
+-        && layout.visibility.is_none()
+-        && layout.sample_positions.is_empty()
+-        && !opening.extended.any()
+-        && colors.clone().all(|color| !color.memoryless);
+-    if !same_pass {
++    if !same_pass(carried, opening) {
+         return Err(CarryDropped::Layout);
+     }
+     let moved = crate::buffer::host_cells_moved();
+@@ -111,6 +101,21 @@
+     Ok(())
+ }
+ 
++/// Whether `carried`'s pass is that of the encoder `opening` opens in everything its settle and recording read ([`carried_fits`]).
++fn same_pass(carried: &Carried, opening: &Opening) -> bool {
++    let layout = &opening.layout;
++    let colors = layout.colors.iter().flatten();
++    let same_pass = opening.shape == carried.shape
++        && layout.layers == carried.layers
++        && opening.rate_map.is_none()
++        && opening.grouped.is_none()
++        && layout.visibility.is_none()
++        && layout.sample_positions.is_empty()
++        && !opening.extended.any()
++        && colors.clone().all(|color| !color.memoryless);
++    same_pass
++}
++
+ impl RenderLowering {
+     /// The kept draw this encoder, ending with its bind state `live`, carries into its command
+     /// buffer's next render encoder, taken from it where it does (the module docs).
+@@ -200,6 +205,45 @@
+         }
+     }
+ }
++
++/// houji milestone 2: [`fitting`], with the shelf of `command_buffer` while `houji_census::fast` holds: a `carried` of another pass
++/// shape goes on the shelf in place of being let go, and the newest shelved bind state of this pass's shape is taken instead, where
++/// one is; so an encoder starts from the last one of its shape in the command buffer, whatever encoders of other shapes came between.
++/// The taken one is checked as the carried one is (`carried_fits`): what it read that changes with no call as it was.
++pub(super) fn shelved_fitting(
++    carried: Option<Box<Carried>>,
++    opening: &Opening,
++    command_buffer: &crate::command_buffer::CommandBuffer,
++    (device, samplers): (&Device, u64),
++) -> Option<Box<Carried>> {
++    use crate::houji_census as census;
++    if !census::fast() {
++        return fitting(carried, opening, (device, samplers));
++    }
++    let carried = match carried {
++        Some(carried) if same_pass(&carried, opening) => Some(carried),
++        Some(carried) => {
++            command_buffer.shelve(carried);
++            None
++        }
++        None => None,
++    };
++    let carried = carried.or_else(|| command_buffer.take_shelved(|c| same_pass(c, opening)));
++    let Some(carried) = carried else {
++        census::shelf_count(census::SHELF_MISSED, 1);
++        return None;
++    };
++    census::shelf_count(census::SHELF_TAKEN, 1);
++    match carried_fits(&carried, opening, samplers) {
++        Ok(()) => Some(carried),
++        Err(why) => {
++            census::shelf_count(census::SHELF_UNDER, 1);
++            device.shared().counts.kept_draw_carry_dropped(why);
++            carried.let_go(device);
++            None
++        }
++    }
++}
+ 
+ /// `carried` where it fits the encoder `opening` opens (`carried_fits`), its device's sampler
+ /// IDs' slots changed `samplers` times, else `None`, let go to `device` and counted.
 diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulkan-runtime/src/houji_census.rs
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,187 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -427,4 +592,35 @@ new file mode 100644
 +        counts.len() as u64
 +    };
 +    [counts.len() as u64, cover(50), cover(90), cover(99)]
++}
++
++/// houji milestone 2, the shelf of carried bind states (`render/carried.rs`, `command_buffer/mod.rs`): on while [`set_fast`] holds (the
++/// bridge sets it from boot argument `m2v-fast=1`, or the console's `m2v fast N` through `kern.houji_m2v_fast`, at a commit).
++static FAST: AtomicBool = AtomicBool::new(false);
++
++pub fn set_fast(on: bool) {
++    FAST.store(on, Ordering::Relaxed);
++}
++
++pub fn fast() -> bool {
++    FAST.load(Ordering::Relaxed)
++}
++
++/// The shelf's counts ([`shelf_snapshot`]): openings that took a shelved bind state of their pass's shape, openings that found none,
++/// shelved states pushed out by newer ones, let go by a call between encoders or the commit, and taken but refused as their reads
++/// changed (`CarryDropped::Under`).
++pub const SHELF_TAKEN: usize = 0;
++pub const SHELF_MISSED: usize = 1;
++pub const SHELF_EVICTED: usize = 2;
++pub const SHELF_LET_GO: usize = 3;
++pub const SHELF_UNDER: usize = 4;
++pub const SHELF_COUNTS: usize = 5;
++static SHELF: [AtomicU64; SHELF_COUNTS] = [const { AtomicU64::new(0) }; SHELF_COUNTS];
++
++pub(crate) fn shelf_count(which: usize, n: u64) {
++    SHELF[which].fetch_add(n, Ordering::Relaxed);
++}
++
++pub fn shelf_snapshot() -> [u64; SHELF_COUNTS] {
++    std::array::from_fn(|i| SHELF[i].load(Ordering::Relaxed))
 +}

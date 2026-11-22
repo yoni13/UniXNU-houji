@@ -27,6 +27,10 @@ extern kern_return_t task_info(task_t,task_flavor_t,task_info_t,mach_msg_type_nu
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
 #include "houji_usb_protocol.h"
+#include <sys/sysctl.h>
+/* metal2vulkan's fast tier for the render server (console "m2v fast N"): -1 follows boot argument m2v-fast, 0 off, 1 on */
+int houji_m2v_fast=-1;
+SYSCTL_INT(_kern,OID_AUTO,houji_m2v_fast,CTLFLAG_RD|CTLFLAG_LOCKED,&houji_m2v_fast,0,"houji: metal2vulkan fast tier");
 #include "houji_ram_upload.h"
 #include <machine/atomic.h>
 #include <sys/reboot.h>
@@ -1770,6 +1774,14 @@ static void command_line(void)
         extern void houji_ddr_vote(unsigned y);
         unsigned v=0;const char *p=u.command+4;while (*p>='0' && *p<='9') v=v*10+(unsigned)(*p++-'0');
         houji_ddr_vote(v);
+    }
+    else if (!strncmp(u.command,"m2v fast ",9)) {
+        /* kern.houji_m2v_fast: metal2vulkan's fast tier (m2v-lowering-box.patch, the shelf of carried bind states), read by the render
+         * server's bridge at its commits: -1 follows boot argument m2v-fast, 0 off, 1 on */
+        const char *p=u.command+9;const int neg=*p=='-';if (neg) p++;
+        int v=0;while (*p>='0' && *p<='9') v=v*10+(*p++-'0');
+        houji_m2v_fast=neg?-v:v;
+        printf("HOUJI M2V fast %d\n",houji_m2v_fast);
     }
     else if (!strcmp(u.command,"l3") || !strncmp(u.command,"l3 vote ",8) || !strncmp(u.command,"l3 perf ",8) || !strncmp(u.command,"l3 mode ",8)) {
         /* HoujiCpuDvfs.cpp houji_cpu_l3: the L3 clock's table and state; "l3 vote N" / "l3 perf N" write row N */
