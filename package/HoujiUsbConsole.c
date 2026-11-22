@@ -1010,6 +1010,12 @@ int houji_thread_cpu_state(thread_t thread,int *cpu);
 int houji_sample_running(thread_t thread,int cpu,uint64_t out[3]);
 struct tl_thread { int pid; char name[24]; uint64_t tid; task_t task; thread_t th; vm_map_t map; uint64_t start,slide; int last; };
 static struct { unsigned ms,n; struct tl_thread t[TL_THREADS]; } tl;
+/* Every 10 ms of a tl, the four CPU domains' clocks (HoujiCpuDvfs.cpp houji_cpu_state_khz), printed at its end as
+ * "HOUJI TL CLK us k0 k1 k2 k3" (kHz), so a frame's encoding can be read against the clock it ran at. */
+#define TL_CLKS 1024
+uint32_t houji_cpu_state_khz(unsigned id);
+static struct { uint64_t us; uint32_t k[4]; } tl_clk[TL_CLKS];
+static unsigned tl_nclk;
 static int _Atomic tl_busy;
 static uint64_t tl_find_tid(task_t task,const char *name)
 {
@@ -1049,10 +1055,16 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
     }
     uint64_t base=mach_absolute_time(),base_ns=0;absolutetime_to_nanoseconds(base,&base_ns);
     printf("HOUJI TL BASE %llu\n",(unsigned long long)base_ns);
+    tl_nclk=0;
     for (unsigned elapsed=0;runs && elapsed<tl.ms;elapsed++) {
         gesture_sleep_ms(1);
         uint64_t now_ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&now_ns);
         const uint64_t us=(now_ns-base_ns)/1000;
+        if (elapsed%10==0 && tl_nclk<TL_CLKS) {
+            tl_clk[tl_nclk].us=us;
+            for (unsigned dmn=0;dmn<4;dmn++) tl_clk[tl_nclk].k[dmn]=houji_cpu_state_khz(dmn);
+            tl_nclk++;
+        }
         for (unsigned i=0;i<tl.n;i++) {
             struct tl_thread *t=&tl.t[i];
             if (t->th==THREAD_NULL) continue;
@@ -1095,6 +1107,10 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
         char line[20*TL_DEPTH];unsigned at=0;line[0]=0;
         for (int d=0;d<TL_DEPTH && at+20<sizeof line;d++) at+=(unsigned)snprintf(line+at,sizeof line-at," %llx",r->pc[d]);
         printf("HOUJI TL R2 %u %llu %llu %u %u%s\n",r->thr,(unsigned long long)r->t0,(unsigned long long)r->t1,r->run,r->cpu,line);
+        delay(1500);
+    }
+    for (unsigned k=0;k<tl_nclk;k++) {
+        printf("HOUJI TL CLK %llu %u %u %u %u\n",(unsigned long long)tl_clk[k].us,tl_clk[k].k[0],tl_clk[k].k[1],tl_clk[k].k[2],tl_clk[k].k[3]);
         delay(1500);
     }
     printf("HOUJI TL: end\n");
@@ -1771,6 +1787,37 @@ static void command_line(void)
         extern void houji_ddr_vote(unsigned y);
         unsigned v=0;const char *p=u.command+4;while (*p>='0' && *p<='9') v=v*10+(unsigned)(*p++-'0');
         houji_ddr_vote(v);
+    }
+    else if (!strcmp(u.command,"topo")) {
+        /* The scheduler's clusters (ml_get_topology_info): which CPUs a "bind" of a cluster id puts a thread on. */
+        const ml_topology_info_t *topology=ml_get_topology_info();
+        for (unsigned i=0;topology && i<topology->num_clusters;i++) {
+            const ml_topology_cluster_t *cl=&topology->clusters[i];
+            printf("HOUJI TOPO: cluster %u id %u type %u cpus %u first %u mask %llx\n",i,cl->cluster_id,(unsigned)cl->cluster_type,cl->num_cpus,
+                   cl->first_cpu_id,(unsigned long long)cl->cpu_mask);
+        }
+    }
+    else if (!strncmp(u.command,"bind ",5)) {
+        /* "bind PID:NAME CLUSTER": soft-bind the process's first thread whose name starts with NAME (PID:0 its main thread, as tl names
+         * them) to scheduler cluster CLUSTER ("topo"), -1 to unbind (thread_soft_bind_cluster_id, development kernels): for the A/B of
+         * backboardd's Metal encoding thread on the prime core. */
+        extern kern_return_t thread_soft_bind_cluster_id(thread_t thread,uint32_t cluster_id,uint64_t options);
+        const char *a=u.command+5;const int pid=(int)strtoq(a,NULL,10);
+        char name[24]={0};const char *colon=strchr(a,':'),*sp=strchr(a,' ');
+        if (colon && sp && colon<sp) { size_t len=(size_t)(sp-colon-1);if (len>=sizeof name) len=sizeof name-1;memcpy(name,colon+1,len); }
+        else strlcpy(name,"0",sizeof name);
+        const int cluster=sp?(int)strtoq(sp+1,NULL,10):-2;
+        proc_t p=pid>0?proc_find(pid):PROC_NULL;task_t task=TASK_NULL;
+        if (p) { task=proc_task(p);if (task!=TASK_NULL) task_reference(task);proc_rele(p); }
+        if (task==TASK_NULL || cluster<-1) printf("HOUJI BIND: bind PID:NAME CLUSTER (-1 unbinds); no such process or cluster\n");
+        else {
+            const uint64_t tid=tl_find_tid(task,name);
+            thread_t th=tid?task_findtid(task,tid):THREAD_NULL;
+            kern_return_t kr=KERN_INVALID_ARGUMENT;
+            if (th!=THREAD_NULL) { kr=thread_soft_bind_cluster_id(th,cluster<0?UINT32_MAX:(uint32_t)cluster,0);thread_deallocate(th); }
+            printf("HOUJI BIND: pid %d %s tid %llu cluster %d: %d\n",pid,name,(unsigned long long)tid,cluster,kr);
+            task_deallocate(task);
+        }
     }
     else if (!strcmp(u.command,"gpuf")) {
         /* NativeAdrenoPublish.cpp: GPU hangs and restarts (hangs, restarts, failed restarts, last hung fence, last restart's IOReturn,

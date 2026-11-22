@@ -364,6 +364,13 @@ extern "C" void houji_cpu_dvfs_start(void) {
     if (kernel_thread_start(worker, nullptr, &t) == KERN_SUCCESS) thread_deallocate(t);
 }
 
+// The current clock of domain `id` in kHz (its performance state, read from the hardware), 0 for one not in use: the console's tl
+// samples it every 10 ms beside the threads (HoujiUsbConsole.c, "HOUJI TL CLK").
+extern "C" uint32_t houji_cpu_state_khz(unsigned id) {
+    if (!gStarted || id >= kDomains || !d[id].ok) return 0;
+    return (rd(d[id], 0x20) & 255) * 19200;
+}
+
 extern "C" void houji_cpu_dvfs_report(void) {
     if (!gStarted) {IOLog("HOUJI CPU DVFS: not started (houji_dvfs=1)\n"); return;}
     for (unsigned id = 0; id < kDomains; id++) {
