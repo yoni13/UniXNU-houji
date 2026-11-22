@@ -27,6 +27,7 @@ extern kern_return_t task_info(task_t,task_flavor_t,task_info_t,mach_msg_type_nu
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
 #include "houji_usb_protocol.h"
+#include <kern/locks.h>
 #include "houji_ram_upload.h"
 #include <machine/atomic.h>
 #include <sys/reboot.h>
@@ -1772,19 +1773,17 @@ static void command_line(void)
         houji_ddr_vote(v);
     }
     else if (!strncmp(u.command,"m2v fast ",9)) {
-        /* metal2vulkan's fast tier (m2v-lowering-box.patch, the shelf of carried bind states), 0 off or 1 on: written into the live boot
-         * arguments as m2v-fast=N (the digit rewritten, else the token appended; the 1000-byte limit is the packer's, the buffer holds
-         * 1024), which the render server's bridge reads through kern.bootargs at most every 50 ms at a commit. A sysctl of its own
-         * cannot be read there (console "sysctl" refused even kern.maxvnodes, root325). */
+        /* metal2vulkan's fast tier (m2v-lowering-box.patch, the shelf of carried bind states), 0 off or 1 on: the kernel's host name
+         * set to m2v-fast-N, which the render server's bridge reads (gethostname) at most every 50 ms at a commit; any other name
+         * follows boot argument m2v-fast. Neither a sysctl of the console's own (console "sysctl" refused even kern.maxvnodes, root325)
+         * nor the boot arguments (writing them panicked, root327) can carry it. */
+        extern char hostname[];extern lck_mtx_t hostname_lock;
         const char d=u.command[9];
         if (d!='0' && d!='1') printf("HOUJI M2V fast: 0 or 1\n");
         else {
-            char *args=PE_boot_args();size_t len=strnlen(args,1024);char *at=NULL;
-            for (char *p=args;(p=strnstr(p,"m2v-fast=",(size_t)(args+len-p)))!=NULL;p++) if (p==args || p[-1]==' ') {at=p;break;}
-            if (at) at[9]=d;
-            else if (len+11<1024) {memcpy(args+len," m2v-fast=0",11);args[len+10]=d;args[len+11]=0;}
-            at=strnstr(args,"m2v-fast=",strnlen(args,1024));
-            printf("HOUJI M2V fast %c (boot arguments now %c, %zu bytes)\n",d,at?at[9]:'?',strnlen(args,1024));
+            char name[]="m2v-fast-0";name[9]=d;
+            lck_mtx_lock(&hostname_lock);strlcpy(hostname,name,MAXHOSTNAMELEN);lck_mtx_unlock(&hostname_lock);
+            printf("HOUJI M2V fast %c (host name %s)\n",d,name);
         }
     }
     else if (!strcmp(u.command,"l3") || !strncmp(u.command,"l3 vote ",8) || !strncmp(u.command,"l3 perf ",8) || !strncmp(u.command,"l3 mode ",8)) {

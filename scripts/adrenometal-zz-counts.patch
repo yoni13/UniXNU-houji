@@ -186,7 +186,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,281 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -258,9 +258,10 @@ new file mode 100644
 +}
 +
 +/// houji milestone 2: whether the runtime's shelf of carried bind states is on (`houji_census::set_fast`), brought up to date at most
-+/// every 50 ms at a commit from boot argument `m2v-fast=1`, read live: the console's `m2v fast N` rewrites it in the kernel's boot
-+/// arguments (a sysctl of the console's own cannot be read by the render server).
++/// every 50 ms at a commit: the console's `m2v fast N` sets the kernel's host name to `m2v-fast-N`; under any other name, boot argument
++/// `m2v-fast=1` (read once). The console can carry it in neither a sysctl of its own nor the boot arguments.
 +pub fn fast_refresh() {
++    static BOOT: AtomicI8 = AtomicI8::new(-1);
 +    static LAST_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 +    let now = start().elapsed().as_millis() as u64;
 +    let last = LAST_MS.load(Ordering::Relaxed);
@@ -268,17 +269,28 @@ new file mode 100644
 +        return;
 +    }
 +    LAST_MS.store(now, Ordering::Relaxed);
-+    let mut text = [0u8; 1024];
-+    let mut length = text.len() - 1;
-+    // SAFETY: a nul-terminated name, and a buffer of `length` bytes the call writes at most.
-+    let read = unsafe {
-+        libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
++    if BOOT.load(Ordering::Relaxed) < 0 {
++        let mut text = [0u8; 1024];
++        let mut length = text.len() - 1;
++        // SAFETY: a nul-terminated name, and a buffer of `length` bytes the call writes at most.
++        let read = unsafe {
++            libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
++        };
++        let args = &text[..length.min(text.len())];
++        let on = read == 0
++            && args.windows(10).enumerate().any(|(at, w)| {
++                w == b"m2v-fast=1" && (at == 0 || args[at - 1] == b' ') && matches!(args.get(at + 10), None | Some(&b' ') | Some(&0))
++            });
++        BOOT.store(on as i8, Ordering::Relaxed);
++    }
++    let mut name = [0u8; 64];
++    // SAFETY: a buffer of `name.len()` bytes, which the call writes at most.
++    let read = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
++    let on = match (read, &name[..11]) {
++        (0, b"m2v-fast-1\0") => true,
++        (0, b"m2v-fast-0\0") => false,
++        _ => BOOT.load(Ordering::Relaxed) == 1,
 +    };
-+    let args = &text[..length.min(text.len())];
-+    let on = read == 0
-+        && args.windows(10).enumerate().any(|(at, w)| {
-+            w == b"m2v-fast=1" && (at == 0 || args[at - 1] == b' ') && matches!(args.get(at + 10), None | Some(&b' ') | Some(&0))
-+        });
 +    metal2vulkan_runtime::houji_census::set_fast(on);
 +}
 +
