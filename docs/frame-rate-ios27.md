@@ -519,6 +519,18 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   the three threads running. p7cap 3149: the domain reports 3149 MHz, but `cpub 7` then times the add chain at 2629 MHz (and at
   2627 MHz with the domain reporting 499 MHz), and the opens match Q and R: the reported clock is not the core's, and the cap
   override does not raise it. Kept off. The houji thermal trigger (66 C) switched levels 0 and 1 six times during the run.
+- **The prime core's clock by vote** (root367, `dvfs set p7pin MHz` holds cpu7's vote at a table row, `cpub 7`): voted 499, 1497,
+  2630 and 3148 MHz (the last with `p7cap`), the add chain ran at 2626, 2626, 2625 and 2627 MHz. The vote does not set cpu7's clock:
+  it stays at about 2.63 GHz whatever the governor asks, so the P to P+ and B to H differences were not cpu7's clock.
+- **Frame timelines with every CPU** (root367, console tl now also records which thread each CPU runs every millisecond and the GPU's
+  interrupts and fence passes, `gapbud.py`): other threads on cpu7 delay one of the tracked threads only 13-35 ms per 2.9 s capture;
+  the largest is the timeline's own sampling thread (a new kernel thread each capture, up to 28 % of a core). In two of six captures
+  BackgroundShortcutRunner used 4.2-4.9 s of CPU in 2.9 s, mostly off cpu7. The kernel's vsync tick never ran (the display reports
+  `sent=0`): nothing registers for it on iOS 27, frames are paced in backboardd. And the thread followed as "the render thread" since
+  root361 was the wrong one: the console cuts names at 23 characters, so `com.apple.coreanimation.display` matched tid 775, the
+  render-server thread (200 ms of CPU in the boot); backboardd's compositing thread is tid 785, `com.apple.coreanimation.display.`
+  (5978 ms, second to the encoding thread), never followed or bound. While none of the followed threads ran, it ran 63-107 ms of
+  650, about 2.5-4 ms a frame, on cpu2-6. Threads can now be named by id (`PID:#TID`).
 
 ## Faults found on the way
 
