@@ -368,6 +368,24 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
 - **The test guard** read the CPU governor's DVFS lines, whose instantaneous die sensor spikes to 75-77 C for 50 ms under the boot's
   full load at skin 22 C (root329, root330 stopped at random); it now reads the 5 s `HOUJI THERMAL` hottest sensor (still 74 C).
 
+### Compositor fast path: milestone 2, why settled draws miss the rebind (root333-root339)
+
+- **Dry run of a cross-frame key** (census `CNSX`, root337): half the draws (50 %) are their pipeline's first use in their encoder and
+  all take every step; key A (pipeline, pass shape, layers) of every one of them was seen in an earlier command buffer (98 % within
+  100 ms), and so was key B with the attachments' textures and render area (98 %): the key reaches no per-frame object. Key A' (with the
+  draw's call and primitive type) too, 100 %; but only 72.7 % of those keys' last draws kept a draw that rebinds.
+- **Why draws of a pipeline already settled in the pass take every step** (`CNSW`, `CNSL`, `CNSR`, root335/root337): of the same
+  pipeline as the draw before, 82 % unlike the kept draw, by another primitive type (5923) or call (4153) or index buffer (4207); of a
+  return to an earlier pipeline (A>B>A), 45 % a kept draw that does not rebind, 30 % no kept draw, 17 % a stopped rebind. Every kept draw
+  that does not rebind (35 % of kept draws) holds uses beyond its plan's, and those are its **input attachments' alone** (framebuffer
+  fetch): the rebind remade a draw's uses of its plan alone.
+- **Input attachment draws rebind** (`m2v fast`; the keep allows the plan's uses plus the input attachments' exactly, a draw rebound
+  makes those again of its pass, `input_attachments_into`, and its check of the attachments' reads leaves them out as every step does;
+  root339, gpu26, one boot, windows on/off/on/off, no crash): drawn again 32.8 / 33.6 % of draws on against 24.9 / 24.2 % off, stopped
+  rebinds 4.1 / 4.2 % against 12.5 / 12.3 %, about 11000 draws a window rebound with their input attachments, and the cross-frame
+  projected hit 100 % against 72.9 %. Per draw 39.9 / 38.5 us on against 47.9 / 39.1 us off (the second window of a boot reads high in
+  every run): no clear gain yet, as the full path's draws left are the dearer ones (50-52 us against 47-58 us).
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
