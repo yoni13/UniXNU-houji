@@ -185,7 +185,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,238 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -388,13 +388,13 @@ new file mode 100644
 +    unsafe {
 +        let f: NoteFn = std::mem::transmute(f);
 +        f(1, words.as_ptr(), words.len() as u32);
-+        census_notes(f);
++        census_notes(f, &w);
 +    }
 +}
 +
 +/// The census rows (marks "CNSP", "CNSD", "CNST", "CNSU", "CNSB"): the runtime's pass and draw counts by feature, the pipeline
 +/// spread, the encoding microseconds by draw class and by pass class (with the passes of each), and the set calls with their time.
-+fn census_notes(f: NoteFn) {
++fn census_notes(f: NoteFn, w: &metal2vulkan_runtime::WorkCounts) {
 +    use metal2vulkan_runtime::houji_census as census;
 +    let row = |mark: u32, values: &[u64]| {
 +        let mut words = vec![mark];
@@ -414,4 +414,13 @@ new file mode 100644
 +    let mut sets: Vec<u64> = (SET_BUFFER..KINDS).map(|k| CALLS[k].load(Ordering::Relaxed)).collect();
 +    sets.extend((SET_BUFFER..KINDS).map(|k| NANOS[k].load(Ordering::Relaxed) / 1000));
 +    row(0x434e5342, &sets);
++    // Why the runtime's own draw-again path (`render/draw_again.rs`) took or missed each draw ("CNSK").
++    row(0x434e534b, &[
++        w.draws_as_before, w.draws_rebound, w.draws_moved, w.draws_restated, w.draws_rebound_arguments, w.draws_rebound_carried,
++        w.draws_carry_stopped, w.draws_unkept, w.draws_unkept_instance, w.draws_unkept_instance_later, w.draws_unkept_instance_steps,
++        w.draws_unkept_barrier, w.draws_unkept_shadowed, w.draws_unkept_tables, w.draws_unkept_tables_heap, w.draws_unkept_index_copied,
++        w.draws_unkept_writing, w.draws_unkept_making, w.draws_unkept_other, w.draws_unlike_kept, w.draws_unlike_kept_pipeline,
++        w.draws_unlike_kept_call, w.draws_unlike_kept_counts, w.draws_unlike_kept_index_buffer, w.draws_unlike_kept_index_offset,
++        w.draws_unlike_kept_command_buffer, w.draws_unlike_kept_under, w.draws_unlike_kept_arguments_alone, w.draws_rebind_stopped,
++    ]);
 +}
