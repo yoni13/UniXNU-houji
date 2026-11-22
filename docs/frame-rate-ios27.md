@@ -569,6 +569,18 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   about 1.2, 0.56, 13-16 and 7-9.5 ms. The GPU DCVS spends 56-75 % of each 10 s window at its top level (903 MHz) and reads 8-22 %
   busy, about one open's 0.7-0.8 s of saturated GPU: the two agree. The GPU, at its top clock, is now what sets the frame time.
   root369 then reset in `dvfs lut` (reading vote words past a domain's own; fixed, and the dump now runs first in a boot).
+- **cpu7 scales on its own domain** (root370, `p7pin` / `p7cap` now on domain 2, `cpub 7`): pinned at 1500 MHz it timed 1474 MHz, at
+  2630 2627, at 3052.8 (the cap lifted) 3047 MHz. Its factory table (`dvfs lut`): rows to 3052.8 MHz with bits 18:16 = 3, then 3110.4,
+  3187.2, 3244.8 and 3302.4 MHz with 1 (Linux `qcom-cpufreq-hw`'s boost rows), the last repeated; `kCaps` stops at 3052.8. Domain 3
+  (cpu2-4) has no boost row to 3148.8. Control `0xb0` = 0x9b30 in every domain (bit 0 clear: one vote word a domain).
+- **The stock caps follow the room** (root370, root371): the skin estimate (battery temperature) read 22.7-23.7 C, under the stock
+  tables' first step (25.0 C), and every domain ran to its table cap (cpu2-4 3148.8 MHz). root370's opens peaked at 75.1 C (one
+  sensor, between 42-45 C readings); root371's boot load reached 76.3 C and `t-round.sh`'s 74 C guard sent it to the bootloader. Runs
+  now hold the stock caps with a skin offset (`sko=4`, a 7-byte alias of `houji_skin_offset_c`; +4 C keeps 22.7-27 C inside 25-32 C,
+  where cpu7's table stays at its first step).
+- **A GPU hang in a diag=1 boot** (root370): one, no fault, no guilty job, at fence 6383, the job after the last one of an open's
+  settle (fences 5883-6382): a Control Center hang. root369 (gtl from the console, diag=0) had none in 24 opens. diag=1 stays a
+  measurement boot only.
 
 ## Faults found on the way
 
