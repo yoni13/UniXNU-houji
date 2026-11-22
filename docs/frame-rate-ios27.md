@@ -587,6 +587,14 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   encoding thread 8.4 -> 7.4. The GPU stayed 95-97 % busy, 20.5-23.4 ms a frame (P4 77-97 %, 21.2-23.9). Untraced P4 42.6 (3 opens);
   P7's first untraced open (39.1 fps) read 75 C and `t-bal.sh` stopped at its 70 C limit. 0 GPU hangs, 0 faults in 15 opens. About 6 %
   traced, not confirmed untraced, at a thermal cost: `p7c` stays opt-in and off. The GPU sets the frame time.
+- **The GPU's time inside and outside render passes** (root373, diag=1, P4 six opens; the driver's CP stamps per job joined with
+  Turnip's pass stamps from frames.trace, both on the CP's always-on counter, `gpujoin.py`): 154 frames, 21.7 ms of GPU a frame, 1.8 ms of
+  it inside the passes read. The read is incomplete: 0.7-12.9 passes a frame of about 38 (Turnip's ring holds 512 passes, about 0.3 s
+  at this rate, and the frontend reads it 300 ms late). Of the passes read, the full-screen 1200x2670 BGRA ones (GMEM, loaded and
+  stored, 2.6 a frame) take 1.9 ms a frame. Even three times the passes read leaves most of the GPU's time between passes (copies,
+  blits, clears, barriers and flushes), as root194 found (5.9 of 14.3 ms of a Control Center command buffer in passes). A second
+  diag=1 boot, a second Control Center GPU hang: side 2, SMMU fault (FSR 0x80000002, FAR 0x4abf4000, FSYNR0 0x170001), guilty job.
+  diag=1 boots 2 of 2 with a hang in the opens, diag=0 boots root369 and root372 0 in 39: diag=1 is not used again.
 
 ## Faults found on the way
 
