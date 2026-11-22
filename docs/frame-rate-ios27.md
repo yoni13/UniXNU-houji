@@ -459,6 +459,14 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   (root296) 26.8-28.9 ms with 21.0-23.6: the frame follows the encoding thread, 3-4 ms past it. The first frame (157-187 ms) is
   SpringBoard's main thread's (110-134 ms: UIKit layout and traits, the CA commit).
 - **Where the encoding thread runs** (the same samples): cpu2-cpu5, never the prime core cpu7, in fast and slow boots alike.
+- **The encoding thread on the prime core** (root361, gpu35, `tt=1`, one boot, sides unbound / bound / unbound / bound, two opens each;
+  `houji-bind-cpu.patch` and console `bind PID:NAME cpuN`: the scheduler's clusters, console `topo`, are cpu0-1 and cpu2-7, so a cluster
+  bind cannot reach cpu7 alone). Bound: the encoding thread 10.0-10.8 ms a frame against 19.0-21.1 ms, at a like clock (its domain
+  1.76-1.98 GHz against 1.72-2.15 GHz; the prime domain's governor then keeps it near 1.8 GHz); opens 35.6 / 45.5 / 41.4 / 45.5 fps against
+  39.4 / 37.0 / 41.2, frames 22.0-28.1 ms against 24.3-27.0 ms. The encoding thread now waits 11.1-13.7 ms a frame between its runs (from
+  4.1-5.7 ms): the frame is no longer its own. SpringBoard's main thread 11.9-14.9 ms a frame beside it, the render thread about 1.3 ms;
+  no runnable time to speak of. The boot also had one GPU hang and restart at fence 519, at boot before the sides, with one SMMU
+  translation fault (FSR 0x80000002, FAR 0x11d6680), console `gpuf`; root356 (also `tt=1`) had none.
 
 ## Faults found on the way
 
