@@ -1780,10 +1780,10 @@ static void command_line(void)
         if (d!='0' && d!='1') printf("HOUJI M2V fast: 0 or 1\n");
         else {
             char *args=PE_boot_args();size_t len=strnlen(args,1024);char *at=NULL;
-            for (char *p=args;(p=strstr(p,"m2v-fast="))!=NULL;p++) if (p==args || p[-1]==' ') {at=p;break;}
+            for (char *p=args;(p=strnstr(p,"m2v-fast=",(size_t)(args+len-p)))!=NULL;p++) if (p==args || p[-1]==' ') {at=p;break;}
             if (at) at[9]=d;
             else if (len+11<1024) {memcpy(args+len," m2v-fast=0",11);args[len+10]=d;args[len+11]=0;}
-            at=strstr(args,"m2v-fast=");
+            at=strnstr(args,"m2v-fast=",strnlen(args,1024));
             printf("HOUJI M2V fast %c (boot arguments now %c, %zu bytes)\n",d,at?at[9]:'?',strnlen(args,1024));
         }
     }
