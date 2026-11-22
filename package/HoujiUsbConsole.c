@@ -1773,13 +1773,13 @@ static void command_line(void)
         houji_ddr_vote(v);
     }
     else if (!strncmp(u.command,"m2v fast ",9)) {
-        /* metal2vulkan's fast tier (m2v-lowering-box.patch, the shelf of carried bind states), 0 off or 1 on: the kernel's host name
+        /* metal2vulkan's fast tier (m2v-lowering-box.patch), a digit 0-3, bit 0 the tier, bit 1 48 set-aside bind states: the kernel's host name
          * set to m2v-fast-N, which the render server's bridge reads (gethostname) at most every 50 ms at a commit; any other name
          * follows boot argument m2v-fast. Neither a sysctl of the console's own (console "sysctl" refused even kern.maxvnodes, root325)
          * nor the boot arguments (writing them panicked, root327) can carry it. */
         extern char hostname[];extern lck_mtx_t hostname_lock;
         const char d=u.command[9];
-        if (d!='0' && d!='1') printf("HOUJI M2V fast: 0 or 1\n");
+        if (d<'0' || d>'3') printf("HOUJI M2V fast: 0-3 (bit 0 the fast tier, bit 1 48 set-aside bind states)\n");
         else {
             char name[]="m2v-fast-0";name[9]=d;
             lck_mtx_lock(&hostname_lock);strlcpy(hostname,name,MAXHOSTNAMELEN);lck_mtx_unlock(&hostname_lock);

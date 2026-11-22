@@ -186,7 +186,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,299 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -287,12 +287,14 @@ new file mode 100644
 +    let mut name = [0u8; 64];
 +    // SAFETY: a buffer of `name.len()` bytes, which the call writes at most.
 +    let read = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
-+    let on = match (read, &name[..11]) {
-+        (0, b"m2v-fast-1\0") => true,
-+        (0, b"m2v-fast-0\0") => false,
-+        _ => BOOT.load(Ordering::Relaxed) == 1,
++    // "m2v-fast-N", N a digit: bit 0 the fast tier, bit 1 a bind state's 48 set-aside states (`houji_census::set_big_aside`).
++    let bits = match (read, &name[..9], name[9], name[10]) {
++        (0, b"m2v-fast-", d @ b'0'..=b'9', 0) => Some(d - b'0'),
++        _ => None,
 +    };
++    let on = bits.map_or(BOOT.load(Ordering::Relaxed) == 1, |b| b & 1 != 0);
 +    metal2vulkan_runtime::houji_census::set_fast(on);
++    metal2vulkan_runtime::houji_census::set_big_aside(bits.is_some_and(|b| b & 2 != 0));
 +}
 +
 +fn start() -> Instant {
@@ -477,4 +479,10 @@ new file mode 100644
 +    row(0x434e5352, &census::keep_snapshot());
 +    // The draws of each timing class ("CNSN"), whose microseconds are "CNST"'s.
 +    row(0x434e534e, &DRAW_CLASS_N.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<u64>>());
++    // Render encoders made and ended and commits, with their microseconds ("CNSE").
++    row(0x434e5345, &[
++        CALLS[ENCODER].load(Ordering::Relaxed), NANOS[ENCODER].load(Ordering::Relaxed) / 1000,
++        CALLS[END].load(Ordering::Relaxed), NANOS[END].load(Ordering::Relaxed) / 1000,
++        CALLS[COMMIT].load(Ordering::Relaxed), NANOS[COMMIT].load(Ordering::Relaxed) / 1000,
++    ]);
 +}
