@@ -67,6 +67,9 @@ unsigned gSampleMs = 200, gFramePct = 45, gTouchPct = 65, gTouchMs = 300;
 // its first thermal step (kStockCpu7 {250, 2630400}: from 25.0 C skin, so at room temperature always), up to the domain's own cap
 // (3148.8 MHz). The hotter steps and the emergency cut still apply.
 unsigned gP7CapKhz;
+// Test only (console "dvfs set p7pin MHz", 0 off): the prime core voted at the table's row at or under MHz, whatever its load and
+// floors, still under its cap: for timing a core against its vote (console cpub).
+unsigned gP7PinKhz;
 // houji_cpu_load_sum=1: a domain's load is the sum of its cores' busy shares (at most 100 %), not the busiest core's. A single thread
 // moving among the cores of a cluster (SpringBoard's main thread over CPUs 2-6 while Control Center opens, root273) left every core
 // 20-40 % busy, and the governor asked 1.4-1.5 GHz for a thread that ran all the time.
@@ -192,7 +195,10 @@ void apply(unsigned level, bool framing, bool touching) {
             at = 0;
             while (at < cap && w.khz[at] < want) ++at;
         }
-        if (gInteractive) {
+        if (id == 3 && gP7PinKhz) {
+            at = khzCapIndex(w, gP7PinKhz);
+            if (at > cap) at = cap;
+        } else if (gInteractive) {
             unsigned floorPct = framing ? gFramePct : 0;
             if (id && touching && floorPct < gTouchPct) floorPct = gTouchPct;
             if (floorPct > gMaxPct) floorPct = gMaxPct;
@@ -387,7 +393,7 @@ extern "C" void houji_cpu_dvfs_report(void) {
 }
 
 // Console "dvfs set NAME VALUE": the interaction settings changed while running, so one boot can compare them (each a boot argument
-// otherwise): framepct, touchpct (0-100, under the max), loadsum (0/1), skin (the skin offset, -100 to 100 C), p7cap (MHz, gP7CapKhz).
+// otherwise): framepct, touchpct (0-100, under the max), loadsum (0/1), skin (the skin offset, -100 to 100 C), p7cap and p7pin (MHz, gP7CapKhz, gP7PinKhz).
 extern "C" void houji_cpu_dvfs_set(const char *name, int value) {
     bool ok = true;
     if (!strcmp(name, "framepct") && value >= 0 && value <= 100) gFramePct = (unsigned)value > gMaxPct ? gMaxPct : (unsigned)value;
@@ -395,6 +401,7 @@ extern "C" void houji_cpu_dvfs_set(const char *name, int value) {
     else if (!strcmp(name, "loadsum") && (value == 0 || value == 1)) gLoadSum = value;
     else if (!strcmp(name, "skin") && value >= -100 && value <= 100) gSkinOffsetC = value;
     else if (!strcmp(name, "p7cap") && value >= 0 && value <= 3149) gP7CapKhz = (unsigned)value * 1000;
+    else if (!strcmp(name, "p7pin") && value >= 0 && value <= 3149) gP7PinKhz = (unsigned)value * 1000;
     else ok = false;
     IOLog("HOUJI CPU DVFS SET: %s %d %s (frame %u%% touch %u%% loadsum %u skin offset %d C p7cap %u MHz)\n", name, value, ok ? "ok" : "refused",
           gFramePct, gTouchPct, gLoadSum ? 1u : 0u, gSkinOffsetC, gP7CapKhz / 1000);

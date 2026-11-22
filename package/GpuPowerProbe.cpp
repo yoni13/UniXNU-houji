@@ -420,6 +420,7 @@ int preemptWrite(void *, uint32_t reg, uint32_t value) {
 // The CP's preemption, as the board sees it: [0] set up (0 yes), [1] CP_SW interrupts seen, [2] the last such RBBM_INT_0_STATUS word.
 extern "C" {volatile uint32_t native_gpu_preempt[8];}
 extern "C" bool native_adreno_preempt_irq() __attribute__((weak));   // NativeAdrenoPublish.cpp
+extern "C" void houji_tev(unsigned kind, uint32_t v);
 extern "C" void native_adreno_gpu_interrupt(uint32_t status) __attribute__((weak));   // NativeAdrenoPublish.cpp: asks for the completion pass
 // The ring, memptrs and lists are Normal non-cacheable on both sides (GPU PTE MAIR 0, CPU write-combine): no cache
 // maintenance, only ordering.
@@ -769,6 +770,7 @@ void gpuIrq(void *) {
     }
     // The driver's completion pass retires finished jobs and wakes the waiters whose fence the CP wrote (bit 20) or whose ring
     // switch ended (bit 8). The wakeup below serves this file's own waits and the driver's timed pause (gpu-fence-wake=0).
+    houji_tev(2, status);   // the console tl's timeline (HoujiCpuIdle.c): the GPU interrupt, its RBBM_INT_0_STATUS
     if (native_adreno_gpu_interrupt) native_adreno_gpu_interrupt(status);
     thread_wakeup(event_t(&gIrqCount));
 }

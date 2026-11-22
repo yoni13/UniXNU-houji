@@ -207,8 +207,11 @@ static uint64_t houjiCpuFrameCounter;
 extern "C" uint64_t houji_cpu_frame_activity(void) {
     return __atomic_load_n(&houjiCpuFrameCounter,__ATOMIC_RELAXED);
 }
+// Timeline events for the console's tl (HoujiCpuIdle.c): 4 the vsync tick sent, 5/6/7 a swap submitted/offered to the copy/retired.
+extern "C" void houji_tev(unsigned kind,uint32_t v);
 extern "C" void native_legacy_swap_stage(unsigned stage) {
     const uint64_t now=probeNowUs();
+    houji_tev(5+(stage<3?stage:2),swapEventCount);
     uint32_t total=swapEventCount;
     if(stage==0) {
         __atomic_fetch_add(&houjiCpuFrameCounter,1ULL,__ATOMIC_RELAXED);
@@ -241,6 +244,7 @@ static volatile unsigned vsyncHz;
 // (0 armed, 1 sent, 2 idle stop, 3 late, 4 started, 5 refresh reported). native_legacy_vsync_count counts every one.
 extern "C" {uint64_t *native_legacy_vsync_ring;volatile uint32_t native_legacy_vsync_count;}
 void native_legacy_vsync_observed(unsigned event,unsigned hz) {
+    if(event==1)houji_tev(4,hz);
     if(event<6)vsyncEvents[event]=vsyncEvents[event]+1;
     vsyncHz=hz;
     if(uint64_t *ring=native_legacy_vsync_ring) {

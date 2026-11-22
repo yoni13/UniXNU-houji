@@ -95,3 +95,52 @@ houji_sample_running(thread_t thread, int cpu, uint64_t out[3])
 	out[2] = houji_sample_slot.fp;
 	return 0;
 }
+
+/* For the console's thread timeline: what CPU cpu runs now. 0 idle (its idle thread or none), 1 a thread: *tid its id and *task its
+ * task (an address the timeline matches to a process at its end, never dereferenced there). Read without locks, as above. */
+int houji_cpu_occupant(int cpu, uint64_t *tid, uint64_t *task);
+int
+houji_cpu_occupant(int cpu, uint64_t *tid, uint64_t *task)
+{
+	processor_t processor = cpu_to_processor(cpu);
+	if (processor == PROCESSOR_NULL) {
+		return 0;
+	}
+	thread_t thread = processor->active_thread;
+	if (thread == THREAD_NULL || thread == processor->idle_thread) {
+		return 0;
+	}
+	*tid = thread->thread_id;
+	*task = (uint64_t)(uintptr_t)get_threadtask(thread);
+	return 1;
+}
+
+/* Timeline events (houji_tev) from the display and GPU paths while a console tl runs: the vsync tick, the swaps' stages, the GPU's
+ * ring kicks, its interrupts and the driver's fence passes, each with mach time, a value and the CPU. The buffer is the timeline's
+ * (HoujiUsbConsole.c); an event past its end is dropped. Callable from interrupt context. */
+#include <kern/cpu_number.h>
+struct houji_tev_rec {
+	uint64_t t;
+	uint32_t v;
+	uint16_t kind, cpu;
+};
+struct houji_tev_rec *volatile houji_tev_buf;
+volatile uint32_t houji_tev_n;
+uint32_t houji_tev_cap;
+void houji_tev(unsigned kind, uint32_t v);
+void
+houji_tev(unsigned kind, uint32_t v)
+{
+	struct houji_tev_rec *buf = houji_tev_buf;
+	if (buf == NULL) {
+		return;
+	}
+	const uint32_t i = __atomic_fetch_add(&houji_tev_n, 1, __ATOMIC_RELAXED);
+	if (i >= houji_tev_cap) {
+		return;
+	}
+	buf[i].t = mach_absolute_time();
+	buf[i].v = v;
+	buf[i].kind = (uint16_t)kind;
+	buf[i].cpu = (uint16_t)cpu_number();
+}

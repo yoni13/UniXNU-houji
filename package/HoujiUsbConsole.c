@@ -1021,6 +1021,22 @@ struct tl_clk { uint64_t us; uint32_t k[4]; };
 static struct tl_clk *tl_clk;
 static unsigned tl_nclk;
 static int _Atomic tl_busy;
+/* Every millisecond of a tl, what each CPU runs (houji_cpu_occupant: a thread's id and task, or idle), kept as runs and printed at
+ * the end as "HOUJI TL C cpu start-us end-us tid task" with "HOUJI TL TASK task pid name" for every process: the threads the
+ * timeline does not follow (a display or GPU kernel thread, another process). And the display and GPU events (houji_tev, HoujiCpuIdle.c)
+ * as "HOUJI TL EV us kind value cpu": 1 a GPU ring kick (its newest fence), 2 a GPU interrupt (RBBM_INT_0_STATUS), 3 a fence pass
+ * (waiters woken), 4 a vsync tick sent, 5/6/7 a swap submitted/offered/retired (its number). */
+#define TL_CRUNS 24000
+#define TL_EVS 16384
+struct tl_crun { uint64_t t0,t1,tid,task;uint8_t cpu; };
+int houji_cpu_occupant(int cpu,uint64_t *tid,uint64_t *task);
+struct houji_tev_rec { uint64_t t;uint32_t v;uint16_t kind,cpu; };
+extern struct houji_tev_rec *volatile houji_tev_buf;extern volatile uint32_t houji_tev_n;extern uint32_t houji_tev_cap;
+static int tl_task_print(proc_t p,void *arg __unused)
+{
+    printf("HOUJI TL TASK %llx %d %s\n",(unsigned long long)(uintptr_t)proc_task(p),proc_pid(p),proc_best_name(p));delay(1500);
+    return PROC_RETURNED;
+}
 static uint64_t tl_find_tid(task_t task,const char *name)
 {
     uint64_t found=0;
@@ -1061,6 +1077,9 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
     printf("HOUJI TL BASE %llu\n",(unsigned long long)base_ns);
     tl_nclk=0;
     tl_clk=kalloc_data(sizeof(struct tl_clk)*TL_CLKS,Z_WAITOK|Z_ZERO);
+    struct tl_crun *cruns=kalloc_data(sizeof(struct tl_crun)*TL_CRUNS,Z_WAITOK|Z_ZERO);unsigned ncruns=0;int clast[8]={-1,-1,-1,-1,-1,-1,-1,-1};
+    struct houji_tev_rec *evs=kalloc_data(sizeof(struct houji_tev_rec)*TL_EVS,Z_WAITOK|Z_ZERO);
+    if (evs) { houji_tev_cap=TL_EVS;houji_tev_n=0;__atomic_store_n(&houji_tev_buf,evs,__ATOMIC_RELEASE); }
     for (unsigned elapsed=0;runs && elapsed<tl.ms;elapsed++) {
         gesture_sleep_ms(1);
         uint64_t now_ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&now_ns);
@@ -1069,6 +1088,14 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
             tl_clk[tl_nclk].us=us;
             for (unsigned dmn=0;dmn<4;dmn++) tl_clk[tl_nclk].k[dmn]=houji_cpu_state_khz(dmn);
             tl_nclk++;
+        }
+        for (int c=0;cruns && c<8;c++) {
+            uint64_t tid=0,task=0;
+            if (!houji_cpu_occupant(c,&tid,&task)) { clast[c]=-1;continue; }
+            struct tl_crun *l=clast[c]>=0?&cruns[clast[c]]:NULL;
+            if (l && l->tid==tid) { l->t1=us;continue; }
+            if (ncruns>=TL_CRUNS) continue;
+            cruns[ncruns]=(struct tl_crun){us,us,tid,task,(uint8_t)c};clast[c]=(int)ncruns++;
         }
         for (unsigned i=0;i<tl.n;i++) {
             struct tl_thread *t=&tl.t[i];
@@ -1119,6 +1146,25 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
         delay(1500);
     }
     if (tl_clk) { kfree_data(tl_clk,sizeof(struct tl_clk)*TL_CLKS);tl_clk=NULL; }
+    if (evs) {
+        __atomic_store_n(&houji_tev_buf,NULL,__ATOMIC_RELEASE);delay(5000);   /* an event being written finishes */
+        const uint32_t n=houji_tev_n<TL_EVS?houji_tev_n:TL_EVS;
+        for (uint32_t k=0;k<n;k++) {
+            uint64_t ns=0;absolutetime_to_nanoseconds(evs[k].t,&ns);
+            printf("HOUJI TL EV %lld %u %u %u\n",(long long)((int64_t)(ns-base_ns)/1000),evs[k].kind,evs[k].v,evs[k].cpu);delay(1000);
+        }
+        printf("HOUJI TL: %u events (%u dropped)\n",n,houji_tev_n>n?houji_tev_n-n:0);
+        kfree_data(evs,sizeof(struct houji_tev_rec)*TL_EVS);
+    }
+    if (cruns) {
+        for (unsigned k=0;k<ncruns;k++) {
+            printf("HOUJI TL C %u %llu %llu %llu %llx\n",cruns[k].cpu,(unsigned long long)cruns[k].t0,(unsigned long long)cruns[k].t1+1000,
+                   (unsigned long long)cruns[k].tid,(unsigned long long)cruns[k].task);delay(1000);
+        }
+        printf("HOUJI TL: %u CPU runs%s\n",ncruns,ncruns>=TL_CRUNS?" (buffer full)":"");
+        kfree_data(cruns,sizeof(struct tl_crun)*TL_CRUNS);
+        proc_iterate(PROC_ALLPROCLIST,tl_task_print,NULL,NULL,NULL);
+    }
     printf("HOUJI TL: end\n");
     if (runs) kfree_data(runs,sizeof(struct tl_run)*TL_RUNS);
     for (unsigned i=0;i<tl.n;i++) {
