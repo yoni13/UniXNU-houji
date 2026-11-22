@@ -405,6 +405,15 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   9 %, the settle's checks of the bind state (`settle_draw`: shape, `refresh_reading`, comparisons) about 14 %, instantiating the plan's
   commands 6 %, the pass's first instance (`inline_begin`, its framebuffer) 4 %, the push of set 0 4 %, the uses 3 %; by leaf 71 %
   metal2vulkan, 15 % the system (allocation, copies), 14 % Turnip.
+- **The flat profile's tail** (`firsttail.py`, same samples, by the innermost metal2vulkan function and its Turnip or system leaves):
+  no cross-cutting cost; drops and reference counts 3 %, allocation about 4 % (`finish_grow` and its leaves), locks 0.2 %. The larger
+  pieces: the recording of the draw's state commands with its Turnip and system leaves about 24 %, the settle's checks about 13 %,
+  `draw_resident`'s own (inlined) body 10 %, the framebuffer of the pass's first instance about 6.5 %, the push of set 0 about 6 %.
+- **The settle's steps, timed** (root349, gpu31, first uses that took every step, about 62000 a window, tier on and off alike):
+  `settle_draw` 7.2-7.3 us whole: the bind state refreshed from the encoder's tables 2.6-2.7 us, its fields reshaped 0.6 us, its shape
+  found 2.4-2.5 us (kept 40 %, recent 13 %, among the pipeline state's settles 45 %, made 1.4 %), its settle found 0.9 us. A first use
+  in a new encoder reads fresh tables, so the refresh is its own work; at best a shape kept across encoders saves about 2 us.
+- **Passes and commits** (root349): a render encoder made 35-42 us, ended 83-100 us; a commit 380-409 us.
 
 ## Faults found on the way
 
