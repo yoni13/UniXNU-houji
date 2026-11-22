@@ -5,6 +5,74 @@ line, mapped to the swap clock) to its first frame, then over the 0.8 s after th
 swaps (console `swaps`). These are frames the render server delivered to the scanout copy, not a measured panel refresh: the panel
 keeps the boot firmware's mode and has no TE/vblank sync here.
 
+## Morning summary, 2026-11-23 (root365-root376)
+
+**Best measured configuration: about 53 fps untraced Control Center opens, up from about 42.** All opt-in:
+- boot `tt=1` (Turnip's unpadded linear images: no shadowed textures);
+- the four frame threads bound to cpu7 from the console (SpringBoard's main thread, backboardd's compositing thread
+  `com.apple.coreanimation.display.` by id, its render-server thread, the Metal encoding thread: `t-bal.sh` side P4);
+- frame and touch floors at 100 % (`dvfs set framepct/touchpct 100`), stock caps held with `sko=4`.
+
+| Config (P4, tt=0 unless said) | GPU ms/frame (CP stamps) | Traced fps | Untraced fps | CC GPU hangs |
+|---|---|---|---|---|
+| P4 (root369, root372) | 20.4-23.9 | 40.8-41.1 | 42.6-43.3 | 0 in 39 opens |
+| PC: SpringBoard on cpu3 (root369) | 20.4-22.4 | 41.8 | 41.3 | 0 |
+| P7: P4 with cpu7 at 3052.8 MHz (root372) | 20.5-23.4 | 43.3 | 39.1 (1 open, 75 C stop) | 0 |
+| **P4 + tt=1** (root374, root375) | **16.3-18.3** | **52.2-54.3** | **52.6-53.4** | **0 in 25 opens, 2 boots** |
+| P4 + tt=1 + `tu-cb=1`, concurrent binning (root376) | 17.5-20.7 | 47.9 | 43.4 (5 opens) | 0 in 13 opens (0 at boot too); slower, stays off |
+
+**What each phase found:**
+1. *Audits (no boot).*
+   - dada's in-place rendering passes 1 of 457 shadowed textures (0.0017 % of texels): every full-screen 1200x2670 layer fails its
+     height % 4 rule, and dada's panel is 1200x2670 too. Not ported.
+   - Our metal2vulkan already keeps render passes per device (`KeptRenderPasses`, 256): no churn, so Branch C(1) is moot.
+   - cpu7 is EPSS domain 2, not 3: `p7cap`/`p7pin`, `cpub` and `framebud.py` acted on or read cpu2-4. Fixed (`kPrime`).
+2. *Measurement.*
+   - Console `gtl` adds the CP's always-on stamps around every GPU job at run time, and `tl` now also records GPU kicks,
+     interrupts, fence passes, swaps and every CPU (its sampler on cpu0-1).
+   - The 7-9 ms "idle gap" was the untracked compositing thread (2.5-11 ms a frame) and the GPU.
+   - In the open the GPU is busy 82-98 % at 903 MHz, 20-24 ms a frame. The GPU DCVS's 8-22 % over 10 s windows agrees: one open's
+     saturated 0.7-0.8 s.
+   - P4 beats PC: SpringBoard runs 10-14 ms a frame on cpu3, against 2.4-3.4 on cpu7.
+3. *Branch A (cpu7 clocks).*
+   - On its real domain cpu7 scales: 1474 / 2627 / 3047 MHz timed at 1500 / 2630 / 3052.8 MHz votes.
+   - Its table's rows past 3052.8 MHz are boost rows (bits 18:16 = 1), so `kCaps` stops at 3052.8.
+   - 3.05 GHz trims about 1 ms each from the compositing and encoding threads, but while the GPU is saturated that is about 6 % traced
+     and hot. `p7c` stays opt-in and off.
+4. *Branch B (GPU >= 10 ms).*
+   - Most GPU time is outside render passes (root373, root194).
+   - `tt=1` removes about 5 ms of GPU a frame (the shadow copies) and gives about +24 % untraced fps.
+   - Its earlier Control Center faults (root361-362) did not recur in 25 opens.
+   - The faults that remain are at boot, in tt=0 and tt=1 alike. The new fault map (`gpuf MAP`) places them at stray low addresses in
+     unmapped holes (0x14864c0), not past an image's end.
+
+**Guardrail incidents:**
+- root369: a reset reading EPSS vote words a domain does not have (`dvfs lut`). Fixed; the dump now runs first in a boot.
+- diag=1 boots (root370, root373): a Control Center GPU hang in each (one with an SMMU fault, FAR 0x4abf4000). diag=1 is not used again.
+- On a cool night the stock caps lift (skin under 25 C). root371's boot reached 76 C and the 74 C guard stopped it; root372's untraced
+  P7 open read 75 C and `t-bal.sh` stopped at 70 C. Runs now hold the caps with `sko=4`.
+- The 74 C guard was never disabled. No panics during the opens, no boot loops.
+
+**Path to 60 fps** (frame now about 18.5 ms: GPU 17-18 ms busy 90-94 %, cpu7 about 15 ms of work):
+1. Cut GPU work outside passes:
+   - the remaining shadow copies (0.42 a pass with tt=1, root356; census needed);
+   - barriers, cache flushes and clears between the about 38 passes a frame.
+
+   About 2 ms of GPU reaches 60 fps.
+2. Then cpu7, at about 15 ms. The compositing thread (5.5 ms) and the encoding thread (6.5 ms) share it, so 60 fps needs both
+   under 16.7 ms together.
+
+**Path to 120 fps (8.3 ms):** about 2.1x less GPU and 1.8x less cpu7 work.
+- *GPU:*
+  - fewer passes and GMEM loads and stores of full-screen layers (2.6 a frame, loaded and stored);
+  - UBWC for the render server's own intermediates;
+  - no shadow copies at all.
+- *CPU:*
+  - parallel encoding (the largest command buffer on cpu7, the rest on cpu5-6; cpu2-6 alone is 1.6-1.8x slower per load, `cpub`);
+  - `end_pass` structure reuse;
+  - SpringBoard's own work (2.4-3.4 ms on cpu7).
+- Only cpu7 is fast: the compositing, encoding and SpringBoard threads cannot all have it at 120 fps.
+
 ## Changes that helped (opt-in boot arguments)
 
 | Change | Evidence |
@@ -607,6 +675,10 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   not an over-read past an image. GPU 17.2-18.0 ms a frame (90-94 %), traced 54.3 fps (6, 52.0-56.0), untraced 52.6 (6, 49.1-56.4).
   With root374, tt=1 has 0 Control Center hangs or faults in 2 boots and 25 opens: it meets the bar for an opt-in setting. The frame is
   GPU-bound at about 17.5 ms, with about 15 ms of work on cpu7.
+- **Concurrent binning on top of tt=1** (root376, `tu-cb=1`: Turnip's BV thread bins a pass while BR renders the one before; P4,
+  16 opens, 998 bytes of command line): GPU 17.5-20.7 ms a frame (86-95 %) against 16.3-18.3; the encoding thread 7.2-9.4 ms against
+  5.9-7.4; traced 47.9 fps (8, 45.3-52.8), untraced 43.4 (5, 38.5-48.7) against 52.6-53.4. 0 GPU hangs or faults the whole boot. Slower:
+  stays off.
 
 ## Faults found on the way
 
