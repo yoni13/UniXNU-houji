@@ -510,6 +510,15 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   5.7/5.7: L1 and past 1 MiB alike, 1.6-1.8 times the latency from 128 to 512 KiB on cpu5. Matches the 2x of SpringBoard and of the
   encoding thread on cpu2-6: their L2, at their real clocks; whether a cache control bit is set differently was not read. So encoding
   spread over cpu2-6 alone would not beat cpu7.
+- **Priorities on the shared prime core, and the prime core over 2.63 GHz** (root366, `t-bind.sh` sides P+/Q/R/Q7/R7 twice, three
+  opens each, all three threads on cpu7 with the floors at 100 %; console `bind PID:NAME priN` / `tsN`, `dvfs set p7cap`): Q (encoding
+  at fixed 45, under SpringBoard's 47) and R (SpringBoard at fixed 56) take SpringBoard's runnable wait from 7.0-8.1 ms a frame to
+  0.1-1.7, but the encoding thread then waits 5.7-8.9 ms, SpringBoard's own running grows from 4.1-6.1 to 5.8-9.3 ms, and the opens
+  fall: P+ 45.2-49.3 fps, Q 35.9-42.9, R 37.7-41.6, Q7 36.4-43.0, R7 37.2-43.0 (frame interval 20.3-22.1 against 23.2-27.9 ms).
+  One core runs the two in turn whichever goes first; priority only moves the wait. In every side 7-9 ms a frame pass with none of
+  the three threads running. p7cap 3149: the domain reports 3149 MHz, but `cpub 7` then times the add chain at 2629 MHz (and at
+  2627 MHz with the domain reporting 499 MHz), and the opens match Q and R: the reported clock is not the core's, and the cap
+  override does not raise it. Kept off. The houji thermal trigger (66 C) switched levels 0 and 1 six times during the run.
 
 ## Faults found on the way
 
