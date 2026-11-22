@@ -147,22 +147,99 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          self.command_encoded(reads);
          self.called = true;
          self.drew |= !empty && rasterizes;
-@@ -10939,6 +11034,14 @@
-                 && uses.len() == plan_uses
+@@ -8953,6 +9048,8 @@
+         let layout = stood.as_deref().unwrap_or(&self.layout);
+         let render_area = layout.extent;
+         let inputs = input_attachments(layout, graphics)?;
++        // houji: how many, which a draw kept to rebind may hold beyond its plan's (`houji_push_inputs`).
++        let input_uses = inputs.len();
+         let storage_uses = storage_uses(layout, &storage)?;
+         // The pass's shader-side stencil's shadow, made at its first such draw (Or its first draw
+         // that runs the stencil test itself).
+@@ -10935,10 +11032,25 @@
+                 }
+                 _ => None,
+             };
++            // houji milestone 2: with the fast tier on, a draw whose uses beyond its plan's are its input attachments' alone (a
++            // framebuffer fetch) rebinds too: a draw rebound makes them again of its pass (`houji_push_inputs`).
++            let input_extra = match crate::houji_census::fast() && self.depth_stand_in.is_none() {
++                true => input_uses,
++                false => 0,
++            };
+             let rebinds = function_tables.is_empty()
+-                && uses.len() == plan_uses
++                && uses.len() == plan_uses + input_extra
                  && bound.holes.is_empty()
                  && writes.iter().all(|write| write.held.is_none());
 +            // houji: why a kept draw does not rebind (`houji_census::keep_causes`).
 +            crate::houji_census::keep_causes([
 +                !function_tables.is_empty(),
-+                uses.len() != plan_uses,
++                uses.len() != plan_uses + input_uses,
 +                !bound.holes.is_empty(),
 +                writes.iter().any(|write| write.held.is_some()),
 +                recorded.is_none(),
++                input_uses > 0 && uses.len() == plan_uses + input_uses,
 +            ]);
              let recorded = recorded.filter(|_| rebinds);
              let rebinds = recorded.is_some();
              if let Some(recorded) = recorded {
-@@ -13545,3 +13648,83 @@
+@@ -13106,6 +13218,55 @@
+     Ok(uses)
+ }
+ 
++/// houji milestone 2: [`input_attachments`] pushed onto `uses` in place, of no allocation: what a draw rebound that reads input
++/// attachments uses beyond its plan's, made of its pass as every step makes them (`render/draw_again/rebound.rs`).
++fn input_attachments_into(
++    layout: &PassLayout,
++    graphics: &GraphicsState,
++    uses: &mut crate::binding::CommandUses,
++) -> Result<usize, Error> {
++    for input in &graphics.input_attachments {
++        let color = layout
++            .colors
++            .get(input.color_index as usize)
++            .and_then(Option::as_ref)
++            .filter(|_| layout.fetch_inputs)
++            .filter(|_| input.input_attachment_index == input.color_index)
++            .ok_or_else(|| internal("an input attachment the pass does not read"))?;
++        let target = &color.target;
++        if !render_target::takes_input(target)? {
++            return Err(internal("an input attachment without its usage"));
++        }
++        uses.push(target.texture.image_use(
++            target.level..target.level + 1,
++            target.layer..target.layer + 1,
++            Access::new(
++                vk::PipelineStageFlags2::FRAGMENT_SHADER,
++                vk::AccessFlags2::INPUT_ATTACHMENT_READ,
++            ),
++            false,
++        )?);
++    }
++    Ok(graphics.input_attachments.len())
++}
++
++impl RenderLowering {
++    /// houji milestone 2: push the input attachments' uses of the encoder's pipeline state's draws in this pass onto `uses`, a
++    /// draw rebound's made again of its plan alone (`render/draw_again/rebound.rs`).
++    pub(super) fn houji_push_inputs(&self, uses: &mut crate::binding::CommandUses) -> Result<(), Error> {
++        let Some(RenderStateKind::Graphics(state)) = self.pipeline.as_ref().map(RenderPipelineState::kind) else {
++            return Ok(());
++        };
++        let graphics = &state.base().graphics;
++        if graphics.input_attachments.is_empty() {
++            return Ok(());
++        }
++        input_attachments_into(&self.layout, graphics, uses)?;
++        crate::houji_census::input_rebound();
++        Ok(())
++    }
++}
++
+ /// The uses of a draw's `storage` attachments of `layout`: each read by the fragment shader, and
+ /// written where the function writes it, in its storage view's level and layer, or in every
+ /// layer of its sample planes (`sample_planes.rs`).
+@@ -13545,3 +13706,83 @@
          }
      }
  }
@@ -598,11 +675,49 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again/rebound.rs b/crat
              return stopped(self, stop);
          };
          if reargued {
+@@ -412,7 +418,8 @@
+         let core = &self.core;
+         let version = self.layout.version();
+         let (memo, layout) = (&mut self.attached, &*self.layout);
+-        let mut shares = |uses: &[_]| memo.shares((layout, version), uses);
++        // houji: of the uses but the input attachments' at their end, as every step checks them before it adds those.
++        let mut shares = |uses: &[_]| memo.shares((layout, version), houji_without_inputs(uses));
+         // Of a draw narrowed, the moved slots' uses alone: every other use is the kept draw's,
+         // whose check found them sharing none (it was drawn), against the same attachments.
+         let attached = match (rebinding.narrowed, live.uses.prefix()) {
+@@ -865,6 +872,11 @@
+                 let uses = (plan, &command, &tables);
+                 rebound =
+                     binding::command_uses_into(call, uses, (index, None), &mut live.uses).is_ok();
++                // houji milestone 2: a kept draw that reads input attachments holds their uses beyond its plan's, made of
++                // this pass (`RenderLowering::houji_push_inputs`).
++                if rebound {
++                    rebound = self.houji_push_inputs(&mut live.uses).is_ok();
++                }
+             }
+         }
+         let rebound = rebound
+@@ -1298,3 +1310,15 @@
+         Ok(())
+     }
+ }
++
++/// houji milestone 2: `uses` without the input attachments' uses at their end (`RenderLowering::houji_push_inputs`), which every
++/// step adds after its check of the attachments' reads.
++fn houji_without_inputs(
++    uses: &[crate::tracker::Use<crate::resource::ResourceKey>],
++) -> &[crate::tracker::Use<crate::resource::ResourceKey>] {
++    let input = |used: &crate::tracker::Use<crate::resource::ResourceKey>| {
++        used.write.is_empty() && used.read.access == ash::vk::AccessFlags2::INPUT_ATTACHMENT_READ
++    };
++    let kept = uses.iter().rposition(|used| !input(used)).map_or(0, |at| at + 1);
++    &uses[..kept]
++}
 diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulkan-runtime/src/houji_census.rs
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,479 @@
+@@ -0,0 +1,487 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -1065,9 +1180,17 @@ new file mode 100644
 +/// Why kept draws do not rebind (`Kept::rebinds`, "CNSR"): the kept draws, then those with function tables, uses beyond their plan's,
 +/// push holes, set-0 writes holding a keeper, and other than one plain recording (several draw states, a pipeline not made ahead,
 +/// several Vulkan draws).
-+static KEEP: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
++/// Then those whose uses beyond their plan's are their input attachments' alone (which rebind with the fast tier on), and the draws
++/// rebound that made those uses again (`RenderLowering::houji_push_inputs`).
++static KEEP: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 +
-+pub(crate) fn keep_causes(causes: [bool; 5]) {
++pub(crate) fn input_rebound() {
++    if on() {
++        KEEP[7].fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++pub(crate) fn keep_causes(causes: [bool; 6]) {
 +    if !on() {
 +        return;
 +    }
@@ -1079,6 +1202,6 @@ new file mode 100644
 +    }
 +}
 +
-+pub fn keep_snapshot() -> [u64; 6] {
++pub fn keep_snapshot() -> [u64; 8] {
 +    std::array::from_fn(|i| KEEP[i].load(Ordering::Relaxed))
 +}
