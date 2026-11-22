@@ -531,6 +531,16 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   render-server thread (200 ms of CPU in the boot); backboardd's compositing thread is tid 785, `com.apple.coreanimation.display.`
   (5978 ms, second to the encoding thread), never followed or bound. While none of the followed threads ran, it ran 63-107 ms of
   650, about 2.5-4 ms a frame, on cpu2-6. Threads can now be named by id (`PID:#TID`).
+- **The compositing thread on the prime core, and the GPU's time** (root368, `t-bind.sh` P+ and P4 twice, three opens each; the
+  compositing thread `com.apple.coreanimation.display.` is followed as `PID:#TID`, tid 789 that boot; P4 binds it to cpu7 as well; tl
+  also records each ring write pointer write, `writeWptr`): it runs 9.5-11.4 ms a frame on cpu2-6 (P+), 5.5-6.8 ms on cpu7 (P4), more
+  than SpringBoard's main thread. Opens: P+ 34.2-42.0 fps (mean 38.9), P4 42.9-45.4 (mean 44.1); frame interval P+ 23.8-29.3 ms, P4
+  22.0-23.3 ms. With it followed the idle time is gone (`gapbud.py`, eight frames each): P+ 24.2 ms a frame with a followed thread
+  running, 2.4 ms only the GPU, 1.1 ms nothing; P4 23.0, 0.7 and 0. In P4 cpu7 is full: about 17.5 ms of work a frame, and
+  SpringBoard waits runnable 15-18 ms, the compositing thread 7.6-9.6, encoding 4.3-5.8. The GPU: 3.2-5.6 ring writes a frame, each
+  answered by its interrupt a median 10.7-14.3 ms later; the union of those spans covers 55-60 % of the frames (13-16 ms a frame), an
+  upper bound on the GPU's work. The GPU DCVS reads 8-14 % busy at its top level (903 MHz) over 10 s windows that hold about 1-1.5 s
+  of opens: the 5-8 % read before was the window's idle, not the frames'. Swaps retire 36-68 ms after their submission.
 
 ## Faults found on the way
 
