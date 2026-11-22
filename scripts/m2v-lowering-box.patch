@@ -1759,8 +1759,8 @@ new file mode 100644
 +    count(6, size > room && size - room <= 4096);
 +    if let Ok(mut kept) = PLACE_MISSES.lock() {
 +        // The same texture shape (extent, format, offset, pitch) once, counted.
-+        match kept.iter_mut().find(|(k, _)| k[..5] == v[..5]) {
-+            Some((_, n)) => *n += 1,
++        match kept.iter().position(|(k, _)| k[..5] == v[..5]) {
++            Some(at) => kept[at].1 += 1,
 +            None if kept.len() < 12 => kept.push((v, 1)),
 +            None => {}
 +        }
