@@ -495,6 +495,21 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
 - **SpringBoard's runtime bucket** (root361 and root363 real opens): steady 4.4 of 12.7 ms a frame, libobjc (retain, weak references)
   2.1, objc_msgSend 1.7, malloc (xzone, no instrumented paths) 0.6; dispatch slow paths 0.03; no per-frame trait or Auto Layout
   invalidation (0.01 each). First frame: 21.6 / 16.2 / 6.9 ms, with trait changes 6, hashing 8.3, strings 4.6, Auto Layout 2.9.
+- **All three threads on the prime core** (root365, `t-bind.sh` sides B/P/P+ twice, three opens each; P: SpringBoard's main thread,
+  backboardd's render thread and the encoding thread bound to cpu7; P+: also the frame and touch floors at 100 %): open fps mean
+  48.6 / 49.3 / 51.2 (B 43.6-51.2, P 45.7-50.4, P+ 49.7-52.2), frame interval about 20.6 / 20.3 / 19.5 ms. SpringBoard running 11.0 /
+  4.8 / 4.2 ms a frame, but runnable and waiting 0.1 / 8.4 / 6.8 ms; encoding 9.2 / 8.1 / 7.2 ms; the first frame 166-183 / 128-134 /
+  110-117 ms (SpringBoard 119-131 / 78 / 61-67 ms). Peak hottest 61 C in the first B side, about 46 C on P and P+. The frames' timelines
+  (`ftl`-style, 0.5 ms cells): SpringBoard is ready at each vsync and waits while the previous frame's encoding runs: the encoding
+  thread copies the render thread's fixed priority 54 (`encodeAdoptReference`), SpringBoard's main thread is at 47.
+- **Why the floors stop at 2.63 GHz:** the stock thermal policy (`houji_cpu_policy=stock`) caps cpu2, cpu5 and cpu7 at 2630.4 MHz from
+  25.0 C skin (the first step of `kStockCpu2/5/7`), and the skin reads about 27 C on a cool phone: in effect always.
+- **Clocks and caches by core** (console `cpub N`, a kernel thread bound to one CPU, root365 after the opens): 200M dependent adds in
+  76.1 ms on cpu7 (2628 MHz, the reported 2630), 80.5 ms on cpu5 and cpu2 (about 2485 MHz, 5.5 % under the reported 2630). A random
+  pointer chase, ns per load at 32K/64K/128K/256K/512K/1M/2M/4M: cpu7 1.5/1.5/1.9/2.4/2.5/5.5/6.4/7.1, cpu5 1.5/1.5/3.4/3.9/4.6/5.4/
+  5.7/5.7: L1 and past 1 MiB alike, 1.6-1.8 times the latency from 128 to 512 KiB on cpu5. Matches the 2x of SpringBoard and of the
+  encoding thread on cpu2-6: their L2, at their real clocks; whether a cache control bit is set differently was not read. So encoding
+  spread over cpu2-6 alone would not beat cpu7.
 
 ## Faults found on the way
 
