@@ -1014,7 +1014,10 @@ static struct { unsigned ms,n; struct tl_thread t[TL_THREADS]; } tl;
  * "HOUJI TL CLK us k0 k1 k2 k3" (kHz), so a frame's encoding can be read against the clock it ran at. */
 #define TL_CLKS 1024
 uint32_t houji_cpu_state_khz(unsigned id);
-static struct { uint64_t us; uint32_t k[4]; } tl_clk[TL_CLKS];
+/* Allocated for each tl: a static array would grow the kernel's __DATA into the prelinked layout's retained segment (prelink refused
+ * it, c5901c5). */
+struct tl_clk { uint64_t us; uint32_t k[4]; };
+static struct tl_clk *tl_clk;
 static unsigned tl_nclk;
 static int _Atomic tl_busy;
 static uint64_t tl_find_tid(task_t task,const char *name)
@@ -1056,11 +1059,12 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
     uint64_t base=mach_absolute_time(),base_ns=0;absolutetime_to_nanoseconds(base,&base_ns);
     printf("HOUJI TL BASE %llu\n",(unsigned long long)base_ns);
     tl_nclk=0;
+    tl_clk=kalloc_data(sizeof(struct tl_clk)*TL_CLKS,Z_WAITOK|Z_ZERO);
     for (unsigned elapsed=0;runs && elapsed<tl.ms;elapsed++) {
         gesture_sleep_ms(1);
         uint64_t now_ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&now_ns);
         const uint64_t us=(now_ns-base_ns)/1000;
-        if (elapsed%10==0 && tl_nclk<TL_CLKS) {
+        if (tl_clk && elapsed%10==0 && tl_nclk<TL_CLKS) {
             tl_clk[tl_nclk].us=us;
             for (unsigned dmn=0;dmn<4;dmn++) tl_clk[tl_nclk].k[dmn]=houji_cpu_state_khz(dmn);
             tl_nclk++;
@@ -1109,10 +1113,11 @@ static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
         printf("HOUJI TL R2 %u %llu %llu %u %u%s\n",r->thr,(unsigned long long)r->t0,(unsigned long long)r->t1,r->run,r->cpu,line);
         delay(1500);
     }
-    for (unsigned k=0;k<tl_nclk;k++) {
+    for (unsigned k=0;tl_clk && k<tl_nclk;k++) {
         printf("HOUJI TL CLK %llu %u %u %u %u\n",(unsigned long long)tl_clk[k].us,tl_clk[k].k[0],tl_clk[k].k[1],tl_clk[k].k[2],tl_clk[k].k[3]);
         delay(1500);
     }
+    if (tl_clk) { kfree_data(tl_clk,sizeof(struct tl_clk)*TL_CLKS);tl_clk=NULL; }
     printf("HOUJI TL: end\n");
     if (runs) kfree_data(runs,sizeof(struct tl_run)*TL_RUNS);
     for (unsigned i=0;i<tl.n;i++) {
