@@ -548,9 +548,11 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   1200x2670 layers, the 216 256x1, the 273- and 1077-row ones), 609x273 the row too; with the height test swapped for "the 4-row tail
   fits the buffer" 3 tiny A8 ones pass (the full-screen buffers keep 384 bytes past 2670 rows). dada's panel is 1200x2670 too
   (`base/common/devices/dada.platform.c`): its full-screen layers are shadowed as well. Not ported.
-- **Render pass objects per pass** (metal2vulkan 555b13d, the base on the Mac): `render_target::final_pass` makes a new `VkRenderPass`
-  at every pass end (`render.rs` 5449, 5847, 6126; released with the pass) and `shared_compatible_pass` one more per encoder
-  (`render.rs` 2046): about two creates and destroys a pass. dada keeps final passes by shape and operations (`kept_final_pass`, 256).
+- **Render pass objects per pass** (metal2vulkan 555b13d, the base on the Mac): no churn. `render_target::final_pass` (called at
+  every pass end, `render.rs` 5449, 5847, 6126) and `compatible_pass` (per encoder, `render.rs` 2046) both go through `create`
+  (`render_target.rs` 1629), which returns the device's kept `VkRenderPass` of the same shape, operations and layouts
+  (`KeptRenderPasses`, up to `KEPT_PASSES` = 256) and makes one (`render_passes_made`) only on a miss: what dada's
+  `kept_final_pass` (256) adds to its older base. Nothing to port.
 - **The prime core's domain** (code audit, `HoujiCpuDvfs.cpp`): EPSS domains 0-3 are cpu0-1, cpu5-6, cpu7, cpu2-4 (`kCpuDomain`,
   `kCounts`, the stock tables' order); cpu7 is domain 2 (table cap 3052.8 MHz). The opt-in `p7cap` / `p7pin` (root366, root367) acted
   on domain 3, cpu2-4, and `cpub` and `framebud.py` named the domains as if cpu7 were 3: root366's Q7 shows cpu2-4 at 3149 MHz and
