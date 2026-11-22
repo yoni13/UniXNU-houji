@@ -2000,6 +2000,14 @@ static void command_line(void)
                native_adreno_recovery[0],native_adreno_recovery[1],native_adreno_recovery[2],native_adreno_recovery[3],native_adreno_recovery[4],
                native_adreno_recovery[5],native_adreno_recovery[6],native_adreno_recovery[7],native_adreno_recovery_fault[0],
                native_adreno_recovery_fault[1],native_adreno_recovery_fault[3],native_adreno_recovery_fault[2],native_adreno_recovery_fault[4]);
+        /* NativeAdrenoPublish.cpp native_adreno_fault_map: around the last fault's address, the mapping that ends before it and the one at or
+         * past it (iova, bytes, handle, kind | permissions << 8; kinds 0 driver, 1 system WC, 2 system cached, 3 kernel, 4 import read,
+         * 5 import written, 6 import uncached), in the VM the GPU ran and in the guilty job's */
+        extern volatile uint64_t native_adreno_fault_map[16] __attribute__((weak_import));
+        if (&native_adreno_fault_map) for (unsigned v=0;v<2;v++) {
+            volatile uint64_t *m=&native_adreno_fault_map[8*v];
+            printf("HOUJI GPUF MAP %s: below %llx +%llx h%llu k%llx | at %llx +%llx h%llu k%llx\n",v?"guilty":"ran",m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7]);
+        }
     }
     else if (!strncmp(u.command,"m2v fast ",9)) {
         /* metal2vulkan's fast tier (m2v-lowering-box.patch), a digit 0-3, bit 0 the tier, bit 1 48 set-aside bind states: the kernel's host name

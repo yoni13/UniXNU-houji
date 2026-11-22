@@ -48,19 +48,108 @@ index 38523fe..fd756fb 100644
      /* The always-on counter ticks the CP read before and after the user buffers of a fence's submission (a status word: 1 attached, 2 stamps on, 4 page big enough, 8 page acquired, 16 slot read). Invalidates the fence page first. */
      uint32_t timeline(uint32_t fence,uint64_t *start,uint64_t *end);
      /* The client whose submission comes next. A change of client is a context switch: as a6xx_set_pagetable() does whenever the
+diff --git a/NativeAdrenoSubmit.h b/NativeAdrenoSubmit.h
+index 4e6507c..79ac461 100644
+--- a/NativeAdrenoSubmit.h
++++ b/NativeAdrenoSubmit.h
+@@ -182,6 +182,8 @@ private:
+ public:
+     /* The process the next submission comes from, for the timeline (the user client sets it before each submit). */
+     void nextOwner(int32_t pid) {next_owner_=pid;}
++    /* The VM whose table the GPU runs after the queued work (for a fault's mapping, houji console gpuf). */
++    NativeAdrenoVm *tableVm() const {return table_vm_;}
+     /* The Metal GPU priority of the next submission's queue (MTLGPUPriority: 0 high, 1 normal, 2 low, 3 disabled, 4 normal-high,
+      * 5 real-time; -1 not given). Only low and disabled (2, 3) go to ring 1; the rest, the unspecified included, stay on ring 0. */
+     void nextPriority(int32_t priority) {next_priority_=priority>=0 && priority<=5?priority:-1;}
+diff --git a/NativeAdrenoVm.cpp b/NativeAdrenoVm.cpp
+index e67fb99..ab905ed 100644
+--- a/NativeAdrenoVm.cpp
++++ b/NativeAdrenoVm.cpp
+@@ -493,6 +493,26 @@ IOReturn NativeAdrenoVm::unmap(uint64_t handle)
+     *record={};--objects_;
+     while(high_ && !mappings_[high_-1].memory)--high_;result_.complete=true;return kIOReturnSuccess;
+ }
++void NativeAdrenoVm::around(uint64_t addr,uint64_t out[8]) const
++{
++    for(unsigned i=0;i<8;++i)out[i]=0;
++    if(!attached_ || !mappings_ || !order_)return;
++    for(unsigned upper=0;upper<2;++upper) {
++        const size_t at=orderAt(upper,addr);
++        if(at<orderEnd(upper)) {
++            const Mapping &m=mappings_[order_[at]];
++            if(m.memory && (!out[5] || m.iova<out[4])) {
++                out[4]=m.iova;out[5]=m.memory->bytes();out[6]=m.handle;out[7]=m.kind|(uint64_t)m.permissions<<8;
++            }
++        }
++        if(at>orderBegin(upper)) {
++            const Mapping &m=mappings_[order_[at-1]];
++            if(m.memory && m.iova+m.memory->bytes()<=addr && (!out[1] || m.iova>out[0])) {
++                out[0]=m.iova;out[1]=m.memory->bytes();out[2]=m.handle;out[3]=m.kind|(uint64_t)m.permissions<<8;
++            }
++        }
++    }
++}
+ IOReturn NativeAdrenoVm::describe(uint64_t handle,uint64_t *iova,size_t *bytes,
+     unsigned *permissions) const
+ {
+diff --git a/NativeAdrenoVm.h b/NativeAdrenoVm.h
+index 085fbfc..aad26fc 100644
+--- a/NativeAdrenoVm.h
++++ b/NativeAdrenoVm.h
+@@ -200,6 +200,9 @@ public:
+     IOReturn headWords(uint64_t handle,uint64_t iova,uint32_t *out,size_t count) const;
+     /* Read-only description of a live mapping; never pins or extends it. */
+     IOReturn describe(uint64_t handle,uint64_t *iova,size_t *bytes,unsigned *permissions) const;
++    /* For a GPU fault's address: the nearest mapping that ends before addr and the first whose last byte is at or past it, over both
++     * regions: out[0..3] the first's iova, bytes, handle, kind | permissions << 8; out[4..7] the second's (0 when none). */
++    void around(uint64_t addr,uint64_t out[8]) const;
+     /* Up to `count` dwords of a mapped kernel-owned BO at a GPU address (through the kernel's own mapping), for the board log. */
+     IOReturn peekWords(uint64_t iova,uint32_t *out,size_t count) const;
+     /* The same after cleaning and invalidating the CPU cache lines over the words: a BO zeroed through the kernel's cacheable mapping keeps
 diff --git a/NativeAdrenoPublish.cpp b/NativeAdrenoPublish.cpp
-index cf790cb..ae04f1d 100644
+index cf790cb..af0aa66 100644
 --- a/NativeAdrenoPublish.cpp
 +++ b/NativeAdrenoPublish.cpp
-@@ -226,4 +226,5 @@ struct Published {
+@@ -225,6 +225,7 @@ struct Published {
+  * buffers and looks at the switch between the two rings again: a ring that went idle leaves the CP to the other ring's queued work, and
   * a switch the CP finished is completed here even when its own handler found the lock busy. Then every waiter whose fence the CP has
   * written is woken. Runs on a thread (it takes the driver's lock), never in the interrupt. */
 +extern "C" void houji_tev(unsigned kind,uint32_t v);
  void fencePass(bool periodic)
  {
-@@ -238,4 +239,5 @@ void fencePass(bool periodic)
+     if(!g.published || !g.submit || !g.wake_lock)return;
+@@ -237,6 +238,7 @@ void fencePass(bool periodic)
+     for(FenceWaiter *w=g.waiters;w;w=w->next)
          if(w->armed && !g.submit->fencePending(w->fence)) {w->armed=false;++woken;IOLockWakeup(g.wake_lock,w,false);}
      native_adreno_fence_wake[2]=native_adreno_fence_wake[2]+1;
 +    houji_tev(3,woken|(periodic?0x80000000u:0));   /* the console tl's timeline: a fence pass, the waiters it woke */
      native_adreno_fence_wake[periodic?6:3]=native_adreno_fence_wake[periodic?6:3]+woken;
      native_adreno_fence_wake[7]=native_adreno_fence_wake[7]+(after.triggers-before.triggers)+(after.completed-before.completed);
+     IOLockUnlock(g.wake_lock);
+@@ -261,6 +263,9 @@ extern "C" {volatile uint32_t native_adreno_recovery[8];}
+ /* SMMU context faults ended before a restart (NativeAdrenoGpuContext::endFault): [0] how many, then the last one's FSR, FAR lo, FAR hi,
+  * FSYNR0. A latched FSR fails every later table operation's proof of the bank, so a restart that left it would poison the tables. */
+ extern "C" {volatile uint32_t native_adreno_recovery_fault[5];}
++/* The mappings around the last fault's address (houji console gpuf): [0..7] in the VM the GPU ran then (NativeAdrenoSubmit::tableVm),
++ * [8..15] in the guilty job's VM after the restart: below it iova, bytes, handle, kind | permissions << 8, then at or past it the same. */
++extern "C" {volatile uint64_t native_adreno_fault_map[16];}
+ /* The board's GPU restart (a6xx_recover's reset and hw_init), installed before or after publication. */
+ extern "C" void native_adreno_set_restart(NativeAdrenoRestart restart,void *cookie)
+ {
+@@ -280,12 +285,16 @@ static void nativeAdrenoHangcheck(void *,wait_result_t)
+             native_adreno_recovery[0]=native_adreno_recovery[0]+1;
+             if(g.restart) {
+                 uint32_t fault[4]={};
++                uint64_t far=0;
+                 if(g.context && !g.context->endFault(fault) && fault[0]) {
+                     native_adreno_recovery_fault[0]=native_adreno_recovery_fault[0]+1;
+                     for(unsigned i=0;i<4;++i)native_adreno_recovery_fault[1+i]=fault[i];
++                    far=(uint64_t)fault[2]<<32|fault[1];
++                    if(NativeAdrenoVm *tv=g.submit->tableVm())tv->around(far,(uint64_t *)native_adreno_fault_map);
+                 }
+                 NativeAdrenoRecovery result{};
+                 const IOReturn status=g.submit->recover(g.restart,g.restart_cookie,&g.clock,&result);
++                if(far && result.guilty)result.guilty->around(far,(uint64_t *)native_adreno_fault_map+8);
+                 native_adreno_recovery[3]=result.fence;native_adreno_recovery[4]=uint32_t(status?status:result.status);
+                 native_adreno_recovery[5]=native_adreno_recovery[5]+result.replayed;
+                 if(result.guilty)native_adreno_recovery[6]=native_adreno_recovery[6]+1;
