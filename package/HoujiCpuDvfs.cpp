@@ -63,10 +63,12 @@ bool gStock, gEmergency, gSkinFallbackLogged;
 unsigned gBatteryMode, gStockState[kDomains], gStockCaps[kDomains];
 int gSkinOffsetC, gSkinDeci;
 unsigned gSampleMs = 200, gFramePct = 45, gTouchPct = 65, gTouchMs = 300;
-// Opt-in (boot argument p7c=MHz or console "dvfs set p7cap MHz", 0 off): the prime core's (domain 3) cap while the stock policy is at
-// its first thermal step (kStockCpu7 {250, 2630400}: from 25.0 C skin, so at room temperature always), up to the domain's own cap
-// (3148.8 MHz). The hotter steps and the emergency cut still apply.
+// Opt-in (boot argument p7c=MHz or console "dvfs set p7cap MHz", 0 off): the prime core's (cpu7, EPSS domain kPrime = 2) cap while
+// the stock policy is at its first thermal step (kStockCpu7 {250, 2630400}: from 25.0 C skin, so at room temperature always), up to
+// the domain's own cap (kCaps, 3052.8 MHz). The hotter steps and the emergency cut still apply. (Until 2026-11 this and p7pin acted on
+// domain 3, cpu2-4: root366 and root367's prime-core cap and pin results are cpu2-4's.)
 unsigned gP7CapKhz;
+constexpr unsigned kPrime = kCpuDomain[7];
 // Test only (console "dvfs set p7pin MHz", 0 off): the prime core voted at the table's row at or under MHz, whatever its load and
 // floors, still under its cap: for timing a core against its vote (console cpub).
 unsigned gP7PinKhz;
@@ -182,7 +184,7 @@ void apply(unsigned level, bool framing, bool touching) {
             const StockTable &table = kStockByDomain[id];
             if (gStockState[id]) {
                 const uint32_t stepKhz = table.step[gStockState[id] - 1].khz;
-                const unsigned stockCap = khzCapIndex(w, id == 3 && gStockState[id] == 1 && gP7CapKhz > stepKhz ? gP7CapKhz : stepKhz);
+                const unsigned stockCap = khzCapIndex(w, id == kPrime && gStockState[id] == 1 && gP7CapKhz > stepKhz ? gP7CapKhz : stepKhz);
                 if (stockCap < cap) cap = stockCap;
             }
             if (gEmergency) cap = 0;
@@ -195,7 +197,7 @@ void apply(unsigned level, bool framing, bool touching) {
             at = 0;
             while (at < cap && w.khz[at] < want) ++at;
         }
-        if (id == 3 && gP7PinKhz) {
+        if (id == kPrime && gP7PinKhz) {
             at = khzCapIndex(w, gP7PinKhz);
             if (at > cap) at = cap;
         } else if (gInteractive) {
@@ -389,6 +391,30 @@ extern "C" void houji_cpu_dvfs_report(void) {
         if (!d[id].ok) {IOLog("HOUJI CPU DVFS: d=%u not in use (validation refused)\n", id); continue;}
         IOLog("HOUJI CPU DVFS: d=%u req-kHz=%u state-kHz=%u changes=%u bad=%u\n", id, d[id].khz[d[id].cur],
               (rd(d[id], 0x20) & 255) * 19200, d[id].changes, d[id].bad);
+    }
+}
+
+// The EPSS domain of a CPU (kCpuDomain), for the console's cpub and tl.
+extern "C" unsigned houji_cpu_domain_of(unsigned cpu) {return cpu < 8 ? kCpuDomain[cpu] : 0;}
+
+// Console "dvfs lut": each domain's registers (enable 0x0, domain state 0x20, control 0xb0, the perf-state votes from 0x320) and its
+// whole factory table, every row raw with its frequency and bits 18:16 (LUT_CORE_COUNT in Linux qcom-cpufreq-hw: 1 marks a boost row),
+// up to the repeated row that ends it, rows over kCaps included.
+extern "C" void houji_cpu_dvfs_lut(void) {
+    for (unsigned id = 0; id < kDomains; id++) {
+        Domain &w = d[id];
+        if (!w.va) {IOLog("HOUJI CPU LUT: d=%u not mapped\n", id); continue;}
+        IOLog("HOUJI CPU LUT: d=%u cpus %u enable %08x state %08x (%u kHz) control %08x votes %08x %08x %08x cur-row %u\n", id, kCounts[id],
+              rd(w, 0), rd(w, 0x20), (rd(w, 0x20) & 255) * 19200, rd(w, 0xb0), rd(w, 0x320), rd(w, 0x324), rd(w, 0x328),
+              w.ok ? w.index[w.cur] : 255);
+        uint32_t prev = 0;
+        for (unsigned i = 0; i < kRows; i++) {
+            const uint32_t raw = rd(w, 0x100 + i * 4), khz = (raw & 255) * 19200;
+            IOLog("HOUJI CPU LUT: d=%u row %2u raw %08x %7u kHz src %u cores %u volt-bits %03x\n", id, i, raw, khz, raw >> 30, (raw >> 16) & 7,
+                  (raw >> 8) & 0xff);
+            if (i && raw == prev) break;
+            prev = raw;
+        }
     }
 }
 

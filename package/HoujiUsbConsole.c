@@ -1061,6 +1061,10 @@ static uint64_t tl_find_tid(task_t task,const char *name)
 }
 static void tl_thread_main(void *arg __unused,wait_result_t result __unused)
 {
+    /* The sampler on the small cluster (cpu0-1, scheduler cluster 0): it costs up to 28 % of a core (root367) and would otherwise share
+     * the prime core with the threads it follows. */
+    extern kern_return_t thread_soft_bind_cluster_id(thread_t thread,uint32_t cluster_id,uint64_t options);
+    (void)thread_soft_bind_cluster_id(current_thread(),0,0);
     struct tl_run *runs=kalloc_data(sizeof(struct tl_run)*TL_RUNS,Z_WAITOK|Z_ZERO);
     unsigned nruns=0,full=0,samples=0,samples_fresh=0;
     for (unsigned i=0;i<tl.n;i++) {
@@ -1213,7 +1217,8 @@ extern ppnum_t pmap_find_phys(pmap_t,addr64_t);
 static void cpub_thread(void *arg,wait_result_t result __unused)
 {
     extern kern_return_t houji_thread_bind_cpu(thread_t thread,int cpu_id);
-    const int cpu=(int)(uintptr_t)arg;const unsigned dom=cpu<2?0:cpu<5?1:cpu<7?2:3;
+    extern unsigned houji_cpu_domain_of(unsigned cpu);
+    const int cpu=(int)(uintptr_t)arg;const unsigned dom=houji_cpu_domain_of((unsigned)cpu);
     houji_thread_bind_cpu(current_thread(),cpu);IOSleep(5);
     if (cpu_number()!=cpu) { printf("HOUJI CPUB: on cpu%d, not cpu%d\n",cpu_number(),cpu);return; }
     const vm_size_t big=16u<<20;uint64_t *buf=kalloc_data(big,Z_WAITOK);
@@ -1245,6 +1250,42 @@ static void cpub_thread(void *arg,wait_result_t result __unused)
     }
     printf("HOUJI CPUB: cpu%d chase ns/load%s (%llu)\n",cpu,line,x&1);
     kfree_data(buf,big);houji_thread_bind_cpu(current_thread(),-1);
+}
+
+/* Console "gtl on|off|dump N": the GPU driver's job timeline (NativeAdrenoSubmit.cpp native_adreno_tl: per retired job its fence, the
+ * CP's always-on counter before and after its buffers at 19.2 MHz, the submit and retire times in the driver's clock) with the CP stamps
+ * switched on at run time (NativeAdrenoRing.cpp native_adreno_timeline_on), not from boot (diag=1). The table is allocated once and
+ * kept (the driver may write a slot at any time). "dump N" prints the newest N as "HOUJI GTL fence start end submit-us retire-us pid
+ * stamped": a job ran on the GPU from start to end; its kick is the tl event 1 with the fence before. */
+extern volatile uint64_t (*native_adreno_tl)[8] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_tl_cap __attribute__((weak_import)),native_adreno_tl_count __attribute__((weak_import)),
+    native_adreno_timeline_on __attribute__((weak_import));
+static void gtl_command(const char *a)
+{
+    if (!&native_adreno_tl_cap || !&native_adreno_timeline_on) { printf("HOUJI GTL: unavailable\n");return; }
+    while (*a==' ') a++;
+    if (!strcmp(a,"on")) {
+        if (!native_adreno_tl) {
+            volatile uint64_t (*m)[8]=kalloc_data(sizeof(uint64_t)*8*16384,Z_WAITOK|Z_ZERO);
+            if (!m) { printf("HOUJI GTL: allocation failed\n");return; }
+            native_adreno_tl=m;__asm__ volatile("dmb ish" ::: "memory");native_adreno_tl_cap=16384;
+        }
+        native_adreno_timeline_on=1;
+    } else if (!strcmp(a,"off")) native_adreno_timeline_on=0;
+    else if (!strncmp(a,"dump",4)) {
+        const uint32_t want=(uint32_t)strtoul(a+4,NULL,10),cap=native_adreno_tl_cap,total=native_adreno_tl_count;
+        const uint32_t n=!native_adreno_tl || !cap?0:(want<total?want:total)<cap?(want<total?want:total):cap;
+        uint64_t now_ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&now_ns);
+        printf("HOUJI GTL: %u of %u jobs, mach now %llu ns\n",n,total,(unsigned long long)now_ns);
+        for (uint32_t k=total-n;k<total;k++) {
+            volatile uint64_t *e=native_adreno_tl[k&(cap-1)];
+            printf("HOUJI GTL %u %llu %llu %llu %llu %u %u\n",(uint32_t)e[0],(unsigned long long)e[2],(unsigned long long)e[3],
+                   (unsigned long long)e[1],(unsigned long long)e[5],(uint32_t)(e[4]>>32),(uint32_t)(e[0]>>58));
+            delay(800);
+        }
+        printf("HOUJI GTL: end\n");return;
+    }
+    printf("HOUJI GTL: timeline %s, %u jobs so far\n",native_adreno_timeline_on?"on":"off",native_adreno_tl_count);
 }
 
 static void zbench_command(void)
@@ -1791,6 +1832,7 @@ static void command_line(void)
     else if (!strncmp(u.command,"threads ",8)) threads_command(u.command+8);
     else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"zbench")) zbench_command();
+    else if (!strncmp(u.command,"gtl",3)) gtl_command(u.command+3);
     else if (!strncmp(u.command,"cpub ",5) && u.command[5]>='0' && u.command[5]<='7') {
         thread_t t;if (kernel_thread_start(cpub_thread,(void *)(uintptr_t)(u.command[5]-'0'),&t)==KERN_SUCCESS) thread_deallocate(t);
     }
@@ -1840,6 +1882,7 @@ static void command_line(void)
         }
     }
     else if (!strcmp(u.command,"dvfs")) { extern void houji_cpu_dvfs_report(void); houji_cpu_dvfs_report(); }
+    else if (!strcmp(u.command,"dvfs lut")) { extern void houji_cpu_dvfs_lut(void); houji_cpu_dvfs_lut(); }
     else if (!strncmp(u.command,"notes ",6)) {
         /* "notes N": the newest N rows of the GPU driver's pass log (NativeAdrenoPublish.cpp, NativeAdrenoMethodNote kind 1) whose first
          * word is the Metal bridge's counter mark 0x4d32434e (NativeMetalCounts.rs, m2v-count=1): pid, then its words. */
