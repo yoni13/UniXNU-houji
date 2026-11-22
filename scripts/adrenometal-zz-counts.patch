@@ -65,7 +65,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,165 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -84,6 +84,9 @@ new file mode 100644
 +static NANOS: [AtomicU64; 4] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 +static LAST_NOTE_MS: AtomicU64 = AtomicU64::new(0);
 +static ON: AtomicI8 = AtomicI8::new(-1);
++static PER_COMMIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++// What the last commit's note saw: the totals of draws, encoders made, encoders ended and their nanoseconds.
++static AT_LAST_COMMIT: [AtomicU64; 4] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 +
 +fn on() -> bool {
 +    let known = ON.load(Ordering::Relaxed);
@@ -97,12 +100,20 @@ new file mode 100644
 +        libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
 +    };
 +    let args = &text[..length.min(text.len())];
-+    let found = read == 0
-+        && args.windows(11).enumerate().any(|(at, w)| {
-+            w == b"m2v-count=1" && (at == 0 || args[at - 1] == b' ') && matches!(args.get(at + 11), None | Some(&b' ') | Some(&0))
-+        });
-+    ON.store(found as i8, Ordering::Relaxed);
-+    found
++    // m2v-count=1: the totals every 100 ms; m2v-count=2: also each commit's own work (`per_commit`).
++    let mode = (read == 0)
++        .then(|| {
++            args.windows(11).enumerate().find_map(|(at, w)| {
++                (w.starts_with(b"m2v-count=") && (at == 0 || args[at - 1] == b' ')
++                    && matches!(args.get(at + 11), None | Some(&b' ') | Some(&0)))
++                    .then(|| w[10])
++            })
++        })
++        .flatten();
++    let on = matches!(mode, Some(b'1') | Some(b'2'));
++    PER_COMMIT.store(mode == Some(b'2'), Ordering::Relaxed);
++    ON.store(on as i8, Ordering::Relaxed);
++    on
 +}
 +
 +fn start() -> Instant {
@@ -133,10 +144,49 @@ new file mode 100644
 +
 +type NoteFn = unsafe extern "C" fn(u32, *const u32, u32) -> bool;
 +
++/// With `m2v-count=2`, after each commit: the commit's own work since the one before (calls are encoded in order on the encoding
++/// thread), as a note of first word 0x4342574b "CBWK": its time in microseconds on the swaps' clock (mach time), its draws, its render
++/// encoders, and the microseconds spent in draws, encoders made and ended. A frame's command buffers lie between two swaps.
++fn per_commit() {
++    let draws = CALLS[DRAW].load(Ordering::Relaxed);
++    let encoders = CALLS[ENCODER].load(Ordering::Relaxed);
++    let nanos = NANOS[DRAW].load(Ordering::Relaxed) + NANOS[ENCODER].load(Ordering::Relaxed) + NANOS[END].load(Ordering::Relaxed);
++    let draw_nanos = NANOS[DRAW].load(Ordering::Relaxed);
++    let d = draws - AT_LAST_COMMIT[0].swap(draws, Ordering::Relaxed);
++    let e = encoders - AT_LAST_COMMIT[1].swap(encoders, Ordering::Relaxed);
++    let n = nanos - AT_LAST_COMMIT[2].swap(nanos, Ordering::Relaxed);
++    let dn = draw_nanos - AT_LAST_COMMIT[3].swap(draw_nanos, Ordering::Relaxed);
++    static FUNC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
++    // SAFETY: a nul-terminated name; Turnip, loaded by then, exports it.
++    let f = *FUNC.get_or_init(|| unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"tu_darwin_note".as_ptr()) as usize });
++    if f == 0 {
++        return;
++    }
++    // SAFETY: mach_absolute_time has no preconditions; this device's timebase is 1/1 or 125/3 ns per tick, read once.
++    let ticks = unsafe { libc::mach_absolute_time() };
++    static TB: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
++    let (numer, denom) = *TB.get_or_init(|| {
++        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
++        // SAFETY: writes the struct.
++        unsafe { libc::mach_timebase_info(&mut info) };
++        (info.numer.max(1), info.denom.max(1))
++    });
++    let us = (ticks as u128 * numer as u128 / denom as u128 / 1000) as u64;
++    let words = [0x4342574bu32, (us >> 32) as u32, us as u32, d as u32, e as u32, (n / 1000) as u32, (dn / 1000) as u32];
++    // SAFETY: `tu_darwin_note(kind, words, count)` reads `count` words.
++    unsafe {
++        let f: NoteFn = std::mem::transmute(f);
++        f(1, words.as_ptr(), words.len() as u32);
++    }
++}
++
 +/// After a commit: every 100 ms or more, the totals and `device`'s shadow counts, noted to the kernel.
 +pub fn note(device: &metal2vulkan_runtime::Device) {
 +    if !on() {
 +        return;
++    }
++    if PER_COMMIT.load(Ordering::Relaxed) {
++        per_commit();
 +    }
 +    let now = start().elapsed().as_millis() as u64;
 +    let last = LAST_NOTE_MS.load(Ordering::Relaxed);

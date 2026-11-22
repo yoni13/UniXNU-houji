@@ -1738,6 +1738,11 @@ static void command_line(void)
                        r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13]&0x7fffffffu,(r[13]>>31)?"made":"refused");shown++;
                 continue;
             }
+            if (r[2]==0x4342574bu) {
+                /* one command buffer's encoding work (m2v-count=2, NativeMetalCounts.rs per_commit) */
+                printf("HOUJI CBWK %u: t=%llu us draws %u passes %u work %u us draws %u us\n",r[1],((unsigned long long)r[3]<<32)|r[4],r[5],r[6],r[7],r[8]);
+                shown++;continue;
+            }
             if (r[2]==0x524f5753u) {
                 /* the runtime's textures refused in place for shared rows (m2v-lowering-box.patch, in_place_image.rs) */
                 printf("HOUJI ROWS %u: desc %ux%u | offset %u pitch %u row bytes %u rows %u slices %u\n",r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9]);
