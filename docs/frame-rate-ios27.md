@@ -349,6 +349,25 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   81 % metal2vulkan and the bridge, 12 % the system (libmalloc, memcpy, locks, kernel), 7 % Turnip; render encoders made 51 / 37 / 12 %,
   ended 55 / 32 / 13 %.
 
+### Compositor fast path: milestone 2, first step (root323-root331)
+
+- **The 14 us floor** of the runtime's own "drawn again" path (`draw_rebound`, root321 cross-call samples, `rebtree.py`): Turnip's
+  recording about 16 %, the push of set 0 about 10 %, the rest the rebind's bookkeeping (`refresh_changed`, `keep_draw`, the uses and
+  their notes, `retain_into`, image descriptors); the bridge and the entry are negligible.
+- **Why draws miss it** (root323, gpu19, five opens): 27 % rebound, 7 % unlike the kept draw, 12 % rebind stopped, about 53 % with no
+  kept draw. The runtime already keeps a settled bind state per pipeline inside an encoder (`LiveBind::select`); across encoders only
+  the last kept draw carries, into the next encoder of the same pass shape, and that never happened: 4396 carries dropped for another
+  pass layout, 111 for a call between, 0 carried.
+- **The shelf** (`m2v-lowering-box.patch`: a command buffer keeps up to four more carried bind states, the opening encoder takes the
+  newest of its shape; switched at run time by console `m2v fast N`, which sets the kernel's host name `m2v-fast-N` that the bridge reads
+  at most every 50 ms; boot argument `m2v-fast=1` would pass the 1000-byte command line). A sysctl of the console's own could not carry
+  the switch (root325), and writing the boot arguments panicked the phone (root327). Result (root331, gpu22, windows on/off/on/off):
+  with the shelf on, every pass missed it (27876 and 29248 misses, 0 taken, 0 evicted, 11334 and 11924 let go at commits): **within a
+  command buffer no carried pass shape comes again**. Per draw 38.9 / 36.8 us on against 47.9 / 35.9 us off: no change. The repetition is
+  across frames (command buffers), which the carry's lifetime (its settle's objects are its command buffer's) does not reach.
+- **The test guard** read the CPU governor's DVFS lines, whose instantaneous die sensor spikes to 75-77 C for 50 ms under the boot's
+  full load at skin 22 C (root329, root330 stopped at random); it now reads the 5 s `HOUJI THERMAL` hottest sensor (still 74 C).
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
