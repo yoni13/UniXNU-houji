@@ -445,6 +445,21 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   130-176 ms; 1 of 5 slow against 3 of 5). Not yet checked: the pixels, the copies left (no texture shadowed for its placement), and
   Turnip's render-mode counters, which read 0.
 
+### What an open frame is made of (root292-root359)
+
+- **The fps measure** (`t-actions.sh`): the swaps' gaps in the 0.8 s from the first frame on, gaps over 100 ms left out; the first
+  frame's delay is apart. 44 against 36 fps is no change of configuration: the boot arguments of root299 (44.4) and root357 (36.4) are
+  the same 57, the L3 votes the same, and root299 and root300 (37.0), 15 minutes apart, ran the same build and seed. Opens by vsync
+  periods: the fast boots 22-28 % of their frames in one (8.3 ms) and 3-6 % at 50 ms or more, the slow ones 5-10 % and 10-12 %; most
+  frames in both take three (25 ms).
+- **The frame budget** (console tl, `framebud.py`: SpringBoard's main thread, backboardd's CoreAnimation render thread and its Metal
+  encoding thread, by state, over the open's frames): root359 (gpu35, `tt=1`, no census, three opens) 25.0-26.6 ms a frame, the encoding
+  thread running 19.5-20.8 ms of it, SpringBoard's main thread 12.1-13.2 ms beside it, the render thread about 1 ms, none of them
+  4.1-4.4 ms, runnable and not running about 0.1 ms. A fast boot (root292) 21.7-23.0 ms a frame with 17.5-18.9 ms of encoding, a slow one
+  (root296) 26.8-28.9 ms with 21.0-23.6: the frame follows the encoding thread, 3-4 ms past it. The first frame (157-187 ms) is
+  SpringBoard's main thread's (110-134 ms: UIKit layout and traits, the CA commit).
+- **Where the encoding thread runs** (the same samples): cpu2-cpu5, never the prime core cpu7, in fast and slow boots alike.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a
