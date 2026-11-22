@@ -1793,6 +1793,26 @@ static void command_line(void)
         unsigned v=0;const char *p=u.command+4;while (*p>='0' && *p<='9') v=v*10+(unsigned)(*p++-'0');
         houji_ddr_vote(v);
     }
+    else if (!strcmp(u.command,"gpus")) {
+        /* NativeAdrenoSubmit.cpp: the CP's state once a fence stopped advancing (native_adreno_stall: the fence, its timed-out waits, the
+         * ring's words), the SMMU context's FSR, FAR lo, FAR hi, FSYNR0 at that moment and 17 words of each of the BR IB1, the BV IB1 and
+         * the BV IB2 (the dword index of the 16 that follow, then those), then the map handles (native_adreno_stall_mem), and which ring
+         * (native_adreno_stall_ring): what a GPU hang was doing, e.g. a GMEM blit or a draw */
+        extern volatile uint32_t native_adreno_stall[];extern volatile uint32_t native_adreno_stall_mem[4+3*17+4];
+        extern volatile uint32_t native_adreno_stall_ring[10];
+        printf("HOUJI GPUS: fence %u waits %u | fsr %x far %x%08x fsynr0 %x | ring %u %u %u %u %u %u %u %x %u %u\n",native_adreno_stall[0],
+               native_adreno_stall[1],native_adreno_stall_mem[0],native_adreno_stall_mem[2],native_adreno_stall_mem[1],native_adreno_stall_mem[3],
+               native_adreno_stall_ring[0],native_adreno_stall_ring[1],native_adreno_stall_ring[2],native_adreno_stall_ring[3],native_adreno_stall_ring[4],
+               native_adreno_stall_ring[5],native_adreno_stall_ring[6],native_adreno_stall_ring[7],native_adreno_stall_ring[8],native_adreno_stall_ring[9]);
+        static const char *ib[3]={"BR IB1","BV IB1","BV IB2"};
+        for (unsigned k=0;k<3;k++) {
+            volatile uint32_t *w=&native_adreno_stall_mem[4+17*k];char line[200];unsigned at=0;
+            for (unsigned i=1;i<17 && at+12<sizeof line;i++) at+=(unsigned)snprintf(line+at,sizeof line-at," %08x",w[i]);
+            printf("HOUJI GPUS: %s at %x:%s\n",ib[k],w[0],line);
+        }
+        printf("HOUJI GPUS: map handles next %u br1 %u bv1 %u bv2 %u\n",native_adreno_stall_mem[55],native_adreno_stall_mem[56],
+               native_adreno_stall_mem[57],native_adreno_stall_mem[58]);
+    }
     else if (!strcmp(u.command,"topo")) {
         /* The scheduler's clusters (ml_get_topology_info): which CPUs a "bind" of a cluster id puts a thread on. */
         const ml_topology_info_t *topology=ml_get_topology_info();
