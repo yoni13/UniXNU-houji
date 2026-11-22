@@ -186,7 +186,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,301 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -479,6 +479,8 @@ new file mode 100644
 +    row(0x434e5352, &census::keep_snapshot());
 +    // The draws of each timing class ("CNSN"), whose microseconds are "CNST"'s.
 +    row(0x434e534e, &DRAW_CLASS_N.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<u64>>());
++    // The settle's steps of first uses ("CNSS").
++    row(0x434e5353, &census::steps_snapshot());
 +    // Render encoders made and ended and commits, with their microseconds ("CNSE").
 +    row(0x434e5345, &[
 +        CALLS[ENCODER].load(Ordering::Relaxed), NANOS[ENCODER].load(Ordering::Relaxed) / 1000,

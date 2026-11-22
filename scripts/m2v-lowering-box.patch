@@ -135,7 +135,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
              #[cfg(debug_assertions)]
              draw_again::Again::Check => {}
              draw_again::Again::No => {}
-@@ -7951,7 +8041,13 @@
+@@ -7951,7 +8041,14 @@
              color_groups::Turn::Later(true) if self.group_skips() => self.group_skipped(),
              _ => {
                  self.plain_drawn = false;
@@ -143,6 +143,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
 +                // houji: a first use of its pipeline state in the encoder goes through a frame of its own, which the cross-call
 +                // samples find it by (`houji_first_use`, `firstuse.py`).
 +                let first = census.as_ref().is_some_and(|(_, p, _)| crate::houji_census::first_use_now(*p));
++                crate::houji_census::set_first_now(first);
 +                let drawn = match first {
 +                    true => houji_first_use(|| self.draw_resident(live, call, assembly, draw, buffers, empty)),
 +                    false => self.draw_resident(live, call, assembly, draw, buffers, empty),
@@ -150,7 +151,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
                  self.replay_plain &= self.plain_drawn;
                  self.group_outcome(turn, drawn.is_ok());
                  if drawn.is_err() {
-@@ -7974,6 +8070,11 @@
+@@ -7974,6 +8071,11 @@
              self.degrade_ycbcr_blends();
          }
          self.draw_calls += 1;
@@ -162,7 +163,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          self.command_encoded(reads);
          self.called = true;
          self.drew |= !empty && rasterizes;
-@@ -8953,6 +9054,8 @@
+@@ -8953,6 +9055,8 @@
          let layout = stood.as_deref().unwrap_or(&self.layout);
          let render_area = layout.extent;
          let inputs = input_attachments(layout, graphics)?;
@@ -171,7 +172,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          let storage_uses = storage_uses(layout, &storage)?;
          // The pass's shader-side stencil's shadow, made at its first such draw (Or its first draw
          // that runs the stencil test itself).
-@@ -10935,10 +11038,25 @@
+@@ -10935,10 +11039,25 @@
                  }
                  _ => None,
              };
@@ -198,7 +199,38 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
              let recorded = recorded.filter(|_| rebinds);
              let rebinds = recorded.is_some();
              if let Some(recorded) = recorded {
-@@ -11307,6 +11425,10 @@
+@@ -11242,15 +11361,20 @@
+         // The pass's extended-range colors' shadows, which a variant that writes or reads them
+         // reads and writes beside the codes (`render/extended_shadow.rs`).
+         let mut shadows = self.extended_shadows_bound();
++        // houji: the settle's steps timed on first uses (`houji_census::step_start`).
++        let whole = crate::houji_census::step_start();
+         // From the state the pipeline state's last draw left, where the encoder set it aside.
+         live.select(pipeline);
+         loop {
++            let refresh = crate::houji_census::step_start();
+             let mut reshape = self.refresh_bind_state(
+                 live,
+                 pass_start,
+                 (argument_samplers, function_tables),
+                 (pipeline, sampler_maps),
+             );
++            crate::houji_census::step_end(crate::houji_census::S_REFRESH, refresh);
++            let reshaping = crate::houji_census::step_start();
+             let state = &mut live.state;
+             // Each field the draw's settings or the loop hold on to compared in place, and copied
+             // only where it changed.
+@@ -11301,13 +11425,22 @@
+             reshape.field(&mut state.render_area, render_area);
+             reshape.field(&mut state.tile_threadgroup, tile_threadgroup);
+             live.reshaped(reshape);
++            crate::houji_census::step_end(crate::houji_census::S_RESHAPE, reshaping);
++            let shaping = crate::houji_census::step_start();
+             let shape = live.shape(self.core.counts(), |state| pipeline.kept_shape(state));
++            crate::houji_census::step_end(crate::houji_census::S_SHAPE, shaping);
++            let settling = crate::houji_census::step_start();
+             // As the state's last recorded draw settled, where it settled the same
+             // (`live_bind.rs`): no lock of the pipeline state's; else through what the pipeline
              // state settled lately (`GraphicsState::settle_shape`).
              let kept = live.settled(pipeline, &shape, self.forms).cloned();
              let found = kept.is_some();
@@ -207,9 +239,19 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
 +                crate::houji_census::settle_result(4);
 +            }
              let settled = kept.map_or_else(|| pipeline.settle_shape(&shape, self.forms), Ok);
++            crate::houji_census::step_end(crate::houji_census::S_SETTLE, settling);
              let settled = match settled {
                  // A band variant the translator refuses for the draw's shape: the caller routes
-@@ -13106,6 +13228,64 @@
+                 // the draw again (`LineRoute::refused`).
+@@ -11357,6 +11490,7 @@
+             }
+             let set = settled.variant.pipeline().layout.sets.get(1);
+             if argument_samplers.fit(set, unlisted) {
++                crate::houji_census::step_end(crate::houji_census::S_WHOLE, whole);
+                 return Ok((settled, found));
+             }
+             // A variant of set-1 arrays writes the listed states' elements: it takes the states,
+@@ -13106,6 +13240,64 @@
      Ok(uses)
  }
  
@@ -274,7 +316,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
  /// The uses of a draw's `storage` attachments of `layout`: each read by the fragment shader, and
  /// written where the function writes it, in its storage view's level and layer, or in every
  /// layer of its sample planes (`sample_planes.rs`).
-@@ -13545,3 +13725,83 @@
+@@ -13545,3 +13737,83 @@
          }
      }
  }
@@ -866,6 +908,35 @@ diff --git a/crates/metal2vulkan-runtime/src/live_bind.rs b/crates/metal2vulkan-
              aside.settled = None;
              aside.draw_kept = None;
          }
+@@ -707,6 +743,7 @@
+                 **shape == self.state.shape(),
+                 "a kept bind shape that is not its state's"
+             );
++            crate::houji_census::shape_way(crate::houji_census::SHAPE_KEPT);
+             return Arc::clone(shape);
+         }
+         if let Some(shape) = self.recent.find(&self.state) {
+@@ -715,6 +752,7 @@
+                 "a recent bind shape that is not its state's"
+             );
+             self.shape = Some(Arc::clone(&shape));
++            crate::houji_census::shape_way(crate::houji_census::SHAPE_RECENT);
+             return shape;
+         }
+         let shape = match found(&self.state) {
+@@ -724,10 +762,12 @@
+                     "a bind shape found that is not its state's"
+                 );
+                 counts.draw_shape_found();
++                crate::houji_census::shape_way(crate::houji_census::SHAPE_FOUND);
+                 shape
+             }
+             None => {
+                 counts.draw_shape_made();
++                crate::houji_census::shape_way(crate::houji_census::SHAPE_MADE);
+                 Arc::new(self.state.shape())
+             }
+         };
 diff --git a/crates/metal2vulkan-runtime/src/pipeline/render.rs b/crates/metal2vulkan-runtime/src/pipeline/render.rs
 --- a/crates/metal2vulkan-runtime/src/pipeline/render.rs
 +++ b/crates/metal2vulkan-runtime/src/pipeline/render.rs
@@ -931,7 +1002,7 @@ diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulk
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,573 @@
+@@ -0,0 +1,628 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -1504,4 +1575,59 @@ new file mode 100644
 +
 +pub fn keep_snapshot() -> [u64; 8] {
 +    std::array::from_fn(|i| KEEP[i].load(Ordering::Relaxed))
++}
++
++/// houji milestone 2, trimming the full path ("CNSS"): of first uses' draws (while [`first_now`] holds), the nanoseconds and count of
++/// the settle's steps (`RenderLowering::settle_draw`: the bind state refreshed, its fields reshaped, its shape found, its settle
++/// found, the whole) and which way the shape was found (`LiveBind::shape`: kept, recent, the pipeline state's, made).
++pub(crate) const S_REFRESH: usize = 0;
++pub(crate) const S_RESHAPE: usize = 1;
++pub(crate) const S_SHAPE: usize = 2;
++pub(crate) const S_SETTLE: usize = 3;
++pub(crate) const S_WHOLE: usize = 4;
++static STEP_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
++static STEP_N: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
++pub(crate) const SHAPE_KEPT: usize = 0;
++pub(crate) const SHAPE_RECENT: usize = 1;
++pub(crate) const SHAPE_FOUND: usize = 2;
++pub(crate) const SHAPE_MADE: usize = 3;
++static SHAPE_WAY: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
++
++thread_local! {
++    static FIRST_NOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++/// The draw being lowered is a first use of its pipeline state in its encoder (`render.rs`, `houji_first_use`), or no longer.
++pub(crate) fn set_first_now(first: bool) {
++    FIRST_NOW.with(|f| f.set(first));
++}
++
++pub(crate) fn first_now() -> bool {
++    on() && FIRST_NOW.with(|f| f.get())
++}
++
++/// A timer of a settle step, where the draw is a first use: `None` else.
++pub(crate) fn step_start() -> Option<std::time::Instant> {
++    first_now().then(std::time::Instant::now)
++}
++
++pub(crate) fn step_end(step: usize, at: Option<std::time::Instant>) {
++    if let Some(at) = at {
++        STEP_NS[step].fetch_add(at.elapsed().as_nanos() as u64, Ordering::Relaxed);
++        STEP_N[step].fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++pub(crate) fn shape_way(way: usize) {
++    if first_now() {
++        SHAPE_WAY[way].fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++/// The "CNSS" row: the 5 steps' microseconds, their counts, and the 4 ways of the shape.
++pub fn steps_snapshot() -> Vec<u64> {
++    let mut row: Vec<u64> = STEP_NS.iter().map(|v| v.load(Ordering::Relaxed) / 1000).collect();
++    row.extend(STEP_N.iter().map(|v| v.load(Ordering::Relaxed)));
++    row.extend(SHAPE_WAY.iter().map(|v| v.load(Ordering::Relaxed)));
++    row
 +}
