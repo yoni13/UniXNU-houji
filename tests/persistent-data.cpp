@@ -221,6 +221,12 @@ int main()
     const char reset2[] = "native-data=userdata data-reset=2";
     check(native_ufs_store_mode() == 2 && !native_ufs_store_reset_requested() && !resetRequested(reset2, sizeof(reset2)) &&
           !optedIn("native-data=userdata", sizeof("native-data=userdata") - 1), "non-exact reset and unterminated command line refused");
+    // The 5-byte alias dr=1 resets exactly as data-reset=1 does, and only as exactly.
+    const char drOk[] = "native-data=userdata dr=1", drAlone[] = "dr=1", drPadded[] = "native-data=userdata dr=01",
+               drTwo[] = "native-data=userdata dr=2", drTwice[] = "native-data=userdata dr=1 dr=1";
+    check(resetRequested(drOk, sizeof(drOk)) && !resetRequested(drAlone, sizeof(drAlone)) &&
+          !resetRequested(drPadded, sizeof(drPadded)) && !resetRequested(drTwo, sizeof(drTwo)) &&
+          !resetRequested(drTwice, sizeof(drTwice)), "the dr=1 alias resets exactly as data-reset=1");
 
     resetHost("native-data=userdata data-reset=1"); valid.install();
     blockSize = 512;

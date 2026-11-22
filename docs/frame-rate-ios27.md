@@ -415,6 +415,21 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   in a new encoder reads fresh tables, so the refresh is its own work; at best a shape kept across encoders saves about 2 us.
 - **Passes and commits** (root349): a render encoder made 35-42 us, ended 83-100 us; a commit 380-409 us.
 
+### Milestone 3: passes, commits and shadow copies, profiled (root347-root353)
+
+- **Where they go** (root347, two Control Center opens, cross-call samples, `passprof.py`): a pass's end has 2.8 times the samples of
+  its opening and 4 times those of the commits. Its end: `end_pass` 83 % of it; shadow copies and their planning 20 % (the copies'
+  commands recorded, `shadow_copies` > `record_gated`, 9 %; their objects retained 3 %; `plan_shadows` and its helpers 6 %); allocation and
+  drops 19 %, nearly all `end_pass` dropping the encoder's own structures (argument tables, retained objects, the bound record, the
+  extended shadows, the shape memo); `release_pass` 9 % (and Turnip under it 7 %); the framebuffer 1.6 %. Its opening: the command
+  buffer's allocation (system) and beginning (Turnip) about 24 %, the render pass's lookup 4.5 %, the encoder's own assembly and layout
+  about 29 %. A commit: submission, scheduling and fences 52 %; the census's own work about 14 % (absent without `m2v-count`).
+- **Why the copies** (root351-root353, census `CNSH`, `CNSI`, `CNSA`): every shadowed texture (160 after five opens) is refused in place
+  for its placement, and every placement refused misses on size, none on alignment or memory type: the linear image takes more bytes
+  than its memory holds from the texels on (the last: 8192 bytes at offset 64 of 8128 bytes of room). A pass takes 1.02 copies, all in,
+  each the texture's first in its command buffer (95 % of the texels IOSurfaces'), none skipped; 5118 passes in a window render into a
+  shadowed attachment.
+
 ## Faults found on the way
 
 - backboardd SIGSEGV (root191, 250 s): `tu_init_hw<A7XX>` from `tu_BeginCommandBuffer` wrote through a NULL command stream after a

@@ -40,9 +40,11 @@ inline bool exactArg(const char *line, size_t size, const char *key, const char 
   return match;
 }
 inline bool optedIn(const char *line, size_t size) { return exactArg(line, size, "native-data", "userdata"); }
+// "dr=1" is data-reset=1 in 5 bytes, for a test boot whose line is near the 1000-byte limit (a census round that resets its Data
+// in the boot it measures).
 inline bool resetRequested(const char *line, size_t size)
 {
-  return optedIn(line, size) && exactArg(line, size, "data-reset", "1");
+  return optedIn(line, size) && (exactArg(line, size, "data-reset", "1") || exactArg(line, size, "dr", "1"));
 }
 
 inline uint32_t le32(const uint8_t *p)
