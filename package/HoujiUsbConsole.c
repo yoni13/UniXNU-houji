@@ -1732,6 +1732,12 @@ static void command_line(void)
         volatile uint32_t *rows=native_adreno_pass_log;const uint32_t n=native_adreno_pass_count;unsigned shown=0;
         for (uint32_t k=0;rows && k<n && k<512 && shown<want;k++) {
             volatile uint32_t *r=rows+((n-1-k)%512)*32;
+            if (r[2]==0x53555246u) {
+                /* the frontend's IOSurface texture notes (adrenometal-zzz-surface-notes.patch) */
+                printf("HOUJI SURF %u: desc %ux%u fmt %u | surface %ux%u rows %u fmt %08x planes %u alloc %u KiB | plane %u rows %u %s\n",
+                       r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13]&0x7fffffffu,(r[13]>>31)?"made":"refused");shown++;
+                continue;
+            }
             if (r[2]!=0x4d32434eu) continue;
             printf("HOUJI NOTE %u: %u %u %u %u %u %u %u %u %u | %u %u %u %u %u %u %u %u %u %u\n",r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],
                    r[12],r[13],r[14],r[15],r[16],r[17],r[18],r[19],r[20],r[21]);shown++;

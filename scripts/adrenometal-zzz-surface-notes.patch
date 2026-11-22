@@ -1,0 +1,35 @@
+diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -4517,6 +4517,23 @@
+  if(isPvrtc(d.pixelFormat))texture.pvrtc=(uint32_t)d.pixelFormat;
+  return (id<MTLTexture>)texture;
+ }
++// houji: boot argument m2v-count=1 also notes each IOSurface texture the render server makes to the kernel's pass log (tu_darwin_note,
++// kind 1, first word 0x53555246 "SURF"; console "notes"): the descriptor's size and format, the surface's size, rows, format, planes and
++// allocation, the plane, the rows used and whether it was made. Which surfaces the runtime shadows because their rows share bytes
++// (root306: 138 of 140 shadowed textures, InPlaceRefusal::Rows, the copies in and back around every pass).
++static void noteSurfaceTexture(MTLTextureDescriptor *d,IOSurfaceRef surface,NSUInteger plane,size_t row,bool made) {
++ static int on=-1;
++ if(on<0){char args[1100]={};size_t size=sizeof args-1;on=sysctlbyname("kern.bootargs",args,&size,nullptr,0)==0 && strstr(args,"m2v-count=1")?1:0;}
++ static std::atomic<uint32_t> noted{0};
++ if(!on || !isRenderServer() || noted.fetch_add(1)>=400)return;
++ typedef bool (*NoteFn)(uint32_t,const uint32_t *,uint32_t);
++ static NoteFn note=(NoteFn)dlsym(RTLD_DEFAULT,"tu_darwin_note");
++ if(!note)return;
++ const uint32_t words[12]={0x53555246u,(uint32_t)d.width,(uint32_t)d.height,(uint32_t)d.pixelFormat,(uint32_t)IOSurfaceGetWidth(surface),
++  (uint32_t)IOSurfaceGetHeight(surface),(uint32_t)IOSurfaceGetBytesPerRow(surface),IOSurfaceGetPixelFormat(surface),
++  (uint32_t)IOSurfaceGetPlaneCount(surface),(uint32_t)(IOSurfaceGetAllocSize(surface)>>10),(uint32_t)plane,(uint32_t)row|(made?0x80000000u:0)};
++ note(1,words,12);
++}
+ // The surface's pages are the texels: its mapping in this process is imported without a copy (pinned by the kernel, mapped into the GPU's
+ // 4 KiB context by Turnip), so every process that imports the surface renders and samples the same memory.
+ - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d iosurface:(IOSurfaceRef)surface plane:(NSUInteger)plane {
+@@ -4538,6 +4555,7 @@
+  NBTexture *texture=planes>=2?textureOnSurface(buffer,d,surface,plane,start-(uintptr_t)base,row):textureOnBuffer(buffer,d,start-(uintptr_t)base,row,true);
+  if(!texture){refuseSurface(5,surface,d,plane,start-(uintptr_t)base,row);return nil;}
+  if(gLogTextures)logTexture("iosurface",d,surface,plane,base,start-(uintptr_t)base,row,texture!=nil);
++ noteSurfaceTexture(d,surface,plane,row,texture!=nil);
+  gSurfaceTextures++;texture.surface=(IOSurfaceRef)CFRetain(surface);[texture countUse];return (id<MTLTexture>)texture;
+ }
+ - (id<MTLLibrary>)newLibraryWithData:(dispatch_data_t)data error:(NSError **)error {
