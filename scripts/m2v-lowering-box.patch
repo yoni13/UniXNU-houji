@@ -461,6 +461,26 @@ diff --git a/crates/metal2vulkan-runtime/src/texture/in_place_image.rs b/crates/
              return Ok(Err(refused));
          }
          let make = |plan: &ImagePlan| match self.unplaced(plan, texels, class, facts)? {
+@@ -1393,6 +1437,19 @@
+     room: u64,
+     type_index: u32,
+ ) -> Result<(), (Refusal, String)> {
++    // houji milestone 3: which of the three misses, with its values (`houji_census::placement`).
++    crate::houji_census::placement(
++        if !at.is_multiple_of(requirements.alignment.max(1)) {
++            0
++        } else if requirements.size > room {
++            1
++        } else if requirements.memory_type_bits & (1 << type_index) == 0 {
++            2
++        } else {
++            3
++        },
++        [requirements.alignment, at, requirements.size, room, type_index as u64, requirements.memory_type_bits as u64],
++    );
+     let why = if !at.is_multiple_of(requirements.alignment.max(1)) {
+         format!(
+             "its image is aligned to {} bytes, where the texels lie at offset {at} of the \
 diff --git a/crates/metal2vulkan-runtime/src/lib.rs b/crates/metal2vulkan-runtime/src/lib.rs
 --- a/crates/metal2vulkan-runtime/src/lib.rs
 +++ b/crates/metal2vulkan-runtime/src/lib.rs
@@ -1002,7 +1022,7 @@ diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulk
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,628 @@
+@@ -0,0 +1,655 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -1629,5 +1649,32 @@ new file mode 100644
 +    let mut row: Vec<u64> = STEP_NS.iter().map(|v| v.load(Ordering::Relaxed) / 1000).collect();
 +    row.extend(STEP_N.iter().map(|v| v.load(Ordering::Relaxed)));
 +    row.extend(SHAPE_WAY.iter().map(|v| v.load(Ordering::Relaxed)));
++    row
++}
++
++/// houji milestone 3, why IOSurface textures are shadowed ("CNSA"): of the in-place images' placements checked
++/// (`texture/in_place_image.rs`, `placed`), those whose offset misses the image's alignment, whose size passes the memory's room,
++/// whose memory type the image takes none of, and those that fit; and the values of the last of each miss (the alignment, the
++/// offset, the size, the room, the type index and the image's type bits). Counted whether the census is on or not: placements are
++/// rare (one a texture).
++static PLACED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
++static PLACED_LAST: [[AtomicU64; 6]; 3] = [const { [const { AtomicU64::new(0) }; 6] }; 3];
++
++pub(crate) fn placement(outcome: usize, values: [u64; 6]) {
++    PLACED[outcome.min(3)].fetch_add(1, Ordering::Relaxed);
++    if outcome < 3 {
++        for (slot, v) in PLACED_LAST[outcome].iter().zip(values) {
++            slot.store(v, Ordering::Relaxed);
++        }
++    }
++}
++
++/// The "CNSA" row: the 4 outcome counts, then the 6 values of the last miss of each of the 3 kinds (offsets and sizes in bytes,
++/// clipped to 32 bits by the note).
++pub fn placement_snapshot() -> Vec<u64> {
++    let mut row: Vec<u64> = PLACED.iter().map(|v| v.load(Ordering::Relaxed)).collect();
++    for last in &PLACED_LAST {
++        row.extend(last.iter().map(|v| v.load(Ordering::Relaxed)));
++    }
 +    row
 +}
