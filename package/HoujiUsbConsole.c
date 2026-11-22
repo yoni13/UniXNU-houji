@@ -1738,6 +1738,17 @@ static void command_line(void)
                        r[1],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],r[13]&0x7fffffffu,(r[13]>>31)?"made":"refused");shown++;
                 continue;
             }
+            if ((r[2]>>8)==0x434e53u) {
+                /* the fast path's census rows (adrenometal-zz-counts.patch, houji_census.rs): CNSP passes, CNSD draws, CNST and CNSU
+                 * microseconds by draw and pass class, CNSB set calls; up to 29 words after the mark, on two lines */
+                const unsigned words=r[0]>30?29:(r[0]?r[0]-1:0);char line[200];unsigned at=0;
+                for (unsigned i=0;i<words && i<15;i++) at+=(unsigned)snprintf(line+at,sizeof line-at," %u",r[3+i]);
+                printf("HOUJI CENS %c%c%c%c %u a:%s\n",(char)(r[2]>>24),(char)(r[2]>>16),(char)(r[2]>>8),(char)r[2],r[1],line);
+                at=0;line[0]=0;
+                for (unsigned i=15;i<words;i++) at+=(unsigned)snprintf(line+at,sizeof line-at," %u",r[3+i]);
+                if (words>15) printf("HOUJI CENS %c%c%c%c %u b:%s\n",(char)(r[2]>>24),(char)(r[2]>>16),(char)(r[2]>>8),(char)r[2],r[1],line);
+                shown++;continue;
+            }
             if (r[2]==0x4342574bu) {
                 /* one command buffer's encoding work (m2v-count=2, NativeMetalCounts.rs per_commit) */
                 printf("HOUJI CBWK %u: t=%llu us draws %u passes %u work %u us draws %u us\n",r[1],((unsigned long long)r[3]<<32)|r[4],r[5],r[6],r[7],r[8]);

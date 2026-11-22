@@ -10,17 +10,40 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
              RenderLowering {
                  core,
                  earlier: Vec::new(),
-@@ -4325,6 +4325,9 @@
+@@ -4325,6 +4325,32 @@
          let unnamed_reads =
              self.barrier_inside || self.reaches_unnamed || !self.executions.is_empty();
          let rate_mapped = self.rate_map.is_some();
++        // houji: the pass's features for the fast path's census (`houji_census.rs`).
++        if crate::houji_census::on() {
++            crate::houji_census::pass(
++                &[
++                    false,
++                    rate_mapped,
++                    !self.earlier.is_empty(),
++                    self.shadow.is_some(),
++                    self.depth_stand_in.is_some(),
++                    self.imageblock.is_some(),
++                    !self.dispatches.is_empty(),
++                    !self.executions.is_empty(),
++                    !self.pending.is_empty(),
++                    self.log.is_some(),
++                    self.grouped.is_some(),
++                    self.barrier_inside,
++                    self.reaches_unnamed,
++                    !self.inputs_read.is_empty(),
++                    self.visibility.active(),
++                ],
++                self.draw_calls,
++            );
++        }
 +        // houji: the box goes back for the next render encoder (`houji_lowering_box`); what the
 +        // pattern leaves still drops at the end of the pass, as from the box.
 +        let ended = houji_lowering_box::give(self);
          let RenderLowering {
              mut core,
              earlier,
-@@ -4364,7 +4367,7 @@
+@@ -4364,7 +4390,7 @@
              pass_start,
              pinned_through,
              ..
@@ -29,7 +52,66 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          // The views and sampler descriptions its binds made or found, which the device's next
          // render encoder takes (`binding::BindMemo`).
          core.device().shared().bind_memos.give(bind_memo);
-@@ -13545,3 +13548,83 @@
+@@ -7917,8 +7943,47 @@
+         self.select_kept(live);
+         let mut checked = None;
+         let drawn = (&draw, empty);
++        // houji: the draw's features for the fast path's census (`houji_census.rs`).
++        let census = crate::houji_census::on().then(|| {
++            let (tessellated, meshes, shader_tests, memoryless, pipeline) =
++                match self.pipeline.as_ref().map(RenderPipelineState::kind) {
++                    Some(RenderStateKind::Graphics(state)) => (
++                        crate::tessellation::patches(&state.base().graphics).is_some(),
++                        state.descriptor().vertex().is_none(),
++                        state.base().graphics.shader_tests.is_some(),
++                        self.uses_memoryless(&state.base().interface),
++                        state.base() as *const _ as usize,
++                    ),
++                    _ => (false, false, false, false, 0),
++                };
++            (
++                [
++                    false,
++                    false,
++                    self.log.is_some(),
++                    self.grouped.is_some(),
++                    self.rate_map.is_some(),
++                    self.replaying,
++                    self.rerouting,
++                    tessellated,
++                    meshes,
++                    shader_tests,
++                    memoryless,
++                    self.barrier,
++                    self.reaches_unnamed,
++                    !self.extended_written.is_empty(),
++                ],
++                pipeline,
++            )
++        });
+         match self.draw_again(live, (call, assembly), drawn, &buffers, &mut checked) {
+-            draw_again::Again::Drawn => return Ok(()),
++            draw_again::Again::Drawn => {
++                if let Some((mut features, pipeline)) = census {
++                    features[crate::houji_census::D_AGAIN] = true;
++                    crate::houji_census::draw(&features, pipeline);
++                }
++                return Ok(());
++            }
+             #[cfg(debug_assertions)]
+             draw_again::Again::Check => {}
+             draw_again::Again::No => {}
+@@ -7974,6 +8039,9 @@
+             self.degrade_ycbcr_blends();
+         }
+         self.draw_calls += 1;
++        if let Some((features, pipeline)) = census {
++            crate::houji_census::draw(&features, pipeline);
++        }
+         self.command_encoded(reads);
+         self.called = true;
+         self.drew |= !empty && rasterizes;
+@@ -13545,3 +13613,83 @@
          }
      }
  }
@@ -174,3 +256,175 @@ diff --git a/crates/metal2vulkan-runtime/src/texture/in_place_image.rs b/crates/
              return Ok(Err(refused));
          }
          let make = |plan: &ImagePlan| match self.unplaced(plan, texels, class, facts)? {
+diff --git a/crates/metal2vulkan-runtime/src/lib.rs b/crates/metal2vulkan-runtime/src/lib.rs
+--- a/crates/metal2vulkan-runtime/src/lib.rs
++++ b/crates/metal2vulkan-runtime/src/lib.rs
+@@ -30,6 +30,7 @@
+ 
+ mod address;
+ pub mod stage_trace;
++pub mod houji_census;
+ mod address_map;
+ mod address_pool;
+ mod allocations;
+diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulkan-runtime/src/houji_census.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/metal2vulkan-runtime/src/houji_census.rs
+@@ -0,0 +1,156 @@
++//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
++//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
++//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
++
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++
++/// The features a pass may use, by index into the counts ([`snapshot`]); [`PLAIN`] is a pass of none, [`DRAWS`] and
++/// [`PLAIN_DRAWS`] its draw calls.
++pub const PASSES: usize = 0;
++pub const RATE_MAP: usize = 1;
++pub const SPLIT: usize = 2;
++pub const STENCIL_SHADOW: usize = 3;
++pub const DEPTH_STAND_IN: usize = 4;
++pub const IMAGEBLOCK: usize = 5;
++pub const TILE_DISPATCH: usize = 6;
++pub const EXECUTIONS: usize = 7;
++pub const PENDING: usize = 8;
++pub const REPLAY_LOG: usize = 9;
++pub const COLOR_GROUPS: usize = 10;
++pub const BARRIER_INSIDE: usize = 11;
++pub const REACHES_UNNAMED: usize = 12;
++pub const INPUT_ATTACHMENTS: usize = 13;
++pub const VISIBILITY: usize = 14;
++pub const PLAIN: usize = 15;
++pub const DRAWS: usize = 16;
++pub const PLAIN_DRAWS: usize = 17;
++pub const COUNTS: usize = 18;
++
++static ON: AtomicBool = AtomicBool::new(false);
++static COUNT: [AtomicU64; COUNTS] = [const { AtomicU64::new(0) }; COUNTS];
++
++/// Count from now on (or stop).
++pub fn set_on(on: bool) {
++    ON.store(on, Ordering::Relaxed);
++}
++
++pub(crate) fn on() -> bool {
++    ON.load(Ordering::Relaxed)
++}
++
++/// One pass's end: the features it used (`features[i]` for each index from [`RATE_MAP`] to [`VISIBILITY`]) and its draw calls.
++pub(crate) fn pass(features: &[bool; 15], draws: usize) {
++    COUNT[PASSES].fetch_add(1, Ordering::Relaxed);
++    COUNT[DRAWS].fetch_add(draws as u64, Ordering::Relaxed);
++    let mut plain = true;
++    for (i, used) in features.iter().enumerate().skip(1) {
++        if *used {
++            COUNT[i].fetch_add(1, Ordering::Relaxed);
++            plain = false;
++        }
++    }
++    if plain {
++        COUNT[PLAIN].fetch_add(1, Ordering::Relaxed);
++        COUNT[PLAIN_DRAWS].fetch_add(draws as u64, Ordering::Relaxed);
++    }
++    let class = features.iter().skip(1).position(|u| *u).map_or(PLAIN as u8, |i| i as u8 + 1);
++    set_pass_class(class);
++}
++
++/// The counts so far.
++pub fn snapshot() -> [u64; COUNTS] {
++    std::array::from_fn(|i| COUNT[i].load(Ordering::Relaxed))
++}
++
++/// The features a draw may use, by index into the draw counts ([`draw_snapshot`]); [`D_PLAIN`] a draw of none, [`D_AGAIN`] one
++/// the encoder drew again with its Vulkan draw alone (`render/draw_again.rs`, the existing fast path).
++pub const D_DRAWS: usize = 0;
++pub const D_AGAIN: usize = 1;
++pub const D_REPLAY_LOG: usize = 2;
++pub const D_COLOR_GROUPS: usize = 3;
++pub const D_RATE_MAP: usize = 4;
++pub const D_REPLAYING: usize = 5;
++pub const D_REROUTING: usize = 6;
++pub const D_TESSELLATED: usize = 7;
++pub const D_MESHES: usize = 8;
++pub const D_SHADER_TESTS: usize = 9;
++pub const D_MEMORYLESS: usize = 10;
++pub const D_BARRIER: usize = 11;
++pub const D_REACHES_UNNAMED: usize = 12;
++pub const D_EXTENDED: usize = 13;
++pub const D_PLAIN: usize = 14;
++pub const D_SAME_PIPELINE: usize = 15;
++pub const D_COUNTS: usize = 16;
++
++static D_COUNT: [AtomicU64; D_COUNTS] = [const { AtomicU64::new(0) }; D_COUNTS];
++static PIPELINES: std::sync::Mutex<Option<std::collections::HashMap<usize, u64>>> = std::sync::Mutex::new(None);
++
++thread_local! {
++    /// The class of the last draw and pass this thread lowered: the index of its first feature, or the plain index.
++    static DRAW_CLASS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
++    static PASS_CLASS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
++    static LAST_PIPELINE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++/// One draw: `features[i]` for each index from [`D_AGAIN`] to [`D_EXTENDED`], and its pipeline's identity.
++pub(crate) fn draw(features: &[bool; 14], pipeline: usize) {
++    D_COUNT[D_DRAWS].fetch_add(1, Ordering::Relaxed);
++    let mut class = D_PLAIN as u8;
++    for (i, used) in features.iter().enumerate().skip(1) {
++        if *used {
++            D_COUNT[i].fetch_add(1, Ordering::Relaxed);
++            if class == D_PLAIN as u8 {
++                class = i as u8;
++            }
++        }
++    }
++    if class == D_PLAIN as u8 {
++        D_COUNT[D_PLAIN].fetch_add(1, Ordering::Relaxed);
++    }
++    DRAW_CLASS.with(|c| c.set(class));
++    if LAST_PIPELINE.with(|p| p.replace(pipeline)) == pipeline {
++        D_COUNT[D_SAME_PIPELINE].fetch_add(1, Ordering::Relaxed);
++    }
++    if let Ok(mut map) = PIPELINES.lock() {
++        *map.get_or_insert_with(Default::default).entry(pipeline).or_insert(0) += 1;
++    }
++}
++
++/// The class of the last draw this thread lowered (its first feature's index, or [`D_PLAIN`]), then cleared to 0 (none).
++pub fn take_draw_class() -> u8 {
++    DRAW_CLASS.with(|c| c.replace(0))
++}
++
++/// The class of the last pass this thread ended (its first feature's index, or [`PLAIN`]), then cleared to 0 (none).
++pub fn take_pass_class() -> u8 {
++    PASS_CLASS.with(|c| c.replace(0))
++}
++
++pub(crate) fn set_pass_class(class: u8) {
++    PASS_CLASS.with(|c| c.set(class));
++}
++
++/// The draw counts so far.
++pub fn draw_snapshot() -> [u64; D_COUNTS] {
++    std::array::from_fn(|i| D_COUNT[i].load(Ordering::Relaxed))
++}
++
++/// The distinct pipelines drawn so far, and how many of them, most drawn first, cover 50 %, 90 % and 99 % of the draws.
++pub fn pipeline_spread() -> [u64; 4] {
++    let Ok(map) = PIPELINES.lock() else { return [0; 4] };
++    let Some(map) = map.as_ref() else { return [0; 4] };
++    let mut counts: Vec<u64> = map.values().copied().collect();
++    counts.sort_unstable_by(|a, b| b.cmp(a));
++    let total: u64 = counts.iter().sum();
++    let cover = |share: u64| {
++        let mut sum = 0;
++        for (i, c) in counts.iter().enumerate() {
++            sum += c;
++            if sum * 100 >= total * share {
++                return i as u64 + 1;
++            }
++        }
++        counts.len() as u64
++    };
++    [counts.len() as u64, cover(50), cover(90), cover(99)]
++}
