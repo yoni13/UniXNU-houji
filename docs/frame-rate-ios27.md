@@ -595,6 +595,12 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   blits, clears, barriers and flushes), as root194 found (5.9 of 14.3 ms of a Control Center command buffer in passes). A second
   diag=1 boot, a second Control Center GPU hang: side 2, SMMU fault (FSR 0x80000002, FAR 0x4abf4000, FSYNR0 0x170001), guilty job.
   diag=1 boots 2 of 2 with a hang in the opens, diag=0 boots root369 and root372 0 in 39: diag=1 is not used again.
+- **Shadow copies are about 5 ms of GPU a frame** (root374, `tt=1`: Turnip's unpadded linear images, no shadowed texture; P4, the
+  stock caps held, CP stamps from the console, diag=0): the GPU 16.3-18.3 ms a frame (75-93 % of the window) against 21.2-23.9 with
+  tt=0 (root372); the encoding thread 5.9-7.4 ms against about 8.4; traced opens 52.2 fps (6, 45.0-56.2) against 40.8; untraced 53.4
+  (6, 47.1-58.2) against 42.6. 0 GPU hangs in the 12 opens; 2 at boot (fences to 1444, before the first open's 4973; FAR 0x4e904000,
+  low, like the tt=0 boots' boot hangs). The tt=1 Control Center faults of root361-362 (user addresses 0x15a770a40, 0x158ac8940) did
+  not recur here; the next boot repeats tt=1 for 16 opens with the driver naming the mappings around any fault (console `gpuf`).
 
 ## Faults found on the way
 
