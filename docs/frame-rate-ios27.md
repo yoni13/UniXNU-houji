@@ -601,6 +601,12 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   (6, 47.1-58.2) against 42.6. 0 GPU hangs in the 12 opens; 2 at boot (fences to 1444, before the first open's 4973; FAR 0x4e904000,
   low, like the tt=0 boots' boot hangs). The tt=1 Control Center faults of root361-362 (user addresses 0x15a770a40, 0x158ac8940) did
   not recur here; the next boot repeats tt=1 for 16 opens with the driver naming the mappings around any fault (console `gpuf`).
+- **tt=1 again, with the fault map** (root375, P4, 16 opens; the driver records the mappings around a fault's address, `gpuf MAP`):
+  0 GPU hangs or faults in the opens; 2 hangs at boot (fence 1706, before the first open's jobs at 7797). The boot fault's address,
+  0x14864c0, lies in a hole of a VM holding two driver buffers (kind 0, 0x302000 +4 KiB and 0x10000000 +4.1 MiB): a stray low address,
+  not an over-read past an image. GPU 17.2-18.0 ms a frame (90-94 %), traced 54.3 fps (6, 52.0-56.0), untraced 52.6 (6, 49.1-56.4).
+  With root374, tt=1 has 0 Control Center hangs or faults in 2 boots and 25 opens: it meets the bar for an opt-in setting. The frame is
+  GPU-bound at about 17.5 ms, with about 15 ms of work on cpu7.
 
 ## Faults found on the way
 
