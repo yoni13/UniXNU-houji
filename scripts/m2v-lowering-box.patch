@@ -62,7 +62,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
          // The views and sampler descriptions its binds made or found, which the device's next
          // render encoder takes (`binding::BindMemo`).
          core.device().shared().bind_memos.give(bind_memo);
-@@ -7917,8 +7944,64 @@
+@@ -7917,8 +7944,71 @@
          self.select_kept(live);
          let mut checked = None;
          let drawn = (&draw, empty);
@@ -92,7 +92,13 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
 +                }
 +                self.layout.depth_stencil.as_ref().map(|d| d.target.texture.use_key()).hash(&mut h);
 +                self.layout.extent.hash(&mut h);
-+                ((shape, self.current.shape.fetch_inputs), h.finish(), self.core.command_buffer().object_id())
++                let mut c = std::collections::hash_map::DefaultHasher::new();
++                call.hash(&mut c);
++                std::mem::discriminant(&assembly).hash(&mut c);
++                if let Assembly::Primitives(primitives) = &assembly {
++                    std::mem::discriminant(primitives).hash(&mut c);
++                }
++                ((shape, !self.inputs_read.is_empty(), c.finish()), h.finish(), self.core.command_buffer().object_id())
 +            };
 +            (
 +                [
@@ -121,25 +127,42 @@ diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-run
 +                if let Some((mut features, pipeline, (shape, targets, cb))) = census {
 +                    features[crate::houji_census::D_AGAIN] = true;
 +                    crate::houji_census::draw(&features, pipeline);
-+                    crate::houji_census::cross(pipeline, shape, targets, cb, true);
++                    let rebinds = self.again_kept().is_some_and(|kept| kept.rebinds);
++                    crate::houji_census::cross(pipeline, shape, targets, cb, (true, rebinds));
 +                }
 +                return Ok(());
 +            }
              #[cfg(debug_assertions)]
              draw_again::Again::Check => {}
              draw_again::Again::No => {}
-@@ -7974,6 +8057,10 @@
+@@ -7974,6 +8064,11 @@
              self.degrade_ycbcr_blends();
          }
          self.draw_calls += 1;
 +        if let Some((features, pipeline, (shape, targets, cb))) = census {
 +            crate::houji_census::draw(&features, pipeline);
-+            crate::houji_census::cross(pipeline, shape, targets, cb, false);
++            let rebinds = self.again_kept().is_some_and(|kept| kept.rebinds);
++            crate::houji_census::cross(pipeline, shape, targets, cb, (false, rebinds));
 +        }
          self.command_encoded(reads);
          self.called = true;
          self.drew |= !empty && rasterizes;
-@@ -13545,3 +13632,83 @@
+@@ -10939,6 +11034,14 @@
+                 && uses.len() == plan_uses
+                 && bound.holes.is_empty()
+                 && writes.iter().all(|write| write.held.is_none());
++            // houji: why a kept draw does not rebind (`houji_census::keep_causes`).
++            crate::houji_census::keep_causes([
++                !function_tables.is_empty(),
++                uses.len() != plan_uses,
++                !bound.holes.is_empty(),
++                writes.iter().any(|write| write.held.is_some()),
++                recorded.is_none(),
++            ]);
+             let recorded = recorded.filter(|_| rebinds);
+             let rebinds = recorded.is_some();
+             if let Some(recorded) = recorded {
+@@ -13545,3 +13648,83 @@
          }
      }
  }
@@ -500,12 +523,22 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal
              return Again::No;
          };
          let index = buffers.index.as_ref().map(KeptIndex::of);
-@@ -551,10 +564,19 @@
+@@ -551,10 +564,29 @@
                  };
                  reargued = why.arguments_alone() && !empty;
                  if !reargued {
 +                    // houji: which fields differ (`houji_census::why`).
-+                    let bits = [why.pipeline, why.call, why.counts, why.index_buffer, why.index_offset, why.command_buffer, why.under]
++                    let bits = [
++                        why.pipeline,
++                        why.call,
++                        why.counts,
++                        why.index_buffer,
++                        why.index_offset,
++                        why.command_buffer,
++                        why.under,
++                        kept.call != call,
++                        kept.assembly != assembly,
++                    ]
 +                        .iter()
 +                        .enumerate()
 +                        .fold(0u32, |m, (i, b)| m | ((*b as u32) << i));
@@ -520,7 +553,7 @@ diff --git a/crates/metal2vulkan-runtime/src/render/draw_again.rs b/crates/metal
                  return Again::No;
              }
          }
-@@ -566,6 +588,7 @@
+@@ -566,6 +598,7 @@
                      self.draw_rebound(live, call, drawn, buffers, stamps, checked)
                  }
                  false => {
@@ -569,7 +602,7 @@ diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulk
 new file mode 100644
 --- /dev/null
 +++ b/crates/metal2vulkan-runtime/src/houji_census.rs
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,479 @@
 +//! houji: the render passes and draws by the features they used, for the compositor fast path's census (which share of a render
 +//! server's passes and draws a reduced path could take). Counted at each render pass's end, only while [`set_on`] holds (the bridge
 +//! turns it on with boot argument `m2v-count=1` or `2`); read by [`snapshot`].
@@ -786,13 +819,20 @@ new file mode 100644
 +pub const X_FETCH_DRAWS: usize = 16;
 +pub const X_FETCH_RETURN: usize = 17;
 +pub const X_FETCH_RETURN_FULL: usize = 18;
-+pub const X_COUNTS: usize = 19;
++/// Key A' (key A with the draw's call and primitive type): first uses that took every step whose key was seen in an earlier command
++/// buffer, those of them whose last draw kept a draw that rebinds (`Kept::rebinds`: what a cache entry would hold), and its new keys.
++pub const X_C_EARLIER: usize = 19;
++pub const X_C_HIT: usize = 20;
++pub const X_C_KEYS: usize = 21;
++pub const X_COUNTS: usize = 22;
 +static X: [AtomicU64; X_COUNTS] = [const { AtomicU64::new(0) }; X_COUNTS];
 +
-+/// Where a key was last seen: its command buffer and when (ms since the first).
-+type Seen = std::collections::HashMap<(usize, u64, u64), (crate::ObjectId, u64)>;
++/// Where a key was first seen (its command buffer), last seen (when, ms since the first) and whether its last draw kept a draw that
++/// rebinds.
++type Seen = std::collections::HashMap<(usize, u64, u64), (crate::ObjectId, u64, bool)>;
 +static SEEN_A: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
 +static SEEN_B: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
++static SEEN_C: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
 +
 +thread_local! {
 +    /// The pipelines the encoder this thread lowers drew so far, cleared at its end ([`set_pass_class`]).
@@ -808,21 +848,36 @@ new file mode 100644
 +    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
 +}
 +
-+/// A key's place: seen in an earlier command buffer (and within 100 ms), or only in this one; then noted as seen here and now.
-+fn look(map: &std::sync::Mutex<Option<Seen>>, key: (usize, u64, u64), cb: crate::ObjectId, now: u64) -> (bool, bool, bool, bool) {
-+    let Ok(mut map) = map.lock() else { return (false, false, false, true) };
++/// A key's place: first seen in an earlier command buffer (and last seen within 100 ms), or only in this one, and whether its last
++/// draw kept a draw that rebinds; then noted as seen now, its last draw's keep `rebinds`.
++fn look(
++    map: &std::sync::Mutex<Option<Seen>>,
++    key: (usize, u64, u64),
++    cb: crate::ObjectId,
++    now: u64,
++    rebinds: bool,
++) -> (bool, bool, bool, bool, bool) {
++    let Ok(mut map) = map.lock() else { return (false, false, false, true, false) };
 +    let map = map.get_or_insert_with(Default::default);
-+    let found = map.insert(key, (cb, now));
++    let found = map.get(&key).copied();
++    let first = found.map_or(cb, |(first, ..)| first);
++    map.insert(key, (first, now, rebinds));
 +    match found {
-+        None => (false, false, false, true),
-+        Some((at, when)) if at < cb => (true, now.saturating_sub(when) <= 100, false, false),
-+        Some(_) => (false, false, true, false),
++        None => (false, false, false, true, false),
++        Some((first, when, kept)) if first < cb => (true, now.saturating_sub(when) <= 100, false, false, kept),
++        Some(_) => (false, false, true, false, false),
 +    }
 +}
 +
 +/// One draw for the dry run: its pipeline, its pass's shape hash (with the layers) and attachments' hash, its command buffer, and
 +/// whether it was drawn again.
-+pub(crate) fn cross(pipeline: usize, (shape, fetch): (u64, bool), targets: u64, cb: crate::ObjectId, again: bool) {
++pub(crate) fn cross(
++    pipeline: usize,
++    (shape, fetch, call): (u64, bool, u64),
++    targets: u64,
++    cb: crate::ObjectId,
++    (again, rebinds): (bool, bool),
++) {
 +    x(X_DRAWS);
 +    let place = ENCODER_PIPELINES.with(|seen| {
 +        let mut seen = seen.borrow_mut();
@@ -855,8 +910,12 @@ new file mode 100644
 +        _ => {}
 +    }
 +    let now = ms();
-+    let (a_earlier, a_recent, a_same, a_new) = look(&SEEN_A, (pipeline, shape, 0), cb, now);
-+    let (b_earlier, _, _, b_new) = look(&SEEN_B, (pipeline, shape, targets), cb, now);
++    let (a_earlier, a_recent, a_same, a_new, _) = look(&SEEN_A, (pipeline, shape, 0), cb, now, rebinds);
++    let (b_earlier, _, _, b_new, _) = look(&SEEN_B, (pipeline, shape, targets), cb, now, rebinds);
++    let (c_earlier, _, _, c_new, c_rebinds) = look(&SEEN_C, (pipeline, shape, call), cb, now, rebinds);
++    if c_new {
++        x(X_C_KEYS);
++    }
 +    if a_new {
 +        x(X_A_KEYS);
 +    }
@@ -874,6 +933,12 @@ new file mode 100644
 +        }
 +        if b_earlier {
 +            x(X_B_EARLIER);
++        }
++        if c_earlier {
++            x(X_C_EARLIER);
++            if c_rebinds {
++                x(X_C_HIT);
++            }
 +        }
 +    }
 +}
@@ -939,7 +1004,7 @@ new file mode 100644
 +/// Counts by place (same, return, first) and kind (1..=5); the unlike fields (pipeline, call, counts, index buffer, index offset,
 +/// command buffer, under) and the stop places of the same and return draws.
 +static WHY_COUNT: [AtomicU64; 15] = [const { AtomicU64::new(0) }; 15];
-+static UNLIKE_BITS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
++static UNLIKE_BITS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
 +static STOPS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 +static FORGOT_AT: std::sync::Mutex<Option<std::collections::HashMap<u32, u64>>> = std::sync::Mutex::new(None);
 +
@@ -978,7 +1043,8 @@ new file mode 100644
 +    }
 +}
 +
-+/// The "CNSW" row: the 15 place-and-kind counts, the 7 unlike fields, the 5 stop places.
++/// The "CNSW" row: the 15 place-and-kind counts, the 9 unlike fields (the 7, then of the call: its name, its primitive assembly), the 5
++/// stop places.
 +pub fn why_snapshot() -> Vec<u64> {
 +    let load = |a: &[AtomicU64]| a.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<u64>>();
 +    let mut row = load(&WHY_COUNT);
@@ -994,4 +1060,25 @@ new file mode 100644
 +    let mut pairs: Vec<(u32, u64)> = map.iter().map(|(k, v)| (*k, *v)).collect();
 +    pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 +    pairs.iter().take(14).flat_map(|(k, v)| [*k as u64, *v]).collect()
++}
++
++/// Why kept draws do not rebind (`Kept::rebinds`, "CNSR"): the kept draws, then those with function tables, uses beyond their plan's,
++/// push holes, set-0 writes holding a keeper, and other than one plain recording (several draw states, a pipeline not made ahead,
++/// several Vulkan draws).
++static KEEP: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
++
++pub(crate) fn keep_causes(causes: [bool; 5]) {
++    if !on() {
++        return;
++    }
++    KEEP[0].fetch_add(1, Ordering::Relaxed);
++    for (i, c) in causes.iter().enumerate() {
++        if *c {
++            KEEP[i + 1].fetch_add(1, Ordering::Relaxed);
++        }
++    }
++}
++
++pub fn keep_snapshot() -> [u64; 6] {
++    std::array::from_fn(|i| KEEP[i].load(Ordering::Relaxed))
 +}
