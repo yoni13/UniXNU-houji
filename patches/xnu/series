@@ -14,3 +14,4 @@ houji-debug-console.patch
 houji-iphone-shared-region.patch
 houji-wifi-userspace.patch
 houji-bootstrap-identity-2gib.patch
+houji-bind-cpu.patch

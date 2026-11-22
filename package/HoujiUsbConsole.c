@@ -1811,7 +1811,10 @@ static void command_line(void)
         char name[24]={0};const char *colon=strchr(a,':'),*sp=strchr(a,' ');
         if (colon && sp && colon<sp) { size_t len=(size_t)(sp-colon-1);if (len>=sizeof name) len=sizeof name-1;memcpy(name,colon+1,len); }
         else strlcpy(name,"0",sizeof name);
-        const int cluster=sp?(int)strtoq(sp+1,NULL,10):-2;
+        /* "cpuN" binds to the one CPU N (houji-bind-cpu.patch, houji_thread_bind_cpu; "cpu-1" unbinds), a number to a cluster */
+        extern kern_return_t houji_thread_bind_cpu(thread_t thread,int cpu_id);
+        const bool one_cpu=sp && !strncmp(sp+1,"cpu",3);
+        const int cluster=sp?(int)strtoq(sp+1+(one_cpu?3:0),NULL,10):-2;
         proc_t p=pid>0?proc_find(pid):PROC_NULL;task_t task=TASK_NULL;
         if (p) { task=proc_task(p);if (task!=TASK_NULL) task_reference(task);proc_rele(p); }
         if (task==TASK_NULL || cluster<-1) printf("HOUJI BIND: bind PID:NAME CLUSTER (-1 unbinds); no such process or cluster\n");
@@ -1819,8 +1822,11 @@ static void command_line(void)
             const uint64_t tid=tl_find_tid(task,name);
             thread_t th=tid?task_findtid(task,tid):THREAD_NULL;
             kern_return_t kr=KERN_INVALID_ARGUMENT;
-            if (th!=THREAD_NULL) { kr=thread_soft_bind_cluster_id(th,cluster<0?UINT32_MAX:(uint32_t)cluster,0);thread_deallocate(th); }
-            printf("HOUJI BIND: pid %d %s tid %llu cluster %d: %d\n",pid,name,(unsigned long long)tid,cluster,kr);
+            if (th!=THREAD_NULL) {
+                kr=one_cpu?houji_thread_bind_cpu(th,cluster):thread_soft_bind_cluster_id(th,cluster<0?UINT32_MAX:(uint32_t)cluster,0);
+                thread_deallocate(th);
+            }
+            printf("HOUJI BIND: pid %d %s tid %llu %s %d: %d\n",pid,name,(unsigned long long)tid,one_cpu?"cpu":"cluster",cluster,kr);
             task_deallocate(task);
         }
     }

@@ -1,0 +1,44 @@
+diff -ruN a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+--- a/osfmk/kern/sched_prim.c	2026-11-22 22:36:26.823511020 +0800
++++ b/osfmk/kern/sched_prim.c	2026-11-22 22:36:26.936108269 +0800
+@@ -1876,6 +1876,40 @@
+ 	}
+ }
+ 
++/*
++ * houji: bind `thread`, which need not be the caller, to the CPU `cpu_id` (-1 unbinds), for the debug console's "bind" (an A/B of a
++ * thread on one core: the scheduler's clusters put the prime core with the others, so a cluster bind cannot). As
++ * thread_unbind_after_queue_shutdown does: off its run queue, bound, back on it; a thread running elsewhere moves at its next block.
++ */
++kern_return_t houji_thread_bind_cpu(thread_t thread, int cpu_id);
++kern_return_t
++houji_thread_bind_cpu(thread_t thread, int cpu_id)
++{
++	processor_t processor = PROCESSOR_NULL;
++
++	if (cpu_id >= 0) {
++		if (cpu_id >= MAX_CPUS || (processor = processor_array[cpu_id]) == PROCESSOR_NULL) {
++			return KERN_INVALID_ARGUMENT;
++		}
++	}
++	spl_t s = splsched();
++	thread_lock(thread);
++	if (thread->sched_pri >= BASEPRI_RTQUEUES) {
++		/* thread_bind_internal binds no realtime thread */
++		thread_unlock(thread);
++		splx(s);
++		return KERN_INVALID_POLICY;
++	}
++	bool removed = thread_run_queue_remove(thread);
++	thread_bind_internal(thread, processor);
++	if (removed) {
++		thread_run_queue_reinsert(thread, SCHED_TAILQ);
++	}
++	thread_unlock(thread);
++	splx(s);
++	return KERN_SUCCESS;
++}
++
+ void
+ thread_unbind_after_queue_shutdown(
+ 	thread_t                thread,
