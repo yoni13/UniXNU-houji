@@ -186,7 +186,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,291 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -217,6 +217,7 @@ new file mode 100644
 +// Encoding time by the class the runtime's census gave the draw or the pass (its first feature, or plain; `houji_census.rs`): a pass's
 +// time is that of the calls made on it, from its encoder's making to its end.
 +static DRAW_CLASS_NS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
++static DRAW_CLASS_N: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 +static PASS_CLASS_NS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 +static PASS_CLASS_N: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 +thread_local! {
@@ -333,6 +334,7 @@ new file mode 100644
 +                if kind == DRAW {
 +                    let class = (census::take_draw_class() as usize).min(15);
 +                    DRAW_CLASS_NS[class].fetch_add(took, Ordering::Relaxed);
++                    DRAW_CLASS_N[class].fetch_add(1, Ordering::Relaxed);
 +                }
 +            }
 +        }
@@ -473,4 +475,6 @@ new file mode 100644
 +    row(0x434e5357, &census::why_snapshot());
 +    row(0x434e534c, &census::forgot_snapshot());
 +    row(0x434e5352, &census::keep_snapshot());
++    // The draws of each timing class ("CNSN"), whose microseconds are "CNST"'s.
++    row(0x434e534e, &DRAW_CLASS_N.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<u64>>());
 +}
