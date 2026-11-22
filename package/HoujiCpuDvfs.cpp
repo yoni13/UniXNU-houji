@@ -354,6 +354,9 @@ extern "C" void houji_cpu_dvfs_start(void) {
     if (gStock) {
         int offset = 0;
         if (PE_parse_boot_argn("houji_skin_offset_c", &offset, sizeof(offset)) && offset >= -100 && offset <= 100) gSkinOffsetC = offset;
+        // sko=N: the same in 7 bytes of the 1000-byte command line. Under 25.0 C of skin the stock tables lift every cap (root370-371:
+        // 22.7-23.7 C on a cool night, boot load at 3.1 GHz, 76 C), so a test run holds them with sko=4 (to 25-32 C: past 32 C the second step caps cpu7 at 2169.6 MHz).
+        if (PE_parse_boot_argn("sko", &offset, sizeof(offset)) && offset >= -100 && offset <= 100) gSkinOffsetC = offset;
         PE_parse_boot_argn("battery", &gBatteryMode, sizeof(gBatteryMode));
         IOLog("HOUJI CPU DVFS: policy stock, skin offset %d C, battery mode %u, TSENS emergency 75 C\n",
               gSkinOffsetC, gBatteryMode);
