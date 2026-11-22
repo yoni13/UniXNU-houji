@@ -63,6 +63,10 @@ bool gStock, gEmergency, gSkinFallbackLogged;
 unsigned gBatteryMode, gStockState[kDomains], gStockCaps[kDomains];
 int gSkinOffsetC, gSkinDeci;
 unsigned gSampleMs = 200, gFramePct = 45, gTouchPct = 65, gTouchMs = 300;
+// Opt-in (boot argument p7c=MHz or console "dvfs set p7cap MHz", 0 off): the prime core's (domain 3) cap while the stock policy is at
+// its first thermal step (kStockCpu7 {250, 2630400}: from 25.0 C skin, so at room temperature always), up to the domain's own cap
+// (3148.8 MHz). The hotter steps and the emergency cut still apply.
+unsigned gP7CapKhz;
 // houji_cpu_load_sum=1: a domain's load is the sum of its cores' busy shares (at most 100 %), not the busiest core's. A single thread
 // moving among the cores of a cluster (SpringBoard's main thread over CPUs 2-6 while Control Center opens, root273) left every core
 // 20-40 % busy, and the governor asked 1.4-1.5 GHz for a thread that ran all the time.
@@ -174,7 +178,8 @@ void apply(unsigned level, bool framing, bool touching) {
         if (gStock) {
             const StockTable &table = kStockByDomain[id];
             if (gStockState[id]) {
-                const unsigned stockCap = khzCapIndex(w, table.step[gStockState[id] - 1].khz);
+                const uint32_t stepKhz = table.step[gStockState[id] - 1].khz;
+                const unsigned stockCap = khzCapIndex(w, id == 3 && gStockState[id] == 1 && gP7CapKhz > stepKhz ? gP7CapKhz : stepKhz);
                 if (stockCap < cap) cap = stockCap;
             }
             if (gEmergency) cap = 0;
@@ -326,6 +331,7 @@ extern "C" void houji_cpu_dvfs_start(void) {
         if (PE_parse_boot_argn("houji_cpu_sample_ms", &value, sizeof(value)) && value >= 10 && value <= 1000) gSampleMs = value;
         if (PE_parse_boot_argn("houji_cpu_frame_pct", &value, sizeof(value)) && value <= 100) gFramePct = value;
         if (PE_parse_boot_argn("houji_cpu_touch_pct", &value, sizeof(value)) && value <= 100) gTouchPct = value;
+        if (PE_parse_boot_argn("p7c", &value, sizeof(value)) && value <= 3149) gP7CapKhz = value * 1000;
         if (PE_parse_boot_argn("houji_cpu_touch_ms", &value, sizeof(value)) && value >= 50 && value <= 1500) gTouchMs = value;
         if (PE_parse_boot_argn("houji_cpu_load_sum", &value, sizeof(value)) && value) gLoadSum = true;
         if (gFramePct > gMaxPct) gFramePct = gMaxPct;
@@ -381,16 +387,17 @@ extern "C" void houji_cpu_dvfs_report(void) {
 }
 
 // Console "dvfs set NAME VALUE": the interaction settings changed while running, so one boot can compare them (each a boot argument
-// otherwise): framepct, touchpct (0-100, under the max), loadsum (0/1), skin (the skin offset, -100 to 100 C).
+// otherwise): framepct, touchpct (0-100, under the max), loadsum (0/1), skin (the skin offset, -100 to 100 C), p7cap (MHz, gP7CapKhz).
 extern "C" void houji_cpu_dvfs_set(const char *name, int value) {
     bool ok = true;
     if (!strcmp(name, "framepct") && value >= 0 && value <= 100) gFramePct = (unsigned)value > gMaxPct ? gMaxPct : (unsigned)value;
     else if (!strcmp(name, "touchpct") && value >= 0 && value <= 100) gTouchPct = (unsigned)value > gMaxPct ? gMaxPct : (unsigned)value;
     else if (!strcmp(name, "loadsum") && (value == 0 || value == 1)) gLoadSum = value;
     else if (!strcmp(name, "skin") && value >= -100 && value <= 100) gSkinOffsetC = value;
+    else if (!strcmp(name, "p7cap") && value >= 0 && value <= 3149) gP7CapKhz = (unsigned)value * 1000;
     else ok = false;
-    IOLog("HOUJI CPU DVFS SET: %s %d %s (frame %u%% touch %u%% loadsum %u skin offset %d C)\n", name, value, ok ? "ok" : "refused",
-          gFramePct, gTouchPct, gLoadSum ? 1u : 0u, gSkinOffsetC);
+    IOLog("HOUJI CPU DVFS SET: %s %d %s (frame %u%% touch %u%% loadsum %u skin offset %d C p7cap %u MHz)\n", name, value, ok ? "ok" : "refused",
+          gFramePct, gTouchPct, gLoadSum ? 1u : 0u, gSkinOffsetC, gP7CapKhz / 1000);
 }
 
 // The EPSS L3 (CPU shared cache) clock at 0x17d90000 (Linux sm8650.dtsi epss_l3, drivers/interconnect/qcom/osm-l3.c: LUT rows at

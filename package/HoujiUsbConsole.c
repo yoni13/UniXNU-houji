@@ -1174,7 +1174,7 @@ static void cpub_thread(void *arg,wait_result_t result __unused)
         for (uint64_t i=0;i<200000000ull;i++) __asm__ volatile("add %0, %0, #1" : "+r"(x));
         absolutetime_to_nanoseconds(mach_absolute_time()-t0,&ns);
     }
-    printf("HOUJI CPUB: cpu%d alu %llu ns for 200M adds = %llu MHz effective, domain %u reports %u MHz\n",cpu,ns,200000ull*1000/(ns?ns:1),
+    printf("HOUJI CPUB: cpu%d alu %llu ns for 200M adds = %llu MHz effective, domain %u reports %u MHz\n",cpu,ns,200000000000ull/(ns?ns:1),
            dom,houji_cpu_state_khz(dom)/1000);
     char line[220];unsigned at=0;
     for (vm_size_t size=32u<<10;size<=big;size<<=1) {
@@ -1877,8 +1877,11 @@ static void command_line(void)
         else strlcpy(name,"0",sizeof name);
         /* "cpuN" binds to the one CPU N (houji-bind-cpu.patch, houji_thread_bind_cpu; "cpu-1" unbinds), a number to a cluster */
         extern kern_return_t houji_thread_bind_cpu(thread_t thread,int cpu_id);
-        const bool one_cpu=sp && !strncmp(sp+1,"cpu",3);
-        const int cluster=sp?(int)strtoq(sp+1+(one_cpu?3:0),NULL,10):-2;
+        /* "priN" sets the thread's priority to N, fixed (round-robin), "tsN" to N, timeshare (thread_set_mode_and_absolute_pri):
+         * for which of the threads sharing the prime core runs first */
+        extern kern_return_t thread_set_mode_and_absolute_pri(thread_t thread,integer_t policy,integer_t priority);
+        const bool one_cpu=sp && !strncmp(sp+1,"cpu",3),fixed=sp && !strncmp(sp+1,"pri",3),ts=sp && !strncmp(sp+1,"ts",2);
+        const int cluster=sp?(int)strtoq(sp+1+(one_cpu||fixed?3:ts?2:0),NULL,10):-2;
         proc_t p=pid>0?proc_find(pid):PROC_NULL;task_t task=TASK_NULL;
         if (p) { task=proc_task(p);if (task!=TASK_NULL) task_reference(task);proc_rele(p); }
         if (task==TASK_NULL || cluster<-1) printf("HOUJI BIND: bind PID:NAME CLUSTER (-1 unbinds); no such process or cluster\n");
@@ -1887,10 +1890,11 @@ static void command_line(void)
             thread_t th=tid?task_findtid(task,tid):THREAD_NULL;
             kern_return_t kr=KERN_INVALID_ARGUMENT;
             if (th!=THREAD_NULL) {
-                kr=one_cpu?houji_thread_bind_cpu(th,cluster):thread_soft_bind_cluster_id(th,cluster<0?UINT32_MAX:(uint32_t)cluster,0);
+                kr=fixed||ts?(cluster<0 || cluster>95?KERN_INVALID_ARGUMENT:thread_set_mode_and_absolute_pri(th,fixed?2 /* POLICY_RR */:1 /* POLICY_TIMESHARE */,cluster))
+                  :one_cpu?houji_thread_bind_cpu(th,cluster):thread_soft_bind_cluster_id(th,cluster<0?UINT32_MAX:(uint32_t)cluster,0);
                 thread_deallocate(th);
             }
-            printf("HOUJI BIND: pid %d %s tid %llu %s %d: %d\n",pid,name,(unsigned long long)tid,one_cpu?"cpu":"cluster",cluster,kr);
+            printf("HOUJI BIND: pid %d %s tid %llu %s %d: %d\n",pid,name,(unsigned long long)tid,fixed?"fixed pri":ts?"timeshare pri":one_cpu?"cpu":"cluster",cluster,kr);
             task_deallocate(task);
         }
     }
