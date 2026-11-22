@@ -186,7 +186,7 @@ diff --git a/bridge/NativeMetalCounts.rs b/bridge/NativeMetalCounts.rs
 new file mode 100644
 --- /dev/null
 +++ b/bridge/NativeMetalCounts.rs
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,283 @@
 +// SPDX-License-Identifier: MIT
 +//! houji: boot argument `m2v-count=1` counts the bridge's draws, render encoders made and ended, and command buffer commits, with the
 +//! time spent in each call, and every 100 ms or more (at a commit) notes the running totals and the device's shadow counts to the kernel's pass log
@@ -467,4 +467,6 @@ new file mode 100644
 +        w.draws_rebound_carried, w.draws_carry_stopped, w.draws_carry_stopped_stale, w.draws_carry_stopped_attached,
 +        w.draws_carry_stopped_other, w.inline_passes, w.inline_passes_split,
 +    ].into_iter().chain(census::shelf_snapshot()).collect::<Vec<u64>>());
++    // The milestone 2 dry run of a cross-frame cache (`houji_census::cross`; "CNSX").
++    row(0x434e5358, &census::cross_snapshot());
 +}
