@@ -477,6 +477,14 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   the render server's next frame of commands, not for a fence or the vsync. SpringBoard's main thread runs 15.1 ms a frame, 6.5 ms of it
   while the encoding thread runs (unbound: 10.6 of 11.8 ms); the render thread waits about 92 % of the time in a kernel trap (a message
   receive, as far as the unsymbolized stack shows).
+- **SpringBoard's main thread over the open** (root361, `sbprof.py`, tl stacks symbolized through the shared cache): steady frames
+  11.9-14.9 ms running a frame, UIKit (inclusive) 6.9-7.9, the leaf in the Objective-C runtime, objc_msgSend or malloc 4.3-5.9,
+  Swift/SwiftUI 2-3, Control Center modules 2.4-2.9, CoreAnimation commit about 1, syscalls and IPC about 0.8, software rendering
+  about 0. First frame: 93-118 ms running, UIKit 48-78, the runtime and allocator leaf 47-55, layout and traits 13-18, Swift 7-14.
+- **Clock floors at the max** (root363, tt=0, encoding bound to cpu7, sides B/H/B/H, H = `dvfs set framepct 100` and `touchpct 100`):
+  the domains went from about 1.7-1.9 to 2.63 GHz (+50 %); encoding 11.0 to 9.1 ms a frame (mean, -18 %), SpringBoard's main thread
+  13.4 to 12.7 ms (-5 %), the frame interval 27.1 to 24.7 ms, the open 37.2 to 40.6 fps (B 32.7/41.4/36.9/37.7, H 41.8/42.5/38.2/39.8,
+  within the per-boot spread). SpringBoard's time barely follows the core clock: governor lag is not what holds it.
 
 ## Faults found on the way
 
