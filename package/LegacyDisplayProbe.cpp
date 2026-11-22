@@ -211,7 +211,7 @@ extern "C" uint64_t houji_cpu_frame_activity(void) {
 extern "C" void houji_tev(unsigned kind,uint32_t v);
 extern "C" void native_legacy_swap_stage(unsigned stage) {
     const uint64_t now=probeNowUs();
-    houji_tev(5+(stage<3?stage:2),swapEventCount);
+    if(stage==0)houji_tev(5,swapEventCount+1);
     uint32_t total=swapEventCount;
     if(stage==0) {
         __atomic_fetch_add(&houjiCpuFrameCounter,1ULL,__ATOMIC_RELAXED);
@@ -220,8 +220,8 @@ extern "C" void native_legacy_swap_stage(unsigned stage) {
     uint32_t first=total>128?total-128:0;
     for(uint32_t i=first;i<total;++i) {
         SwapEvent &e=swapEvents[i%128];
-        if(stage==1 && !e.offered && !e.done){e.offered=now;return;}
-        if(stage==2 && !e.done){e.done=now;if(!e.offered)e.offered=now;return;}
+        if(stage==1 && !e.offered && !e.done){e.offered=now;houji_tev(6,e.number);return;}
+        if(stage==2 && !e.done){e.done=now;if(!e.offered)e.offered=now;houji_tev(7,e.number);return;}
     }
 }
 extern "C" unsigned native_legacy_swap_timeline(char *out,unsigned cap) {

@@ -1044,8 +1044,12 @@ static uint64_t tl_find_tid(task_t task,const char *name)
     if (!tids) return 0;
     int n=get_task_numacts(task);if (n>512) n=512;
     const int got=n>0?fill_taskthreadlist(task,tids,n,true)/(int)sizeof(uint64_t):0;
+    /* "#TID": that thread of the task, by its id (names are cut at 23 characters: com.apple.coreanimation.display and .render-server
+     * share the prefix, and the lowest id wins otherwise) */
+    const uint64_t want=name[0]=='#'?(uint64_t)strtouq(name+1,NULL,10):0;
     for (int i=0;i<got;i++) {
         if (!tids[i]) continue;
+        if (name[0]=='#') { if (tids[i]==want) found=want;continue; }
         if (name[0] && strcmp(name,"0")) {
             struct proc_threadinfo_internal info={0};
             if (fill_taskthreadinfo(task,tids[i],true,&info,NULL,NULL) || strncmp(info.pth_name,name,strlen(name))) continue;
