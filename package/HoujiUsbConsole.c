@@ -10,6 +10,7 @@
 #include <sys/proc_internal.h>
 #include <sys/bsdtask_info.h>
 #include <kern/clock.h>
+#include <kern/cpu_number.h>
 #include <kern/thread.h>
 #include <kern/task.h>
 #include <kern/recount.h>
@@ -1156,6 +1157,46 @@ static void tl_command(const char *args)
  * pmap_zero_page on the pages of a kernel buffer against bzero of the same buffer through its ordinary cached mapping. */
 extern void pmap_zero_page(ppnum_t);
 extern ppnum_t pmap_find_phys(pmap_t,addr64_t);
+/* Console "cpub N": a kernel thread bound to CPU N (houji_thread_bind_cpu) times (a) a chain of 200M dependent adds (one a cycle on
+ * Cortex-A720 and -X4, so the effective clock) against its domain's reported clock, and (b) a random pointer chase (one 64-byte line
+ * a step) over 32 KiB to 16 MiB: ns per load, the L1/L2/L3/DRAM steps. Whether cpu2-6 run at the clock reported and where their L2 ends. */
+static void cpub_thread(void *arg,wait_result_t result __unused)
+{
+    extern kern_return_t houji_thread_bind_cpu(thread_t thread,int cpu_id);
+    const int cpu=(int)(uintptr_t)arg;const unsigned dom=cpu<2?0:cpu<5?1:cpu<7?2:3;
+    houji_thread_bind_cpu(current_thread(),cpu);IOSleep(5);
+    if (cpu_number()!=cpu) { printf("HOUJI CPUB: on cpu%d, not cpu%d\n",cpu_number(),cpu);return; }
+    const vm_size_t big=16u<<20;uint64_t *buf=kalloc_data(big,Z_WAITOK);
+    if (!buf) { printf("HOUJI CPUB: allocation failed\n");return; }
+    uint64_t x=1,ns=0;
+    for (int w=0;w<2;w++) {   /* the first pass lets the governor see the load */
+        const uint64_t t0=mach_absolute_time();
+        for (uint64_t i=0;i<200000000ull;i++) __asm__ volatile("add %0, %0, #1" : "+r"(x));
+        absolutetime_to_nanoseconds(mach_absolute_time()-t0,&ns);
+    }
+    printf("HOUJI CPUB: cpu%d alu %llu ns for 200M adds = %llu MHz effective, domain %u reports %u MHz\n",cpu,ns,200000ull*1000/(ns?ns:1),
+           dom,houji_cpu_state_khz(dom)/1000);
+    char line[220];unsigned at=0;
+    for (vm_size_t size=32u<<10;size<=big;size<<=1) {
+        const unsigned lines=(unsigned)(size/64),stride=8;uint64_t r=0x9e3779b97f4a7c15ull;
+        /* a random cycle over the lines (Sattolo's shuffle of the line order), each line's first word the next line's index */
+        uint32_t *order=(uint32_t *)(buf+(big/8-lines/2-1));
+        for (unsigned i=0;i<lines;i++) order[i]=i;
+        for (unsigned i=lines-1;i>0;i--) { r^=r<<13;r^=r>>7;r^=r<<17;const unsigned j=(unsigned)(r%i);const uint32_t t=order[i];order[i]=order[j];order[j]=t; }
+        if (size*2>big) { for (unsigned i=0;i<lines;i++) buf[(uint64_t)i*stride]=((uint64_t)i+1)%lines*stride; }   /* sequential at 16 MiB (order overlaps) */
+        else for (unsigned i=0;i<lines;i++) buf[(uint64_t)order[i]*stride]=(uint64_t)order[(i+1)%lines]*stride;
+        uint64_t p=0;const uint64_t steps=4000000;
+        for (uint64_t i=0;i<steps/4;i++) p=buf[p];
+        const uint64_t t0=mach_absolute_time();
+        for (uint64_t i=0;i<steps;i++) p=buf[p];
+        absolutetime_to_nanoseconds(mach_absolute_time()-t0,&ns);x+=p;
+        at+=(unsigned)snprintf(line+at,sizeof line-at," %luK:%llu.%llu",(unsigned long)(size>>10),ns/steps,ns*10/steps%10);
+        if (at+16>sizeof line) break;
+    }
+    printf("HOUJI CPUB: cpu%d chase ns/load%s (%llu)\n",cpu,line,x&1);
+    kfree_data(buf,big);houji_thread_bind_cpu(current_thread(),-1);
+}
+
 static void zbench_command(void)
 {
     const vm_size_t size=4*PAGE_SIZE;
@@ -1700,6 +1741,9 @@ static void command_line(void)
     else if (!strncmp(u.command,"threads ",8)) threads_command(u.command+8);
     else if (!strcmp(u.command,"vm")) vm_command();
     else if (!strcmp(u.command,"zbench")) zbench_command();
+    else if (!strncmp(u.command,"cpub ",5) && u.command[5]>='0' && u.command[5]<='7') {
+        thread_t t;if (kernel_thread_start(cpub_thread,(void *)(uintptr_t)(u.command[5]-'0'),&t)==KERN_SUCCESS) thread_deallocate(t);
+    }
     else if (!strncmp(u.command,"tl ",3)) tl_command(u.command+3);
     else if (!strcmp(u.command,"gm")) gm_command();
     else if (!strcmp(u.command,"aks")) { extern void native_aks_report(void) __attribute__((weak_import)); if (native_aks_report) native_aks_report(); else printf("HOUJI AKS: unavailable\n"); }
