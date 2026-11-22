@@ -558,6 +558,17 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   on domain 3, cpu2-4, and `cpub` and `framebud.py` named the domains as if cpu7 were 3: root366's Q7 shows cpu2-4 at 3149 MHz and
   cpu7 at 2630 (`framebud.py` corrected), root367's sweep pinned cpu2-4 while timing cpu7. Corrected (`kPrime = kCpuDomain[7]`);
   cpu7's scaling is untested so far.
+- **Placement A/B and the GPU's own time** (root369, `t-bal.sh`, tt=0, the floors at 100 %, the tl sampler on cpu0-1; P4: SpringBoard's
+  main thread, the compositing thread (tid 841 that boot), the render-server thread and the encoding thread on cpu7; PC: the same with
+  SpringBoard's main thread on cpu3; traced opens with tl and the driver's job timeline switched on from the console, `gtl`, untraced
+  ones with neither): untraced P4 43.3 fps (6 opens, 39.4-48.9, first frame about 100 ms), PC 41.3 (40.9-41.6, first frame 151-163
+  ms); traced P4 38.2-43.9, PC 39.5-46.0. In PC SpringBoard's main thread runs 10-14 ms a frame on cpu3 (2.4-3.4 on cpu7), and on cpu7
+  the compositing thread still waits 8.5-9.6 ms a frame runnable, the encoding thread 5-6. 0 GPU hangs, 0 faults, no crash.
+  The GPU (CP always-on stamps around each job, `gpuact.py`): in the opens' steady window it is active 82-98 % of the time, 20.4-23.6 ms
+  a frame, about 3.2 jobs a frame, each queued a median 13.5-15.5 ms before it starts. A frame is four back-to-back jobs (2 us apart):
+  about 1.2, 0.56, 13-16 and 7-9.5 ms. The GPU DCVS spends 56-75 % of each 10 s window at its top level (903 MHz) and reads 8-22 %
+  busy, about one open's 0.7-0.8 s of saturated GPU: the two agree. The GPU, at its top clock, is now what sets the frame time.
+  root369 then reset in `dvfs lut` (reading vote words past a domain's own; fixed, and the dump now runs first in a boot).
 
 ## Faults found on the way
 
