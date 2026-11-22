@@ -27,10 +27,6 @@ extern kern_return_t task_info(task_t,task_flavor_t,task_info_t,mach_msg_type_nu
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
 #include "houji_usb_protocol.h"
-#include <sys/sysctl.h>
-/* metal2vulkan's fast tier for the render server (console "m2v fast N"): -1 follows boot argument m2v-fast, 0 off, 1 on */
-int houji_m2v_fast=-1;
-SYSCTL_INT(_kern,OID_AUTO,houji_m2v_fast,CTLFLAG_RD|CTLFLAG_LOCKED,&houji_m2v_fast,0,"houji: metal2vulkan fast tier");
 #include "houji_ram_upload.h"
 #include <machine/atomic.h>
 #include <sys/reboot.h>
@@ -1776,12 +1772,20 @@ static void command_line(void)
         houji_ddr_vote(v);
     }
     else if (!strncmp(u.command,"m2v fast ",9)) {
-        /* kern.houji_m2v_fast: metal2vulkan's fast tier (m2v-lowering-box.patch, the shelf of carried bind states), read by the render
-         * server's bridge at its commits: -1 follows boot argument m2v-fast, 0 off, 1 on */
-        const char *p=u.command+9;const int neg=*p=='-';if (neg) p++;
-        int v=0;while (*p>='0' && *p<='9') v=v*10+(*p++-'0');
-        houji_m2v_fast=neg?-v:v;
-        printf("HOUJI M2V fast %d\n",houji_m2v_fast);
+        /* metal2vulkan's fast tier (m2v-lowering-box.patch, the shelf of carried bind states), 0 off or 1 on: written into the live boot
+         * arguments as m2v-fast=N (the digit rewritten, else the token appended; the 1000-byte limit is the packer's, the buffer holds
+         * 1024), which the render server's bridge reads through kern.bootargs at most every 50 ms at a commit. A sysctl of its own
+         * cannot be read there (console "sysctl" refused even kern.maxvnodes, root325). */
+        const char d=u.command[9];
+        if (d!='0' && d!='1') printf("HOUJI M2V fast: 0 or 1\n");
+        else {
+            char *args=PE_boot_args();size_t len=strnlen(args,1024);char *at=NULL;
+            for (char *p=args;(p=strstr(p,"m2v-fast="))!=NULL;p++) if (p==args || p[-1]==' ') {at=p;break;}
+            if (at) at[9]=d;
+            else if (len+11<1024) {memcpy(args+len," m2v-fast=0",11);args[len+10]=d;args[len+11]=0;}
+            at=strstr(args,"m2v-fast=");
+            printf("HOUJI M2V fast %c (boot arguments now %c, %zu bytes)\n",d,at?at[9]:'?',strnlen(args,1024));
+        }
     }
     else if (!strcmp(u.command,"l3") || !strncmp(u.command,"l3 vote ",8) || !strncmp(u.command,"l3 perf ",8) || !strncmp(u.command,"l3 mode ",8)) {
         /* HoujiCpuDvfs.cpp houji_cpu_l3: the L3 clock's table and state; "l3 vote N" / "l3 perf N" write row N */
