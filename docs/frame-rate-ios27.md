@@ -485,6 +485,16 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   the domains went from about 1.7-1.9 to 2.63 GHz (+50 %); encoding 11.0 to 9.1 ms a frame (mean, -18 %), SpringBoard's main thread
   13.4 to 12.7 ms (-5 %), the frame interval 27.1 to 24.7 ms, the open 37.2 to 40.6 fps (B 32.7/41.4/36.9/37.7, H 41.8/42.5/38.2/39.8,
   within the per-boot spread). SpringBoard's time barely follows the core clock: governor lag is not what holds it.
+- **L3 and DDR at the top, and SpringBoard on the prime core** (root364, `t-bind.sh` sides B/M/B/M/S, encoding bound to cpu7 in B and M):
+  the L3 read during every open was already at its top row (2035 MHz, `l3 mode 1`) in B, so M (`l3 mode 2`, `ddr 16383`) tested the
+  DDR/LLCC vote alone (no read-back of the DDR clock): real opens SpringBoard 12.5 against 12.4 ms a frame, 40.1 against 40.7 fps: no
+  effect. S (SpringBoard's main thread bound to cpu7, encoding to cpu5): SpringBoard 6.4 ms a frame (from about 12.5) and a 67 ms first
+  frame (from 100-118) at about 2.0 GHz, the same clock as on cpu2-6; encoding on cpu5 21.6 ms at 2.6 GHz, the open 36.3 fps. Both
+  threads run about twice as fast on the prime core (Cortex-X4, its 2 MiB L2) as on the others at one clock: a core and L2 limit, not
+  the memory clocks. There is one prime core.
+- **SpringBoard's runtime bucket** (root361 and root363 real opens): steady 4.4 of 12.7 ms a frame, libobjc (retain, weak references)
+  2.1, objc_msgSend 1.7, malloc (xzone, no instrumented paths) 0.6; dispatch slow paths 0.03; no per-frame trait or Auto Layout
+  invalidation (0.01 each). First frame: 21.6 / 16.2 / 6.9 ms, with trait changes 6, hashing 8.3, strings 4.6, Auto Layout 2.9.
 
 ## Faults found on the way
 
