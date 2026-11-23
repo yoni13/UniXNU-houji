@@ -1,3 +1,4 @@
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
 --- a/src/freedreno/vulkan/tu_cmd_buffer.cc
 +++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
 @@ -495,10 +495,26 @@
@@ -223,6 +224,7 @@
  
     /* For the workaround above, because it's using the "wrong" context for
      * SP_PS_INSTR_SIZE we should emit another dummy event write to avoid a
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.h b/src/freedreno/vulkan/tu_cmd_buffer.h
 --- a/src/freedreno/vulkan/tu_cmd_buffer.h
 +++ b/src/freedreno/vulkan/tu_cmd_buffer.h
 @@ -667,6 +667,7 @@
@@ -256,6 +258,7 @@
 +   ~tu_op_scope() { tu_op_end(cmd, &cmd->cs, seq); }
 +};
 +
+diff --git a/src/freedreno/vulkan/tu_clear_blit.cc b/src/freedreno/vulkan/tu_clear_blit.cc
 --- a/src/freedreno/vulkan/tu_clear_blit.cc
 +++ b/src/freedreno/vulkan/tu_clear_blit.cc
 @@ -2857,6 +2857,7 @@
@@ -339,6 +342,7 @@
  
     trace_start_clear_depth_stencil_image(&cmd->trace, &cmd->cs, cmd,
                                           image->vk.format);
+diff --git a/src/freedreno/vulkan/tu_event.cc b/src/freedreno/vulkan/tu_event.cc
 --- a/src/freedreno/vulkan/tu_event.cc
 +++ b/src/freedreno/vulkan/tu_event.cc
 @@ -147,6 +147,7 @@
