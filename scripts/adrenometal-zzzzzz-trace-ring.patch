@@ -1,0 +1,66 @@
+diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -363,7 +363,7 @@
+    "/private/var/tmp/NativeAdrenoMetal.trace/frames.trace"};
+   mkdir("/private/var/tmp/NativeAdrenoMetal.trace",0755);
+   uint32_t written=0;
+-  struct PassRec {uint64_t ns;uint32_t seq;uint16_t width,height;uint8_t mode,colors,flags,swap;uint16_t draws,format;uint32_t kpx;uint64_t gpuBegin,gpuEnd;uint16_t fsInstrs,fsTex,fsSy,fsSs;int8_t fsWaves,fsRegs;uint8_t samples,ds;uint32_t bandwidth,verts,fsHash;};
++  struct PassRec {uint64_t ns;uint32_t seq;uint16_t width,height;uint8_t mode,colors,flags,swap;uint16_t draws,format;uint32_t kpx;uint8_t reason,atts,loads,stores;uint64_t gpuBegin,gpuEnd;uint16_t fsInstrs,fsTex,fsSy,fsSs;int8_t fsWaves,fsRegs;uint8_t samples,ds;uint32_t bandwidth,verts,fsHash;};
+   struct SubRec {uint64_t ns;uint32_t seq,fence,syncWaitUs,callUs,spaceWaitUs;uint16_t busy;uint8_t chunks,buffers;};
+   static_assert(sizeof(PassRec)==72 && sizeof(SubRec)==32,"turnip ring records");
+   uint32_t passFrom=0,subFrom=0;
+@@ -374,7 +374,9 @@
+   uint64_t copyLast[16]={};
+   bool header=false;
+   for(;;) {
+-   usleep(250000);
++   // houji: every 50 ms, not 250: Turnip's pass ring takes about 20 000 records a second in a Control Center open, and this ring
++   // (gTrace, 16384) gets two for each; read every 250 ms, 300 ms after they were made, both overran (root399, root404).
++   usleep(50000);
+    if(render && fd<0)for(const char *path:paths){fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0644);if(fd>=0)break;}
+    if(render && fd<0)continue;
+    if(!turnip && !gLoaderPath.empty()) {   // the runtime loads Turnip after this thread may have started
+@@ -395,8 +397,9 @@
+     PassRec recs[64];uint32_t newest=0;
+     for(;;) {
+      const uint32_t n=passRead(passFrom,recs,64,&newest);
+-     // A pass recorded in the last 300 ms may not have run yet: it is read, with its GPU times, at the next turn.
+-     const uint64_t ripe=nowUs()-300000;
++     // A pass recorded in the last 100 ms may not have run yet: it is read, with its GPU times, at a later turn (houji: 100 ms, not
++     // 300: frames run within tens of ms of their recording; 4-5 % of the records read 300 ms on were unstamped, nearly all flushes).
++     const uint64_t ripe=nowUs()-100000;
+      uint32_t taken=0;
+      for(uint32_t i=0;i<n && recs[i].ns/1000<=ripe;i++,taken++) {
+       const PassRec &p=recs[i];
+@@ -412,6 +415,8 @@
+        detail.c=(uint8_t)p.fsWaves|(uint32_t)(uint8_t)p.fsRegs<<8|(uint32_t)p.samples<<16|(uint32_t)p.ds<<24;
+        detail.d=p.bandwidth;detail.tid=p.verts;
+        detail.cpu0=p.fsHash;   // the heaviest fragment shader's tu_hash32, joined to the pipeline log's names
++       // houji: cpu1 = why not GMEM (Turnip tu_pass_reason) | attachments << 8 | loaded << 16 | stored << 24 (bit = attachment, first 8)
++       detail.cpu1=p.reason|(uint32_t)p.atts<<8|(uint32_t)p.loads<<16|(uint32_t)p.stores<<24;
+        tracePush(detail);
+       }
+       passFrom=p.seq+1;
+@@ -462,9 +467,9 @@
+    if(head<written+4)continue;
+    head-=4;                                   // records still being filled stay for the next round
+    if(head-written>16000)written=head-16000;   // the ring lapped the writer: the oldest are gone
+-   // The file stops growing at kFramesTraceCap (64 MiB): it stays within half of the diagnostic export region, and Data never
+-   // holds more than that of it. Later records are dropped.
+-   static constexpr uint64_t kFramesTraceCap=64ull<<20;
++   // The file stops growing at kFramesTraceCap: later records are dropped. houji: 128 MiB, not 64: with no record lost a traced
++   // Control Center open adds about 25 MB (gtr=1), and the persistent Data volume (2 GiB seed) holds it.
++   static constexpr uint64_t kFramesTraceCap=128ull<<20;
+    static uint64_t fileBytes=0;
+    while(written<head){
+     uint32_t n=head-written;const uint32_t room=16384-written%16384;if(n>room)n=room;
+@@ -476,7 +481,7 @@
+    }
+    // A test boot ends in a reset, not a shutdown: what was written reaches the disk every two seconds at the latest.
+    static uint64_t syncedBytes=0;static uint32_t turns=0;
+-   if(++turns%8==0 && syncedBytes!=fileBytes){fsync(fd);syncedBytes=fileBytes;}
++   if(++turns%40==0 && syncedBytes!=fileBytes){fsync(fd);syncedBytes=fileBytes;}   // houji: every 40 turns of 50 ms, still 2 s
+   }
+  }).detach();
+ }

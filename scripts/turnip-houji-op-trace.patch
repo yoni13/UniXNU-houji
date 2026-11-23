@@ -28,17 +28,45 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
     struct tu_cs *cs = &cmd_buffer->cs;
     struct tu_cache_state *cache = &cmd_buffer->state.cache;
     BITMASK_ENUM(tu_cmd_flush_bits) flushes = cache->flush_bits;
-@@ -4113,7 +4129,8 @@
+@@ -4103,6 +4119,9 @@
+    uint16_t draws;
+    uint16_t format;       /* VkFormat of the first colour attachment */
+    uint32_t kpx;
++   /* houji: in the alignment hole before gpu_begin (the record stays 72 bytes): why the pass is not GMEM (tu_pass_reason), the
++    * pass's attachment count, and which of its first 8 attachments are loaded and stored (colour or depth/stencil, bit = index). */
++   uint8_t reason, atts, loads, stores;
+    uint64_t gpu_begin, gpu_end;
+    uint16_t fs_instrs, fs_tex, fs_systall, fs_sstall;   /* the heaviest fragment shader of the pass: ir3 instructions, texture fetches (cat 5), estimated stall cycles on (sy) and (ss) */
+    int8_t fs_waves, fs_regs;                            /* its max waves per core and highest GPR */
+@@ -4113,15 +4132,23 @@
     uint32_t fs_hash;                                    /* tu_hash32 of that fragment shader (the tail padding of the 72 bytes) */
  };
  static_assert(sizeof(struct tu_pass_rec) == 72, "pass record");
 -static struct tu_pass_rec tu_pass_ring[512];
-+#define TU_PASS_RING 8192   /* houji: from 512, which an open overran in 0.3 s */
-+static struct tu_pass_rec tu_pass_ring[TU_PASS_RING];
++/* houji: from 512, which an open overran in 0.3 s, then 8192, which a Control Center open (about 20 000 records a second) overran
++ * before the plugin's trace thread read it (root399, root404: 50-75 % of an open's records lost). 65536 holds 3 s of them. The
++ * records are allocated only with the trace on (tu_pass_trace_on), so a process without it carries no 4.5 MiB array. */
++#define TU_PASS_RING 65536
++static struct tu_pass_rec *tu_pass_ring;
  
  /* The host's diagnostics switch (SHENG_DIAG, set by the plugin from diag=1): without it no pass is stamped or kept in the ring. */
  static bool
-@@ -4141,9 +4158,9 @@
+ tu_pass_trace_on(void)
+ {
+-   static int on = -1;
+-   if (on < 0)
+-      on = getenv("SHENG_DIAG") != NULL;
++   /* houji: decided once (a C++ static initialisation, thread-safe), the ring allocated with it: off, nothing is allocated. */
++   static const bool on = [] {
++      if (!getenv("SHENG_DIAG"))
++         return false;
++      tu_pass_ring = (struct tu_pass_rec *) calloc(TU_PASS_RING, sizeof(*tu_pass_ring));
++      return tu_pass_ring != NULL;
++   }();
+    return on;
+ }
+ static uint32_t tu_pass_seq;
+@@ -4141,9 +4168,9 @@
        if (!tu_pass_ts_bo && !tu_pass_ts_dev) {
           tu_pass_ts_dev = dev;
           struct tu_bo *bo = NULL;
@@ -50,7 +78,7 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
                 p_atomic_set(&tu_pass_ts_bo, bo);
              } else {
                 tu_bo_finish(dev, bo);
-@@ -4155,9 +4172,9 @@
+@@ -4155,9 +4182,9 @@
     struct tu_bo *bo = p_atomic_read(&tu_pass_ts_bo);
     if (!bo || tu_pass_ts_dev != dev)
        return 0;
@@ -62,7 +90,56 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
  }
  
  template <chip CHIP>
-@@ -4222,7 +4239,7 @@
+@@ -4175,6 +4202,34 @@
+                                        .write_enabled = true).value);
+       tu_cs_emit_qw(cs, iova);
+    }
++}
++
++/* houji: the pass record's reason: 0 GMEM, 1 the autotuner chose SYSMEM, 2 hs bit 3 (memoryless attachments backed), 3 hs (an
++ * unpadded full-screen pass), 4 attachments do not fit GMEM, 5 a non-framebuffer-space barrier, 6 an empty render area, 7
++ * tessellation, 8 too many tiles without binning, 9 TU_DEBUG, 15 another or none given. */
++static uint8_t
++tu_pass_reason(bool sysmem, const char *r)
++{
++   if (!sysmem)
++      return 0;
++   if (!r)
++      return 15;
++   static const struct { const char *text; uint8_t code; } reasons[] = {
++      {"Autotune selected sysmem", 1},
++      {"houji: unpadded full-screen pass, memoryless attachments backed (hs bit 3)", 2},
++      {"houji: unpadded full-screen pass (hs)", 3},
++      {"Can't fit attachments into gmem", 4},
++      {"Non-framebuffer-space barrier", 5},
++      {"Render area is empty", 6},
++      {"Uses tessellation shaders", 7},
++      {"Too many tiles and HW binning is not possible", 8},
++      {"TU_DEBUG(GMEM)", 9},
++      {"TU_DEBUG(SYSMEM)", 9},
++   };
++   for (const auto &x : reasons)
++      if (!strcmp(r, x.text))
++         return x.code;
++   return 15;
+ }
+ 
+ static uint32_t
+@@ -4213,6 +4268,13 @@
+    rec.fs_hash = cmd->state.rp.fs_hash;
+    rec.bandwidth = cmd->state.rp.drawcall_bandwidth_per_sample_sum / MAX2(cmd->state.rp.drawcall_count, 1);
+    rec.ds = subpass->depth_stencil_attachment.attachment != VK_ATTACHMENT_UNUSED ? 1 : 0;
++   rec.reason = tu_pass_reason(sysmem, cmd->state.rp.gmem_disable_reason);
++   rec.atts = MIN2(cmd->state.pass->attachment_count, 255);
++   for (uint32_t a = 0; a < MIN2(cmd->state.pass->attachment_count, 8); a++) {
++      const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
++      rec.loads |= (att->load || att->load_stencil) ? 1u << a : 0;
++      rec.stores |= (att->store || att->store_stencil) ? 1u << a : 0;
++   }
+    for (uint32_t i = 0; i < subpass->color_count; i++) {
+       const uint32_t a = subpass->color_attachments[i].attachment;
+       if (a != VK_ATTACHMENT_UNUSED) {
+@@ -4222,7 +4284,7 @@
     }
     const uint32_t seq = p_atomic_inc_return(&tu_pass_seq);
     rec.seq = seq;
@@ -71,7 +148,12 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
     /* The GMEM swap trace (tu_swap_trace_on): the first 3000 passes and the first 1000 passes of 3000 px or wider, in order, each with
      * its attachments (event 44: index, mode, image, format, swap, mutability, tile mode, load | store << 1 | unpadded << 2, samples,
      * RB_MRT_BUF_INFO), so frames of both render modes line up with the screenshots. */
-@@ -4258,16 +4275,16 @@
+@@ -4255,19 +4317,21 @@
+ {
+    const uint32_t last = p_atomic_read(&tu_pass_seq);
+    *newest = last;
++   if (!tu_pass_trace_on())
++      return 0;
     uint32_t first = from ? from : 1;
     if (first > last)
        return 0;
@@ -92,10 +174,13 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
           const uint64_t begin = words[0], end = words[1];
           if (begin && end) {
              rec.gpu_begin = tu_device_ticks_to_ns(tu_pass_ts_dev, begin);
-@@ -4302,6 +4319,86 @@
-    return seq;
- }
- 
+@@ -4299,7 +4363,87 @@
+          break;
+       }
+    }
++   return seq;
++}
++
 +/* houji: the counts alone, for a pass the trace does not note (tu_render_mode_stats counted only with SHENG_DIAG before). */
 +static uint32_t
 +tu_count_render_mode(struct tu_cmd_buffer *cmd, bool sysmem)
@@ -146,7 +231,7 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
 +      tu_pass_stamp<A7XX>(cs, iova);
 +   else
 +      tu_pass_stamp<A6XX>(cs, iova);
-+   return seq;
+    return seq;
 +}
 +
 +void
@@ -174,12 +259,10 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
 +      h = h << 4 | (uint32_t) (c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : 0);
 +   }
 +   return h;
-+}
-+
+ }
+ 
  extern "C" __attribute__((visibility("default"))) void tu_render_mode_stats(uint64_t out[8]);
- extern "C" __attribute__((visibility("default"))) void
- tu_render_mode_stats(uint64_t out[8])
-@@ -4322,7 +4419,7 @@
+@@ -4322,7 +4466,7 @@
  
     tu_autotune::rp_ctx_t rp_ctx = NULL;
     const bool sysmem = use_sysmem_rendering(cmd_buffer, &rp_ctx, rp_key);
@@ -188,7 +271,7 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
     const uint64_t stamps = seq ? tu_pass_ts_slot(cmd_buffer, seq) : 0;
     if (stamps)
        tu_pass_stamp<CHIP>(&cmd_buffer->cs, stamps);
-@@ -4669,6 +4766,7 @@
+@@ -4669,6 +4813,7 @@
        default:
           break;
        }
@@ -196,7 +279,7 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
     } else if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY) {
        const bool pass_continue =
           pBeginInfo->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-@@ -5613,6 +5711,8 @@
+@@ -5613,6 +5758,8 @@
        struct u_trace_address addr_preempt_latency_rp_hash = {};
        addr_preempt_latency_rp_hash.offset = global_iova(cmd_buffer, max_preemption_latency_rp_hash);
  
@@ -205,7 +288,7 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
        trace_end_cmd_buffer(&cmd_buffer->trace, &cmd_buffer->cs, cmd_buffer, addr_preempt_latency, addr_preempt_latency_rp_hash);
  
        cmd_buffer->autotune_ctx.snapshot_preempt_data(&cmd_buffer->cs);
-@@ -9873,6 +9973,10 @@
+@@ -9873,6 +10020,10 @@
        tu_set_render_mode<CHIP>(cs, { .shader_uses_rt = true });
     }
  
@@ -216,7 +299,7 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
     if (info->indirect) {
        trace_start_compute_indirect(&cmd->trace, cs, cmd, info->unaligned,
                                     (char *)shader->variant->blake3_str);
-@@ -9921,6 +10025,7 @@
+@@ -9921,6 +10072,7 @@
  
        trace_end_compute(&cmd->trace, cs);
     }
