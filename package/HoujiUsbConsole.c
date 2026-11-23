@@ -2011,6 +2011,59 @@ static void command_line(void)
             printf("HOUJI GPUF MAP %s: below %llx +%llx h%llu k%llx | at %llx +%llx h%llu k%llx\n",v?"guilty":"ran",m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7]);
         }
     }
+    else if (!strcmp(u.command,"dpu")) {
+        /* Read only: which display pipe scans the firmware framebuffer, its source format and the mixer's blend (for an opaque XRGB
+         * format instead of the per-pixel alpha the scanout copy forces). MDSS at 0xae00000 (its HW version at +0), the DPU at 0xae01000
+         * (SM8650, DPU 10, upstream dpu_10_0_sm8650.h): CTL n at 0x15000 + 0x1000 n (dpu_hw_ctl.c: LAYER(lm) 4 lm, LM 5 at 0x24, LAYER_EXT
+         * 0x40 + 4 lm, TOP 0x14, INTF_ACTIVE 0xf4, FETCH_PIPE_ACTIVE 0xfc: bits 16-19 VIG 0-3, 0-5 DMA 0-5), VIG k at 0x4000 + 0x2000 k,
+         * DMA k at 0x24000 + 0x2000 k (dpu_hw_sspp.c: SRC_SIZE 0, SRC_XY 8, OUT_SIZE 0xc, OUT_XY 0x10, SRC0_ADDR 0x14, YSTRIDE0 0x24,
+         * SRC_FORMAT 0x30, UNPACK 0x34, OP_MODE 0x38), LM k at 0x44000 + 0x1000 k (dpu_hw_lm.c: OP_MODE 0, OUT_SIZE 4, BORDER_COLOR_0
+         * 8, stage s blend OP at 0x20 + 0x18 s, its alpha word at +4). Each step reads only what the one before showed in use: a
+         * pipe only when an active CTL (INTF_ACTIVE set) fetches it, a mixer only when that CTL stages layers on it; nothing at all
+         * when MDSS reads 0 or all ones (the block off). Compare SRC0_ADDR with the framebuffer's address on the last line. */
+        static vm_offset_t mdss,dpu;
+        if (!mdss) mdss=ml_io_map(0xae00000,0x1000);
+        if (!dpu) dpu=ml_io_map(0xae01000,0x8f000);
+        #define DPU32(off) (*(volatile uint32_t *)(dpu+(off)))
+        const uint32_t version=mdss?*(volatile uint32_t *)mdss:0;
+        printf("HOUJI DPU: mdss hw version %x\n",version);
+        if (!dpu || !version || version==0xffffffffu) printf("HOUJI DPU: display block not readable, stopped\n");
+        else {
+            uint32_t pipes=0,mixers=0;
+            for (unsigned n=0;n<6;n++) {
+                const uint32_t ctl=0x15000+0x1000*n,intf=DPU32(ctl+0xf4);
+                if (!intf || intf==0xffffffffu) { printf("HOUJI DPU CTL%u: intf_active %x (idle)\n",n,intf);continue; }
+                const uint32_t fetch=DPU32(ctl+0xfc);
+                uint32_t layer[6],ext[6];
+                for (unsigned lm=0;lm<6;lm++) {
+                    layer[lm]=DPU32(ctl+(lm==5?0x24:4*lm));ext[lm]=DPU32(ctl+0x40+4*lm);
+                    if (layer[lm] || ext[lm]) mixers|=1u<<lm;
+                }
+                pipes|=fetch;
+                printf("HOUJI DPU CTL%u: intf_active %x top %x fetch_pipe_active %x layer %x %x %x %x %x %x ext %x %x %x %x %x %x\n",n,intf,
+                       DPU32(ctl+0x14),fetch,layer[0],layer[1],layer[2],layer[3],layer[4],layer[5],ext[0],ext[1],ext[2],ext[3],ext[4],ext[5]);
+            }
+            for (unsigned bit=0;bit<20;bit++) {
+                if (!(pipes&(1u<<bit)) || (bit>5 && bit<16)) continue;
+                const uint32_t base=bit>=16?0x4000+0x2000*(bit-16):0x24000+0x2000*bit;
+                printf("HOUJI DPU %s%u @%x: src_size %x src_xy %x out_size %x out_xy %x src0_addr %x ystride0 %x src_format %x unpack %x op_mode %x\n",
+                       bit>=16?"VIG":"DMA",bit>=16?bit-16:bit,base,DPU32(base),DPU32(base+8),DPU32(base+0xc),DPU32(base+0x10),
+                       DPU32(base+0x14),DPU32(base+0x24),DPU32(base+0x30),DPU32(base+0x34),DPU32(base+0x38));
+            }
+            for (unsigned lm=0;lm<6;lm++) {
+                if (!(mixers&(1u<<lm))) continue;
+                const uint32_t base=0x44000+0x1000*lm;
+                printf("HOUJI DPU LM%u: op_mode %x out_size %x border %x | stage0 %x %x stage1 %x %x stage2 %x %x stage3 %x %x\n",lm,DPU32(base),
+                       DPU32(base+4),DPU32(base+8),DPU32(base+0x20),DPU32(base+0x24),DPU32(base+0x38),DPU32(base+0x3c),DPU32(base+0x50),
+                       DPU32(base+0x54),DPU32(base+0x68),DPU32(base+0x6c));
+            }
+            if (!pipes) printf("HOUJI DPU: no active CTL fetches a pipe: pipes not read\n");
+        }
+        #undef DPU32
+        PE_Video video={};
+        if (!PE_current_console(&video)) printf("HOUJI DPU FB: base %llx %ux%u row bytes %u depth %u\n",(unsigned long long)video.v_baseAddr,
+                                                 (unsigned)video.v_width,(unsigned)video.v_height,(unsigned)video.v_rowBytes,(unsigned)video.v_depth);
+    }
     else if (!strcmp(u.command,"gpup")) {
         /* The switch between the GPU's two rings (NativeAdrenoPublish.cpp native_adreno_preempt_stats: triggers, completed, skipped, faulted,
          * disjoint skips, write pointer restores, the last switch's us, the ring the CP runs, a switch in flight, CP_CONTEXT_SWITCH_CNTL now,

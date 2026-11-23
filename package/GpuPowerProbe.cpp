@@ -1799,7 +1799,8 @@ void gpuStart() {
     gpuWr64(A740_CP_BV_RB_RPTR_ADDR, gGpuBuffers[2].iova + 8);   // rbmemptr(bv_rptr)
     // Normal/low work uses ring 1; requested high priorities use ring 0.
     // Boot overrides: 0 one ring, 1 only low/background on ring 1, 2 normal work too.
-    {unsigned preempt = 2; PE_parse_boot_argn("gpu-preempt", &preempt, sizeof preempt); gPreemptWanted = preempt == 1 || preempt == 2; gPreemptMode = preempt == 2 ? 2 : 1;}
+    // gp=N: gpu-preempt=N in 5 bytes of command line (gpu-preempt wins when both are given).
+    {unsigned preempt = 2; if (!PE_parse_boot_argn("gpu-preempt", &preempt, sizeof preempt)) PE_parse_boot_argn("gp", &preempt, sizeof preempt); gPreemptWanted = preempt == 1 || preempt == 2; gPreemptMode = preempt == 2 ? 2 : 1;}
     if (gPreemptWanted) {
         const IOReturn second = gRing1.attachSecondary(&rio, &cache, const_cast<uint8_t *>(gGpuCpu[9]), gGpuBuffers[9].bytes,
             gGpuBuffers[9].iova, const_cast<uint8_t *>(gGpuCpu[10]), gGpuBuffers[10].bytes, gGpuBuffers[10].iova);
@@ -1940,7 +1941,7 @@ void gpuPerfTick(uint64_t busyTicks) {
   }
  }
  uint32_t before[26]={},after[26]={};
- const bool preempt=bootArg("gpu-preempt",2)!=0;
+ const bool preempt=gPreemptWanted;
  const bool gotBefore=!preempt || (&native_adreno_preempt_stats && native_adreno_preempt_stats(before));
  uint64_t began=0;absolutetime_to_nanoseconds(mach_absolute_time(),&began);
  const auto values=counters.capture([](uint32_t reg){return gpuRd(reg);});

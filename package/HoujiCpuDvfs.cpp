@@ -348,7 +348,9 @@ extern "C" void houji_cpu_dvfs_start(void) {
               gSampleMs, gFramePct, gTouchPct, gTouchMs, gMaxPct);
     }
     unsigned first = gStock ? 70 : 0, configuredFirst = 0;
-    if (PE_parse_boot_argn("houji_thermal_trigger_c", &configuredFirst, sizeof(configuredFirst)) &&
+    // htc=N: houji_thermal_trigger_c=N in 7 bytes instead of 27 (the long name wins when both are given).
+    if ((PE_parse_boot_argn("houji_thermal_trigger_c", &configuredFirst, sizeof(configuredFirst)) ||
+         PE_parse_boot_argn("htc", &configuredFirst, sizeof(configuredFirst))) &&
         configuredFirst >= 40 && configuredFirst <= 80) first = configuredFirst;
     if (first) for (unsigned n = 1; n < kLevels; n++) kTrigger[n] = (int)(first * 10 + 50 * (n - 1));
     if (gStock) {
