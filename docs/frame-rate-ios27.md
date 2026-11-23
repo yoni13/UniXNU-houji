@@ -1138,7 +1138,18 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     command buffers of their own.
   - *From few Metal command buffers.* root394's commit notes (`m2v-count=2`, the open's last 175-214 ms): 2.0-2.2 commits a frame, one
     with no pass, the other with up to 10+. The encoders of a frame are those of one or two `MTLCommandBuffer`s.
-  - *A conservative path exists.* Past `PLANNED_BARRIERS` (2048) encoders of one command buffer, an encoder opens its primary with
+  - *Built, not measured: gpu41* (`mj=1`, `m2v-merge-encoders.patch`, 10 files; `hsq=1`, folded into
+    `turnip-houji-sysmem-unpadded.patch`; seed leanlc39, reset root412): an encoder records into the primary the previous encoder left
+    open, behind a barrier from everything before, under the same batch: Turnip begins no primary, no `tu_init_hw`, for it. Refused
+    (each counted, `merge.txt` beside lazy-aged.txt): the first encoder or a closed tail, a batch boundary (an event's wait or signal, a
+    host step, a signal pending), a resource state encoder, the previous part not plain (a segment, sparse updates, an ASTC twin
+    write), a predicated loop's laying, and a device whose submissions record anything before an encoder (completed-work barrier, held
+    depths) - none for Turnip on houji: its images rest in GENERAL, so no layout transitions cross the boundary. A render encoder that
+    merges records its pass at its end, not inline (its commands may not run before the shared primary's earlier work; counted once as
+    it asks). At its end a merged encoder must be one plain part in the shared primary: else the command buffer is abandoned, not run
+    out of order, and merging stops (`violation`). `first_submission`'s and `reencode`'s failed or encoded-again parts refuse with the
+    shared primary as with their own raws (`late`, `submit`). Off (`mj` absent) the code paths are the old ones; a violation switches
+    merging off within the process.
     `Barrier::everything()` (all commands before to all after, memory) and the scheduler plans none before it: the same barrier that
     would let an encoder record into its predecessor's still-open primary.
 
