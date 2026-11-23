@@ -73,3 +73,27 @@ Findings:
 - Measurement notes: the first A/B attempt lost its capture (capture.py's 1700 s timeout expired mid-run; raised to 2900 s in
   t-round.sh, and the capture is now started nohup+disown). t-launch.sh metric fixes: both-sides animation trim (settle at the
   real last frame), and the act window had a stale `last` variable (fixed to w[-1]).
+
+## Placement A/B (arms E/F, same boot) + clocks + a traced cold launch
+
+- SpringBoard's main thread (30:314) placement through the launch window (backboardd's Q4 binds untouched throughout):
+  reference cpu7 (arms A-D, previous rounds), **cpu6 (E)**, unbound/Clutch (F), restored cpu7 after.
+  - E (SB main on cpu6): cold 2 rounds: first frame 479(lost swap row)/-median ~470, warm +22/+75 ms; fps: one 111 fps launch
+    (best single launch so far), others 90-99 - not a consistent gain.
+  - F (SB unbound): cold 347/284 ms at 96/90 fps, warm 5 ms at 90 fps - same band.
+  - Arms A-D (previous turn, same boot): all reference-band. **Verdict: placement of SpringBoard's main thread is not the
+    launch fps limiter either.**
+- Actual clocks during the launch window (TL CLK, every 10 ms through a cold launch): d0 2035 MHz, d1 2630, d2 2630, d3 2630 -
+  every domain at its cap for the whole window; `cpub` measures 2628 MHz effective on cpu3/5/6/7. Not clock-starved at any point.
+- Traced cold launch (tl of SB main, SB UIKit animation thread, SB 314; ustack of SB main + backboardd compositing mid-window;
+  gtl dumps):
+  - SB main (30:314): **blocked 399 of 400 samples** mid-animation, in the same wait each time; running 1 sample.
+  - backboardd compositing (65:921): **blocked 394 of 400**, running 6 - the compositing server is idle-waiting, not contending.
+  - SB's UIKit in-process animation thread (30:4021, 8.5 CPU-seconds cumulative, pri 53): the tl shows it making the
+    animation frames in ~1.2-1.3 ms runs on a ~11.5 kHz-ish steady cadence (the R2 rows' short runs on cpu7).
+  - GPU (gtl through the window): unchanged, a few % busy.
+- **Root cause evidence so far:** during the zoom, both SB main and backboardd compositing are WAITING (blocked), and the
+  frame producer is SB's UIKit animation thread + Preferences' own layout work. The 17-100 ms hitches line up with the fresh
+  Preferences' main thread CPU bursts (its 1.1 CPU-s in the first second) - i.e., the app's own first-layout passes stall the
+  animation handshake; the 350 ms cold wait is spawn + first-scene layout on that same thread before the first swappable frame.
+  Neither clocks, placement of SB/backboardd, nor boosts move it; the work is inside Preferences/SB UIKit.
