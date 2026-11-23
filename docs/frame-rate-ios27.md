@@ -737,6 +737,22 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     frame at 3.2-3.5 jobs: the kernel's prologue flush, invalidate and wait for idle come before the job's start stamp, so a head is
     the time from there to the first command buffer's start, real per-submission work. Jobs by content: copy and render 99, copy, other
     and render 51, other and render 93, render 50, copy alone 26 (median 2.5 ms).
+- **Every pass in system memory** (root380 / root381, gpu36, seed leanlc34, P4, `tt=1`, `sko=4`, no gtr; root381 adds `tum=s`,
+  Turnip's existing switch that renders every pass in SYSMEM and backs transient attachments at the pass; untraced opens with the
+  driver's job stamps from the console, `gtlbusy.py`, then a traced side): untraced 40.2 fps (4 opens, 38.2-43.9), GPU 19.7 ms a frame,
+  first frame 126 ms, against **64.4 fps (5 opens, 55.6-77.5), GPU 8.1 ms a frame, first frame 111 ms**; traced 44.4 against 71.8
+  (65.4-78.0). On cpu7 with tum=s: the compositing thread 3.4-5.0 ms a frame, the encoding thread 3.2-5.8, SpringBoard's main thread
+  0.9-5.4 (from 6.3, 8.2-9.6 and its usual 2.5-3.5). Peak hottest 67.3 C in both boots. Hangs: root380 one before the opens (fence
+  1617, no fault); root381 none in its 8 untraced opens, **two in the traced side** (fence 27593, a guilty job, SMMU read fault at
+  0x149816880, about 360 MiB past the last mapping of the VM, a 80 MiB system-memory BO at 0x12d537000, kind write-combined, nothing
+  mapped above it). tum=s as it is fails the guardrail; it also backs Metal's memoryless attachments in memory, which a narrower switch
+  would not.
+- **The scanout copy's mappings and kernel** (sources): the scanout target is mapped Normal non-cacheable (Turnip's imports ask
+  writeback 0, outer-shareable; the SMMU's MAIR0 0xff44 makes index 0 Normal NC, index 1 write-back), not Device memory; the drawable
+  it reads is an import the GPU only reads, mapped write-back inner-shareable and IO-coherent (`NativeAdrenoUserClient.cpp`), its
+  reads snooped. The kernel (`shaders/scanout_convert.ll`, `scanout_opaque`) copies one pixel a thread, a 4-byte load and a 4-byte
+  store, alpha forced to 0xff because the display blends the scanout by its alpha (SSPP SRC_FORMAT 0x237ff); 3.2 M threads in 16x8
+  groups. Core Animation cannot draw into the scanout: one firmware framebuffer, no flip.
 
 ## Faults found on the way
 
