@@ -1074,6 +1074,32 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     traced Q4 opens, same build, read later, hangs 0 and faults 0) showed the 8 MiB cap (`8388608 bytes from f7faa0`), and was
     stopped. `t-bal.sh` now reads a longer `TRACE_LEN` in 8 MiB pieces, after the tl ends plus `TRACE_WAIT` seconds;
     `fixgesture.py` calibrates from a single open.
+- **Q4's GPU frame, pass by pass** (root410, gpu40, seed leanlc38, `tt=1 hs=9 gp=0 gtr=1`, 985 bytes; 4 traced Q4 opens, the whole
+  trace read in 8 MiB `hex` pieces; `gpuops.py`, `passstats.py`):
+  - Faults: hangs 0, faults 0, slots live 0, bad IB2 0, no crash (read after the run: an edit of `t-bal.sh` while it ran broke its
+    end, the open logs are whole).
+  - *The ring is whole:* of the 98 228 records made in the four opens (1 s from each gesture), 210 never read (0.21 %); 3707 read
+    without stamps (3.8 %, flushes mostly). Records with sequence number 0 are unnumbered and left out.
+  - *Two clocks.* The ring's GPU stamps (RB_DONE_TS of the GPU's always-on counter) fall behind the jobs' (the kernel's
+    CP_REG_TO_MEM) by the GPU's power-down time: 0.30 s to 1.76 s behind over root410, steady within an open (the same in gpu38's
+    root399). Every earlier gtr=1 breakdown compared them as one clock: its "job with no command buffer entry" (49-59 %) was mostly
+    this, not lost records. `gpuops.py` now moves each log's ring onto the jobs' clock (coarse from the open's records and jobs,
+    then the shift within 20 ms that puts the most command buffers in a job): 91-98 % of command buffers then lie inside a job, and
+    the unattributed time falls to 1.7 %.
+  - *GPU 10.66 ms a frame* (traced; untraced Q4 10.2-11.3): SYSMEM passes for hs bit 3 5.43 ms (50.8 %), cache flushes outside passes
+    1.90 (17.8 %; about 75 of bits 0x3 and 81 of 0x21ff a frame), SYSMEM passes the autotuner chose (small offscreen, 512x512 to
+    8x8) 1.33 (12.4 %), between command buffers 0.74, compute 0.42 (the scanout copy 9257011e), job heads and tails 0.49, GMEM 0.10,
+    no entry 0.18. The render jobs (3 ms or more, 7.63 ms a frame): passes 5.31, flushes 1.48, outside a command buffer 0.65.
+  - *The costliest passes* (all 1200x2670 SYSMEM for hs bit 3, LINEAR unpadded; GPU ms a frame, over 153 frames):
+    1. fs 7ebccf52 (790 instructions, 10 texture fetches), 2-3 colour attachments, only attachment 0 loaded and stored: 1.83 ms. Its
+       11-draw instances (66 vertices) take 3.2-4.1 ms each, 77 of them in 153 frames; the 1-draw ones 30-60 us.
+    2. fs 7642b2b4 (172 instructions), 60-69 draws, 3 colour attachments, **all three loaded and stored**: 1.1-2.0 ms each, about one
+       a frame, 1.43 ms.
+    3. fs 7623f474 (96 instructions), 7 draws, 3 colour attachments, only attachment 0 loaded and stored: 2.0-2.4 ms each, 0.5 a
+       frame, 1.00 ms. Seven draws over three full-screen targets in DRAM.
+    4. fs 241ef7ce (438 instructions), 5 draws, 6.4 a frame at 56-296 us: 0.70 ms. 5. fs 5b50d467, all three attachments loaded
+       and stored: 0.42 ms.
+  - Not verified: what these passes are in Control Center (shader hashes only), and whether GMEM would be cheaper for them.
 
 ## Faults found on the way
 
