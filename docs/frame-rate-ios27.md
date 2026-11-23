@@ -1006,6 +1006,23 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     GPU time 9.50 ms (traced 51.0-76.4 fps) against root399's 8.58 (48.9-66.8): no saving shown at the frame level. Traced opens with
     gtr=1, one boot each, and the trace keeps a different share of the jobs' entries in each (copy-alone jobs 0.31 a frame against
     0.10): **inconclusive**; to be decided untraced (gtlbusy) in boots alike but for sbl.
+- **Q4 against P4 measured right, and the blit decided** (root405 no sbl, root406 `sbl=1`; gpu39, seed leanlc37, `tt=1 hs=9 gp=0`,
+  979 / 985 bytes; sides P4u Q4u P4u Q4u, 4 opens each, untraced with GPU stamps, swaps read twice; a first root405 was stopped before
+  its opens after the phone was touched, its log in `logs/aborted/`):
+  - Faults: hangs 0, faults 0 for both whole boots, slots live 0, bad IB2 0, no crash: six clean gpu39 boots (root401-406), 64 P4 and
+    44 Q4 opens among them.
+  - The readout: in every open the oldest swap kept lies 5.8-152 s before the gesture: none truncated. **Q4's first frame 14-117 ms,
+    P4's 0-123**: Q4 has no late first frame.
+  - 20 of the 32 opens measured (12 lost their `GESTURE AT` line, more than with one read: the read at 0.8 s may crowd it out; their
+    swaps run on through the 8 s, so the open cannot be found without it). Open fps, median (mean) of 5 opens a side and boot:
+    P4 66.7 (65.5) / 68.7 (73.7), **Q4 81.0 (77.7) / 78.6 (79.0)**: Q4 about +10 fps (+15 %), not the +20-30 of the truncated readouts.
+  - GPU ms a frame (gtlbusy), medians: P4 9.48 / 9.35, Q4 10.10 / 10.49. With the compositing thread off cpu7 the GPU is busy about
+    0.8 of each second: under Q4 **the GPU is the limit** (120 fps needs 8.3 ms).
+  - **sbl=1 against the compute copy: no difference** in either placement (P4 9.48 against 9.35 ms, Q4 10.10 against 10.49; fps
+    within the spread). The blit is correct on the panel (root404) but saves nothing: the default stays the compute copy.
+  - GPU time across gpu39 boots, P4: 8.58-8.64 (root401/402) and 9.35-9.48 here, against 7.71-7.95 (gpu38, root389-392), but 8.57
+    in gpu38's root398 too: not shown to be a cost of the fix; to watch.
+  - Peak hottest 70.2 C once (root406's second P4 side, from 55 C), otherwise 61.0-65.7 C.
 
 ## Faults found on the way
 
