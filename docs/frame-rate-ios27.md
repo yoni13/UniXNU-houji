@@ -1100,6 +1100,31 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     4. fs 241ef7ce (438 instructions), 5 draws, 6.4 a frame at 56-296 us: 0.70 ms. 5. fs 5b50d467, all three attachments loaded
        and stored: 0.42 ms.
   - Not verified: what these passes are in Control Center (shader hashes only), and whether GMEM would be cheaper for them.
+- **Console `dump`: a file in about a second** (kernel `feat(console): dump ...`; root411, gpu40, seed leanlc38, `tt=1 hs=9 gp=0
+  gtr=1`, 985 bytes, 2 traced Q4 opens): `hex` printed 64 bytes a line through the log ring with a 15 ms pause every 16 lines (about
+  68 KB/s; 16 MiB in 4.5 min). `dump PATH START LENGTH` reads the file into the free tail of the console's USB DMA buffer (0x14000,
+  48 KiB, already allocated and routed) and sends it raw in bulk transfers, text held back meanwhile; `capture.py` saves it
+  (`logs/N-dump-K.bin`), `tracebytes.py` reads it for the scripts. root411: 8.6 MiB in 0.44 s, 16 MiB in 0.75 s (22 MB/s), both
+  CRC-32s as the phone's; hangs 0, faults 0, slots live 0, bad IB2 0.
+- **Three candidates audited, and the one that matters** (root410's ring, root387's GMEM instances, Turnip and metal2vulkan sources;
+  no build):
+  - *The flushes were mostly the measure.* `gpuops.py` gave each 10 us cell to the shortest entry over it, so a 1-2 us flush took a
+    whole cell from the pass around it: 1.90 ms a frame. The flushes' own stamps: 193 a frame, 0x21ff 81 x 2.4 us, 0x3 75 x 1.0 us,
+    0x800 12, 0x29ff 9: **0.33 ms a frame**. With 1 us cells (`G=1`): flushes 0.51, and "between command buffers under 50 us" 1.55.
+  - *Command buffer boundaries: 1.71 ms a frame.* 140 primary command buffers a frame, 112 of them under 30 us of work (median 11 us);
+    two queued ones lie 16 us apart (median and p90), 138 such boundaries a frame. Between one's end stamp and the next's begin:
+    the next one's `tu_init_hw` (each primary command buffer starts with Turnip's whole hardware state set up), an autotune
+    `CP_MEMCPY` and a status write. Untraced builds have it too.
+  - *GMEM for the two multi-target passes: about 0.5 ms.* Same shaders' instances, root387 (`hs=5`, these passes GMEM) against
+    root410 (SYSMEM): fs 7ebccf52, 11 draws, 3268 us (8 instances) against 3483 (142): bound by its 790-instruction shader, about 0.1
+    ms a frame to gain. fs 7623f474, 7 draws: 1025 us median (84) against 2.0-2.4 ms in root410's steady window: about 0.5 ms a frame.
+    But fs 241ef7ce, the same three targets with 5 draws: 821 us in GMEM against 65 us in SYSMEM, why hs=9 beat hs=5. What separates
+    them is how much each draw covers (7623f474: 7 full-screen quads, 42 vertices; 241ef7ce: 510 vertices in 5 draws), which Turnip
+    sees only as draw and vertex counts.
+  - *No saving in the stored targets.* metal2vulkan passes Metal's `DontCare` as `DONT_CARE` on Turnip (driver fact
+    `DontCareStoreIsOneOfMetals` for the Adreno 740), so the loads and stores of fs 7642b2b4's three targets are Core Animation's own
+    `Load`/`Store`. And in SYSMEM a pass's load and store cost nothing themselves: its draws read and write all three targets in
+    memory either way.
 
 ## Faults found on the way
 
