@@ -697,6 +697,24 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     0.85 / 0.78, 2-6 ms 0.64 / 1.61, 6-10 ms 7.23 / 4.75, 10 ms and over 13.30 / 9.81; 22.5 / 17.5 in all. The shadow copies were inside
     Core Animation's big jobs. With tt=1 about 14.5 ms a frame is in jobs over 6 ms, of four passes (about 1.5 ms) each: about
     10-12 ms a frame outside render passes is still unattributed (compute dispatches, transfers, barriers and flushes).
+- **The GPU's time of an open frame, accounted** (root377 reset boot, root378-root379; GPU userspace gpu36, seed leanlc34: `tt=1`,
+  P4, `sko=4`, `m2v-lbox=1`, the tl sampler on cpu0-1; `turnip-houji-op-trace.patch` stamps compute dispatches, the ten transfer
+  commands, cache flushes outside passes, event waits and primary command buffers into Turnip's pass ring, now 8192 entries, each with
+  CP_EVENT_WRITE7 RB_DONE_TS of the always-on counter before and after as u_trace does, nothing without SHENG_DIAG; render-mode counts
+  no longer need it; `gtr=1` (`adrenometal-zzzz-gtr.patch`) sets SHENG_DIAG alone, without diag=1's kernel diagnostics: 996 bytes of
+  command line; `gpuops.py`, every 10 us of a job to the innermost entry over it or to where in the job it lies):
+  - Safety: root379 0 GPU hangs or faults the whole boot; root378 one, before the measured opens (fence 5563, the first open's jobs
+    from 17471), at 0x38d60000 in a hole between two driver buffers, no guilty job: the boot-time kind.
+  - Overhead: GPU 15.4-17.2 ms a frame traced (16.3-18.3 without the trace, root374-375), traced 51.8 fps (4 opens, 46.2-55.4).
+  - 121 frames, 16.37 ms of GPU a frame: render passes 7.76 ms (47 %: fullscreen 1200x2670 BGRA GMEM passes over unpadded linear
+    surfaces 6.58, 9.2 a frame, about 0.7 ms each even with 1-3 draws, their whole surface loaded and stored; fullscreen SYSMEM passes
+    the autotuner chose 0.70, 7.0 a frame, about 0.1 ms each; 28.7 small GMEM passes 0.48); each job's head before its first command
+    buffer 2.01 and tail after its last 1.99 (24 %: about 0.6 ms at each end of 3.2-3.5 jobs a frame, where the kernel's submission
+    prologue and fence epilogue run; the job stamps are CP-time, Turnip's end-of-pipe); gaps of 0.5 ms or more between command
+    buffers 2.21 (13.5 %: mostly right after the scanout copy's command buffer, 1-7 ms with nothing stamped: the GPU waiting inside
+    the job); jobs with no command buffer entry 0.94; compute 0.71 (the scanout copy, shader 9257011e, grid 75x334, 16x8, about
+    0.49 ms each); cache flushes outside passes 0.46 (bits 0x21ff 20.8 a frame, 0x3 16.6); command buffers otherwise 0.11, small gaps
+    0.13, transfers 0.06. About 45 render passes a frame (the "13" of root370-373 was the 512-entry ring read late).
 
 ## Faults found on the way
 
