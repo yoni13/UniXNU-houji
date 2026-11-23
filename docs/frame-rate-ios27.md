@@ -1150,6 +1150,30 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     out of order, and merging stops (`violation`). `first_submission`'s and `reencode`'s failed or encoded-again parts refuse with the
     shared primary as with their own raws (`late`, `submit`). Off (`mj` absent) the code paths are the old ones; a violation switches
     merging off within the process.
+- **`mj=1` measured** (root413, root414, both `tt=1 hs=9 gp=0 mj=1`, 984 bytes, Q4u 8+9 opens; guardrail met: 32 opens, hangs 0,
+  faults 0, slots live 0, bad IB2 0, no crash, and no refusal or guard of the merge ever fired - joined 21/29, no-tail 19/21, all else 0;
+  screenshots normal; peaks 69.6-70.4 C):
+  - Q4 untraced (gtlbusy): **80.2 fps, GPU 9.50 ms** (root413), **84.1 fps, 9.61 ms** (root414) against the baseline's 77.8 / 78.3 fps
+    and 10.52 / 10.80 ms (root405/406). About +3-6 fps and -1 ms; gtlbusy's spread across boots is about +-0.5 ms, so the effect is real
+    but its size needs the traced boot (below).
+  - root414's first-frame median 27 ms (others 101-111): the opens after the fixgesture calibration ran differently; not explained.
+  - *The traced boot found where the time went and overturned the earlier story* (root415, `mj=1 gtr=1`, 997 bytes - gp=0 was dropped for
+    the bytes, so the second GPU ring ran (605 switch events), ring 100 % read (0 of 94 550 records never read), dumps 0.42-0.78 s):
+    - Command buffers: 147 a frame, the same as without mj: 88 with one pass (72.7 us each), 42 transfer (10 us), 7.8 with 2+ passes,
+      7.4 flush-only, 1 compute. The boundaries alone sum 4.76 ms a frame (386 a frame, mostly 16 us) - more than the whole earlier
+      "1.71 ms", which counted only boundaries under 50 us apart with both command buffers *queued*: most boundaries in an open are not
+      back-to-back in that sense; the merge removed few, because the 140 primaries of a frame are not Metal encoder opens (an open makes
+      about 20-50 encoder opens, joined 20 + no-tail 17) but the *continuations an inline render pass takes* (`hold_pass`: the encoder
+      keeps its primary, and each pass's end returns a fresh one) - the 1-pass command buffers, 88 a frame, are passes' pass-holds.
+    - So `mj=1` merges too little to be the cause of the -1 ms; that drop is unexplained (boot spread or an indirect effect), and the
+      boundary cost to attack is the pass continuations': the 88 one-pass command buffers a frame at 16 us of framing each, about
+      1.4 ms, mergeable only by not recording passes inline (their draws record straight into the encoder's primary), which costs the
+      secondary command buffer the inline path saves (`render/inline_first.rs`: about 11 us of GPU and 8 us of CPU per pass on ANV).
+    - GPU frame: 10.40 ms (the second ring ran; root413/414 without it: 9.5-9.6): SYSMEM passes 5.03, flushes (cells) 1.91,
+      autotune offscreen 1.40, between CBS 0.47, job head 0.39 / tail 0.33, compute 0.29 (the copy now named 9257011e), 22 % outside
+      any pass in the render job (0.84). Top passes: fs 7ebccf52 73-83 draws 1.47+1.17 ms, then 241ef7ce, b48b83f4, 5b50d467.
+  - *Next:* `hsq=1` A/B (its GMEM effect measured against mj=1 alone), and, before any further encoder merging, the numbers above say
+    the merge is the wrong lever for the boundaries; the pass continuations are, and they trade against inline recording.
     `Barrier::everything()` (all commands before to all after, memory) and the scheduler plans none before it: the same barrier that
     would let an encoder record into its predecessor's still-open primary.
 
