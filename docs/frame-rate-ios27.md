@@ -1125,6 +1125,22 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     `DontCareStoreIsOneOfMetals` for the Adreno 740), so the loads and stores of fs 7642b2b4's three targets are Core Animation's own
     `Load`/`Store`. And in SYSMEM a pass's load and store cost nothing themselves: its draws read and write all three targets in
     memory either way.
+- **Where the 140 primary command buffers a frame come from** (root410's ring, `cbkinds.py`; root394's commit notes; metal2vulkan's
+  `encoder.rs`, `command_buffer/submit.rs`, `command_buffer/mod.rs`; no build):
+  - *One per Metal encoder.* `EncoderCore::open` takes a new primary for every encoder (`encoder_primary`: one begun ahead from the
+    pool, else allocated) and `end` adds it to the command buffer's recordings; `commit` submits them in order. The scheduler records
+    the barriers it plans between encoders in command buffers of barriers of their own (`kept_barriers.rs`), and the batch's end goes
+    into the last encoder's command buffer where it may (`close_tail`, "folded"). No encoder records into another's command buffer.
+  - *What they hold* (root410, a frame): 83.6 with one render pass (29.8 us each, 2.49 ms), 40.4 with a transfer (10.0 us, 0.41 ms),
+    8.5 with two or more passes (628 us, 5.31 ms), 6.0 with flushes only (barriers, 2.7 us), 1.0 compute (the scanout copy, 529 us),
+    0.3 empty. Between two command buffers with passes lie none (45 a frame) or one transfer (40): a chain of small render encoders
+    with a blit encoder between many of them, barriers inside the encoders' own command buffers (their passes' dependencies), not in
+    command buffers of their own.
+  - *From few Metal command buffers.* root394's commit notes (`m2v-count=2`, the open's last 175-214 ms): 2.0-2.2 commits a frame, one
+    with no pass, the other with up to 10+. The encoders of a frame are those of one or two `MTLCommandBuffer`s.
+  - *A conservative path exists.* Past `PLANNED_BARRIERS` (2048) encoders of one command buffer, an encoder opens its primary with
+    `Barrier::everything()` (all commands before to all after, memory) and the scheduler plans none before it: the same barrier that
+    would let an encoder record into its predecessor's still-open primary.
 
 ## Faults found on the way
 
