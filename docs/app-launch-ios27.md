@@ -59,3 +59,17 @@ Findings:
   the whole window. Extension fleet (~15 AppIntents processes) spawns at cold launch.
 - Next lever (step 3, zero-build): static touchpct/framepct through the launch window, then p7cap lift - keeping
   tt=1 hs=9 gp=0 + Q4; verify across >=2 clean boots, 0 hangs/faults.
+
+## Step 3, first lever (root420/root420b same boot): framepct 100 + touchpct 100 static through the launch window
+
+- Applied at runtime (dvfs set, verified by DVFS SET lines); the boot line and CC baseline untouched. Guard: gpuf 0 hangs,
+  0 faults after every pass.
+- Cold (8): first frame 256-393 ms (median 330; baseline 256-423 median ~350), anim fps 88-113 (median 94; baseline 90-98
+  median 97). Warm (5): first frame -12-48 ms (median 16; baseline -18-91 median ~50), anim fps 87-93 (median 92; baseline
+  88-96 median 92).
+- **Verdict: neutral.** Neither the animation fps nor the <=9 ms share moved beyond boot noise (two launches hit 108-113 fps,
+  within the same spread as baseline's best). Static boost does not lift the ~90-98 fps cap -> confirms the cap is not a boost
+  or ramp issue; the frame producer (commit path on CPU) is the limiter, as the 4-13 % GPU load suggested.
+- Measurement notes: the first A/B attempt lost its capture (capture.py's 1700 s timeout expired mid-run; raised to 2900 s in
+  t-round.sh, and the capture is now started nohup+disown). t-launch.sh metric fixes: both-sides animation trim (settle at the
+  real last frame), and the act window had a stale `last` variable (fixed to w[-1]).
