@@ -797,6 +797,19 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     size cap), then let the switch take passes with memoryless attachments too; (b) a pooled per-device scratch BO for transient
     attachments: their GPU address is fixed at `vkAllocateMemory` (the lazy VMA), so a shared BO cannot simply be bound; (a) is the
     smaller change.
+- **hs=9: the full-screen unpadded passes in system memory, memoryless attachments too** (GPU userspace gpu38, seed leanlc36;
+  `turnip-houji-sysmem-unpadded.patch` now also holds hs bit 3: the switch's passes go to system memory before the memoryless check,
+  their lazily allocated attachments backed at the pass, and a freed lazily allocated BO stays mapped tu-bc seconds after its fence,
+  over 256 MiB kept the oldest first but none freed in the last 500 ms, counts in `lazy-aged.txt`; root389, root390: P4, `tt=1`,
+  `sko=4`, `m2v-lbox=1`, `hs=9`, 995 bytes, 12 untraced and 4 traced opens each): untraced **69.6 fps** (5 opens, 64.5-72.2), GPU
+  **8.31 ms** a frame, first frame 108 ms; and **73.4** (7 opens, 65.0-90.4), **7.79 ms**, 37 ms; traced 75.2 and 78.9. cpu7 a frame:
+  the compositing thread 4.1-4.5 ms, encoding 4.5-5.5, SpringBoard's main thread 0.8-2.1. Peaks 70.8 C. Lazily allocated BOs freed
+  1 and 3 a boot, all kept past their fence and released by age, none by the cap, 68 MiB kept at most: the memoryless textures live
+  long, the deferral barely ran. A screenshot with Control Center open is whole. Hangs: root389 none; root390 one in a Control Center
+  cycle (fence 22811, between the jobs of open 10, up to 22714, and open 11, from 22839), no fault, no guilty job; its stall snapshot
+  (FSR 0x400, FAR 0xedf7feffbf19, no IB found, the job pending about 1 s) matches root385's stall in the opens (hs=1) and root380's at
+  boot (tt=1 alone, FSR 0x400, FAR 0xedf7ffffbf19): a stall seen without hs too, not a fault. hs=9 does not meet the guardrail of 0
+  Control Center hangs (1 in 32 opens).
 
 ## Faults found on the way
 
