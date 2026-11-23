@@ -127,7 +127,12 @@ void houji_usb_note(const char *line) { unote("%s",line); }
 #define RX_SIZE 65536
 #define TX_SIZE 2048
 #define DMA_SIZE 0x20000
+/* houji: console "dump": raw file bytes in bulk IN transfers of up to DUMP_SIZE from this buffer, the allocation's tail after RX
+ * (already allocated and routed), so a binary file read is not hex text through the log ring. */
+#define DUMP 0x14000
+#define DUMP_SIZE 0xc000
 _Static_assert(RX+RX_SIZE<=DMA_SIZE,"USB RX exceeds DMA allocation");
+_Static_assert(RX+RX_SIZE<=DUMP && DUMP+DUMP_SIZE<=DMA_SIZE && !(DUMP&63),"USB dump buffer layout");
 _Static_assert(TX+TX_SIZE<=RX,"USB RX/TX overlap");
 _Static_assert((RX&63)==0,"USB RX cache alignment");
 static const unsigned trb_off[6]={0x1000,0x1040,0x1080,0x10c0,0x1100,0x1140};
@@ -146,6 +151,8 @@ static struct {
     bool command_overflow;
     int sleep_channel;
 } u;
+static bool _Atomic dump_active;      /* houji: console "dump" owns the IN endpoint (transmit) */
+static unsigned _Atomic dump_ready;   /* bytes staged at DUMP for the next IN transfer, 0 none */
 
 
 /* The root owner must bind before USB startup. No default RAM object exists. */
@@ -403,6 +410,7 @@ static void heartbeat_thread(void *arg,wait_result_t result __unused)
 /* Console "readfile PATH": read a whole file through the vnode layer in 1 MiB pieces, printing progress every 4 MiB, to test whether
  * the storage path can read a given file (for example the DriverKit shared cache, first read when a dext starts). Read only. */
 #include <sys/vnode.h>
+#include <libkern/crc.h>
 #include <sys/proc.h>
 #include <sys/proc_internal.h>
 #include <sys/bsdtask_info.h>
@@ -414,7 +422,8 @@ extern task_t proc_task(proc_t);
 static char readfile_path[256];
 static int _Atomic readfile_busy;
 static uint64_t hex_start,hex_length;   /* hex PATH [START [LENGTH]]: hex digits; default 0 and 2 MiB */
-static int readfile_mode;   /* 0 readfile (throughput), 1 cat (text lines, at most 48 KiB), 2 ls (directory entries), 3 hex (at most 2 MiB) */
+static int readfile_mode;   /* 0 readfile (throughput), 1 cat (text lines, at most 48 KiB), 2 ls (directory entries), 3 hex (at most 8 MiB),
+                               4 sshot, 5 dump (the bytes in bulk transfers, perf-test/capture.py saves them) */
 /* ls PATH: every entry name with its type (d directory, - file, l link, ? other). */
 static void list_directory(vnode_t vp,vfs_context_t ctx)
 {
@@ -518,6 +527,58 @@ static void readfile_thread(void *arg __unused,wait_result_t result __unused)
         }
         printf("HOUJI HEX: %s %llu bytes from %llx\n",readfile_path,at-hex_start,hex_start);
         if (data) kfree_data(data,65536);
+        vnode_close(vp,FREAD,ctx);
+        goto out;
+    }
+    if (readfile_mode==5) {
+        /* houji: "dump PATH [START [LENGTH]]" (hex numbers; default the whole file): the bytes themselves, not hex text through the log
+         * ring (hex: about 68 KB/s). A text line "HOUJI DUMP BEGIN start bytes" goes out first, the text ring then drains, and the IN
+         * endpoint carries only this (transmit): a 16-byte marker, then the bytes, in transfers of up to DUMP_SIZE straight from the
+         * DMA buffer they are read into, each started at once. Then text again, "HOUJI DUMP: ..." with the bytes' CRC-32 (zlib's).
+         * The host (perf-test/capture.py) finds the marker after the BEGIN line and saves the bytes. */
+        static const uint8_t magic[16]={0,'H','O','U','J','I','D','U','M','P',0,0xd5,0x6a,0x3c,0x91,0x7e};
+        off_t size=0;
+        struct vnode_attr va;
+        VATTR_INIT(&va);VATTR_WANTED(&va,va_data_size);
+        if (!vnode_getattr(vp,&va,ctx) && VATTR_IS_SUPPORTED(&va,va_data_size)) size=(off_t)va.va_data_size;
+        uint64_t start=hex_start,len=hex_length;
+        if (start>(uint64_t)size) start=(uint64_t)size;
+        if (len>(uint64_t)size-start) len=(uint64_t)size-start;
+        if (!u.configured || u.failed) { printf("HOUJI DUMP: console not configured\n");vnode_close(vp,FREAD,ctx);goto out; }
+        printf("HOUJI DUMP BEGIN %llx %llu\n",start,len);
+        /* the BEGIN line and everything before it sent, the endpoint idle (at most 2 s), then the endpoint is the dump's */
+        for (unsigned i=0;i<4000 && (u.cursor<houji_debug_total() || u.busy[3]);i++) delay(500);
+        os_atomic_store(&dump_active,true,release);
+        for (unsigned i=0;i<4000 && u.busy[3];i++) delay(500);
+        const uint64_t t0=mach_absolute_time();
+        uint64_t at=start;uint32_t crc=0;
+        int err=0;bool first=true;
+        while (at<start+len || first) {
+            unsigned w=0;   /* the buffer free: the previous chunk taken (dump_ready 0) and sent (not busy), at most about 4 s */
+            while ((os_atomic_load(&dump_ready,acquire) || u.busy[3]) && !u.failed && w<200000) { delay(20);w++; }
+            if (u.failed || w>=200000) { err=-1;break; }
+            uint8_t *b=(uint8_t *)(u.dma+DUMP);
+            unsigned hdr=0;
+            if (first) { memcpy(b,magic,sizeof(magic));hdr=sizeof(magic);first=false; }
+            const uint64_t left=start+len-at;
+            unsigned k=left<(uint64_t)(DUMP_SIZE-hdr)?(unsigned)left:DUMP_SIZE-hdr;
+            /* the serial stream's rule (transmit): no transfer a whole number of packets long */
+            if (k>1 && !((hdr+k)%u.mps)) k--;
+            if (k) {
+                int resid=0;
+                if (vn_rdwr(UIO_READ,vp,(char *)b+hdr,(int)k,(off_t)at,UIO_SYSSPACE,0,vfs_context_ucred(ctx),&resid,vfs_context_proc(ctx)) || resid) {
+                    err=-2;break;
+                }
+                crc=crc32(crc,b+hdr,k);
+                at+=k;
+            }
+            os_atomic_store(&dump_ready,hdr+k,release);
+            thread_wakeup(&u.sleep_channel);
+        }
+        for (unsigned i=0;i<200000 && (os_atomic_load(&dump_ready,acquire) || u.busy[3]) && !u.failed;i++) delay(20);
+        os_atomic_store(&dump_active,false,release);
+        uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time()-t0,&ns);
+        printf("HOUJI DUMP: %s %llu bytes from %llx, crc %08x, %llu ms, error %d\n",readfile_path,at-start,start,crc,ns/1000000ull,err);
         vnode_close(vp,FREAD,ctx);
         goto out;
     }
@@ -1850,14 +1911,14 @@ static void command_line(void)
     }
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
-    else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6)) {
+    else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6) || !strncmp(u.command,"dump ",5)) {
         int expected=0;thread_t th;
         if (!os_atomic_cmpxchg(&readfile_busy,expected,1,acq_rel)) printf("HOUJI READFILE: busy\n");
         else {
-            readfile_mode=u.command[0]=='c'?1:u.command[0]=='l'?2:u.command[0]=='h'?3:u.command[0]=='s'?4:0;
-            strlcpy(readfile_path,u.command+(readfile_mode==1||readfile_mode==3?4:readfile_mode==2?3:readfile_mode==4?6:9),sizeof(readfile_path));
-            hex_start=0;hex_length=2u<<20;
-            if (readfile_mode==3) {
+            readfile_mode=u.command[0]=='c'?1:u.command[0]=='l'?2:u.command[0]=='h'?3:u.command[0]=='s'?4:u.command[0]=='d'?5:0;
+            strlcpy(readfile_path,u.command+(readfile_mode==1||readfile_mode==3?4:readfile_mode==2?3:readfile_mode==4?6:readfile_mode==5?5:9),sizeof(readfile_path));
+            hex_start=0;hex_length=readfile_mode==5?~0ull:2u<<20;
+            if (readfile_mode==3 || readfile_mode==5) {
                 /* Optional trailing hex numbers after the path (paths here have no spaces): START, then LENGTH. */
                 char *space=strchr(readfile_path,' ');
                 if (space) {
@@ -1865,7 +1926,7 @@ static void command_line(void)
                     char *end=space;
                     hex_start=strtoq(space,&end,16);
                     if (*end==' ') hex_length=strtoq(end+1,NULL,16);
-                    if (hex_length>(8u<<20)) hex_length=8u<<20;
+                    if (readfile_mode==3 && hex_length>(8u<<20)) hex_length=8u<<20;
                 }
             }
             if (kernel_thread_start(readfile_thread,NULL,&th)==KERN_SUCCESS) thread_deallocate(th);
@@ -2270,6 +2331,13 @@ static void transmit(void)
             transfer(3,TX,n,T_NORMAL);u.tx_bytes+=n;
         }
         return; /* Text never interleaves with binary protocol responses. */
+    }
+    if (os_atomic_load(&dump_active,acquire)) {
+        /* houji: a dump runs (dump_thread): only its staged chunks, no text, until it ends. dump_ready is cleared only after the
+         * transfer owns the buffer (busy), so the reader never refills it under the controller. */
+        const unsigned n=os_atomic_load(&dump_ready,acquire);
+        if (n) { transfer(3,DUMP,n,T_NORMAL);u.tx_bytes+=n;os_atomic_store(&dump_ready,0u,release); }
+        return;
     }
     unsigned n=houji_debug_copy(&u.cursor,(char *)(u.dma+TX),TX_SIZE);
     /* Serial stream must have a short packet, with no padding/invented bytes. */
