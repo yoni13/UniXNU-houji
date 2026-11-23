@@ -888,6 +888,31 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     memcpy/memset 49 % (named callers `EncoderCore::end_with_replay` 69 samples, `EncoderCore::retain` 55, `made_framebuffer` 10),
     kernel traps 36 % (`Group::submit` 21, `CommandBufferShared::schedule` 10, the rest without a plugin frame), malloc 9 %, the
     plugin's own code 7 %.
+- **The faults below 4 GiB, and the encoding thread's memory churn** (sources and logs, no boot):
+  - *Where the faults are.* Every process's GPU space keeps the kernel's buffers at fixed addresses under 4 GiB (SQE 0x100000, ring
+    0x200000, memptrs 0x300000, scratch 0x302000, preemption records 0x10000000, their SMMU pages 0x20000000, the second ring and its
+    memptrs 0x30000000 / 0x30008000; `NativeAdrenoGpuContext.h`) and maps client buffers only from 0x1_0000_0000
+    (`GpuClientVaStart`). All four faults read (FSYNR0 WNR 0, FSR TF) inside those gaps: root386 0x944000 and root391 0x131e440 between
+    scratch and the records, root378 0x38d60000 and root394 0x51098740 between the second ring's memptrs and the first client buffer
+    (page-table level 2, level 1 for root394: no table there at all). No client buffer can be under 4 GiB, and each address is the low
+    word of a plausible client address (0x1_00944000 ... 0x1_51098740; client buffers seen at 0x1_0000_0000-0x1_6000_0000): a 64-bit
+    client address read with its upper word 0.
+  - *Not the kernel's or the CP's fetch.* The kernel writes each IB's address as two words (`NativeAdrenoSubmit.cpp` 605-606); its
+    32-bit casts are its own buffers under 4 GiB. At root394's hang BR stood at word 0 of the job's first IB (CP_THREAD_CONTROL,
+    events, CP_WAIT_FOR_IDLE) and BV in register setup: the read came from a GPU memory client, not the command fetch. metal2vulkan's
+    heap entries keep both words (`bind/heap.rs` 1857).
+  - *Not found from the logs:* which block read it and where the address came from. The driver reads FSR, FAR and FSYNR0 but not FSYNR1
+    (the block, as msm decodes it), and its search of the guilty job's IBs for the low word (`findFault`, `native_adreno_stall_fault`:
+    a match followed by a 0 word would be a command-stream address with no upper word) is recorded but no console command prints it;
+    the guilty job's process is not recorded. The newest process to open the GPU changed at 3 of the 5 faults (widget extensions:
+    chrono, Unity, com.apple.*; TVWidg at root394), the guilty spaces held 95, 574 and 3630 buffers: not one young process.
+  - *The encoding thread's samples, read again.* `ustack` takes the registers saved at the thread's last kernel entry, and counts a
+    runnable thread as running: its hot spots are where the thread enters the kernel, not where its user time goes. With the
+    unstripped Turnip (`build/mesa-tu-ios27`), they are first touches of fresh allocations and submissions: `vk_object_multizalloc`
+    (85 samples, the zeroing of Turnip's `tu_framebuffer`, which metal2vulkan creates for every pass, `render_target.rs`
+    `made_framebuffer`, no cache), `EncoderCore::retain` (55: a 2320-byte tuple boxed at every pass's end, `render.rs` 6365),
+    `end_with_replay` (69: a 456-byte record appended to the command buffer's state, its vector regrown), `darwin_queue_submit` (21);
+    `madvise` and the other kernel traps without a frame are the rest. Their milliseconds a frame are not in these samples.
 
 ## Faults found on the way
 
