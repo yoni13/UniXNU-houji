@@ -937,6 +937,26 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     page faults, `madvise` and submissions together are about 0.5-0.6 ms of its 5.5 ms a frame. The compositing thread 14-16 %.
   - *gtr=1 (root397)*: not measured. frames.trace grows about 10 MB a traced open under hs=9 and reached its 64 MiB cap by the third;
     the 1 MB tail read covered a fraction of an open (88 % of its GPU time "without a command buffer entry").
+- **Why the IB2 address had no upper word: a freed BO's slot zeroed after another thread reused it** (Turnip sources, no boot):
+  - `tu_cs_emit_ib` emits `entry->bo->iova + entry->offset` in 64 bits, and the Darwin VA allocator hands out nothing under va_start
+    (0x1_0000_0000). But a `tu_cs_entry` keeps a 32-bit offset computed from CPU pointers when the entry is made
+    (`tu_cs_add_entry`: `tu_cs_get_offset` = `cs->start - tu_cs_current_bo(cs)->map`, in dwords, times 4, all `uint32_t`). If the
+    stream's current `tu_bo` was zeroed at that moment (map NULL, iova 0), the entry's offset is the low word of the CPU address of the
+    commands, and its IB2 call goes to that low word with no upper word (root396: 0x39bfc000; backboardd's mappings lie at
+    0x1_xxxx_xxxx); if the slot is filled by another BO before the call is emitted, the address is that BO's iova plus the garbage
+    offset, which nothing maps (root395: 0x1_38808380). It is also the case `turnip-darwin-skip-freed-entries.patch` met at submission
+    (entries whose BO had handle 0).
+  - What zeroed a live BO: `darwin_bo_finish` put the freed BO's record in the retire ring and reaped it (into the BO cache at once
+    when its fence had passed), released the retire lock, and only then zeroed the struct (`memset(bo, 0, ...)`). A reused BO keeps
+    its kernel handle, and the BO structs are a sparse array indexed by the handle: another thread's allocation (`darwin_bo_init`
+    takes cached BOs under the same lock, and no `dma_bo_lock`) could take the BO in between and fill the same slot, which the late
+    memset then wiped under its new owner, typically the encoding thread growing a command stream. Upstream's `msm_bo_finish` zeroes
+    the struct before closing the handle. More SYSMEM passes (hs) and a contended cpu7 (preemption between the unlock and the
+    memset) widen the window.
+  - Fix (`turnip-houji-sysmem-unpadded.patch`, GPU userspace gpu39): the struct zeroed while the retire lock is still held, before any
+    allocation can take its BO. Counters in `lazy-aged.txt`: slots an allocation found live, IB2 calls to a freed BO or under 4 GiB
+    (`tu_cs_emit_ib`), with the last handle and address. Also `sbl=1` (`adrenometal-zzzzz-hs-copy4.patch`): the presenter's blit
+    instead of the scanout kernels.
 
 ## Faults found on the way
 
