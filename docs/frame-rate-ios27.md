@@ -995,6 +995,17 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     void until measured again. The P4 figures are not affected (their readouts reach before the gesture).
   - `t-bal.sh` now reads `swaps` twice (0.8 s and 1.5 s after the swipe, traced 0.9 and 1.5), merged by the scripts
     (`framebud.py` now merges duplicates too).
+- **`sbl=1`: the presenter's blit instead of the scanout kernels** (root404, gpu39, seed leanlc37, `tt=1 hs=9 gp=0 gtr=1 sbl=1`, 991
+  bytes; two 25 s holds of Control Center, then 4 traced P4 opens, 8 MiB of trace each):
+  - Faults: hangs 0, faults 0 for the whole boot, slots live 0, bad IB2 0 (the fourth clean gpu39 boot).
+  - Panel, checked by eye during both holds: correct, no wrong translucency, blocks, seams or ghosting; the screenshots alike. So the
+    alpha the scanout kernels force is not needed on houji's panel: the mixer blends the planes by their constant alpha (the DPU
+    readout).
+  - GPU: the blit is a buffer copy of 2670 regions (one a row, 4800 bytes), its ring entry 1.41 ms a copy (0.99 ms a frame at 0.7 a
+    frame); jobs of the copy alone median 1.34 ms (49 jobs) against 1.74 ms for the compute copy's (root399, 17 jobs). The frames'
+    GPU time 9.50 ms (traced 51.0-76.4 fps) against root399's 8.58 (48.9-66.8): no saving shown at the frame level. Traced opens with
+    gtr=1, one boot each, and the trace keeps a different share of the jobs' entries in each (copy-alone jobs 0.31 a frame against
+    0.10): **inconclusive**; to be decided untraced (gtlbusy) in boots alike but for sbl.
 
 ## Faults found on the way
 
