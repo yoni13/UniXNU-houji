@@ -73,7 +73,7 @@ diff --git a/shaders/scanout_convert.ll b/shaders/scanout_convert.ll
 +; pixels when its width is not a multiple of 4 one at a time): a quarter of the threads and of the memory requests.
 +;   kernel void scanout_opaque4(device const uint *src [[buffer(0)]], device uint *dst [[buffer(1)]], constant uint4 &p [[buffer(3)]],
 +;                               uint2 gid [[thread_position_in_grid]])   gid.x counts groups of four pixels
-+define void @scanout_opaque4(ptr addrspace(1) noundef readonly air-buffer-no-alias %src, ptr addrspace(1) noundef air-buffer-no-alias %dst, ptr addrspace(2) noundef readonly align 16 dereferenceable(16) air-buffer-no-alias %p, <2 x i32> noundef %gid) local_unnamed_addr #0 {
++define void @scanout_opaque4(ptr addrspace(1) noundef readonly "air-buffer-no-alias" %src, ptr addrspace(1) noundef "air-buffer-no-alias" %dst, ptr addrspace(2) noundef readonly align 16 dereferenceable(16) "air-buffer-no-alias" %p, <2 x i32> noundef %gid) local_unnamed_addr #0 {
 +entry:
 +  %w = load i32, ptr addrspace(2) %p, align 16
 +  %ph = getelementptr inbounds i32, ptr addrspace(2) %p, i64 1
