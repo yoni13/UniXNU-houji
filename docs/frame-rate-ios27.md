@@ -973,6 +973,15 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     it), other work 2.29, jobs with no ring entry at all 4.25 (every job backboardd's: entries the trace lost). The copy shows in
     about 0.45 jobs a frame of one a presented frame: at about 2.3 ms a copy, **2-2.5 ms a frame, a quarter to a third** of the GPU
     frame, not the 4.6 ms (over half) under GMEM (root379).
+- **The slot fix holds: gpu39 guardrail clean** (root400 reset on seed leanlc37; root401, root402: `tt=1 hs=9 gp=0`, P4, 979 bytes,
+  fault map armed, 16 untraced opens each):
+  - `gpuf` at the end of each boot: **hangs 0, faults 0, for the whole boot**, the boot-time hangs and faults every earlier config had
+    included; `GPUS FIND` empty; `lazy-aged.txt`: slots live at allocation 0, bad IB2 0. No backboardd or SpringBoard crash.
+  - Untraced: 66.9 fps (root401, 11 opens measured: five lost their `GESTURE AT` line, their swaps and GPU jobs are there) and 70.7
+    (root402, 16), 52.1-83.3 per open, mean 69.1 over 27; GPU 8.64 / 8.58 ms a frame (gpu38 boots: 7.78-9.13, so within the spread
+    across boots, not shown to be a cost of the fix); first frame median 107 / 112 ms; peak hottest 69.5 C (root401's first side, from
+    55 C), otherwise 56.3-67.9 C.
+  - Not yet shown: that the fix holds over more boots, or under Q4.
 
 ## Faults found on the way
 
