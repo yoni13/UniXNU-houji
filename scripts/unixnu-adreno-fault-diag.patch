@@ -1,0 +1,91 @@
+diff --git a/drivers/Adreno740/NativeAdrenoGpuContext.cpp b/drivers/Adreno740/NativeAdrenoGpuContext.cpp
+--- a/drivers/Adreno740/NativeAdrenoGpuContext.cpp
++++ b/drivers/Adreno740/NativeAdrenoGpuContext.cpp
+@@ -194,6 +194,7 @@
+     return kIOReturnSuccess;
+ }
+ extern "C" {extern volatile uint32_t native_adreno_global_fault[4];}
++extern "C" volatile uint32_t native_adreno_fault_diag[8];
+ IOReturn NativeAdrenoGpuContext::endFault(uint32_t out[4])
+ {
+     if(!out || !ready_)return kIOReturnBadArgument;
+@@ -215,6 +216,11 @@
+     if(!out[0])return kIOReturnSuccess;
+     if(io->read32(io->cookie,(size_t)offset+0x60,&out[1]) || io->read32(io->cookie,(size_t)offset+0x64,&out[2]) ||
+         io->read32(io->cookie,(size_t)offset+0x68,&out[3]))return kIOReturnIOError;
++    {   /* houji: FSYNR1, the faulting block (native_adreno_fault_diag) */
++        uint32_t syn1=0;
++        if(!io->read32(io->cookie,(size_t)offset+0x6c,&syn1))native_adreno_fault_diag[0]=syn1;
++        native_adreno_fault_diag[5]=native_adreno_fault_diag[5]+1;
++    }
+     /* CB_RESUME (0x08) bit 0 TnR: terminate the stalled transaction; the GPU sees an error response instead of waiting forever. */
+     if((out[0]&(1u<<30)) && io->write32(io->cookie,(size_t)offset+0x08,1))return kIOReturnIOError;
+     if(io->write32(io->cookie,(size_t)offset+0x58,out[0]) || io->barrier(io->cookie))return kIOReturnIOError;
+diff --git a/drivers/Adreno740/NativeAdrenoPublish.cpp b/drivers/Adreno740/NativeAdrenoPublish.cpp
+--- a/drivers/Adreno740/NativeAdrenoPublish.cpp
++++ b/drivers/Adreno740/NativeAdrenoPublish.cpp
+@@ -263,6 +263,11 @@
+ /* SMMU context faults ended before a restart (NativeAdrenoGpuContext::endFault): [0] how many, then the last one's FSR, FAR lo, FAR hi,
+  * FSYNR0. A latched FSR fails every later table operation's proof of the bank, so a restart that left it would poison the tables. */
+ extern "C" {volatile uint32_t native_adreno_recovery_fault[5];}
++/* houji: what a GPU fault names beyond FSR/FAR/FSYNR0 (console gpuf): [0] FSYNR1 of the last context fault (CB+0x6c, the block that
++ * faulted as msm's a6xx_fault_block reads it), [1] UCHE_CLIENT_PF (0x0e19) read right after it, before the restart, [2] the guilty job's
++ * pid, [3] its queue (low word), [4] its fence, [5] faults captured, [6] the pid of the job the last stall snapshot stopped on, [7] its
++ * fence. */
++extern "C" {volatile uint32_t native_adreno_fault_diag[8];}
+ /* The mappings around the last fault's address (houji console gpuf): [0..7] in the VM the GPU ran then (NativeAdrenoSubmit::tableVm),
+  * [8..15] in the guilty job's VM after the restart: below it iova, bytes, handle, kind | permissions << 8, then at or past it the same. */
+ extern "C" {volatile uint64_t native_adreno_fault_map[16];}
+@@ -290,6 +295,10 @@
+                     native_adreno_recovery_fault[0]=native_adreno_recovery_fault[0]+1;
+                     for(unsigned i=0;i<4;++i)native_adreno_recovery_fault[1+i]=fault[i];
+                     far=(uint64_t)fault[2]<<32|fault[1];
++                    {   /* houji: the UCHE client of the fault, before the restart clears it */
++                        uint32_t pf=0xffffffffu;
++                        if(g.ring && !g.ring->readRegister(0x0e19,&pf))native_adreno_fault_diag[1]=pf;
++                    }
+                     if(NativeAdrenoVm *tv=g.submit->tableVm())tv->around(far,(uint64_t *)native_adreno_fault_map);
+                 }
+                 NativeAdrenoRecovery result{};
+diff --git a/drivers/Adreno740/NativeAdrenoSubmit.cpp b/drivers/Adreno740/NativeAdrenoSubmit.cpp
+--- a/drivers/Adreno740/NativeAdrenoSubmit.cpp
++++ b/drivers/Adreno740/NativeAdrenoSubmit.cpp
+@@ -122,6 +122,7 @@
+  * faulting fetch could have offset from), [17] its distance, [18] its level, [19..20] its IB, [21] its offset, [22..29] the six words
+  * before it, it and the word after. [30] IBs read, [31] dwords read. The fault low word is searched only when its upper word is 0. */
+ extern "C" {volatile uint32_t native_adreno_stall_fault[32];}
++extern "C" volatile uint32_t native_adreno_fault_diag[8];
+ static void findFault(const NativeAdrenoVm *vm,const uint32_t *ring_words,size_t ring_count,uint32_t far_low)
+ {
+     uint32_t out[32]={};
+@@ -956,6 +957,7 @@
+             (now-asked->submit_us>UINT32_MAX?UINT32_MAX:(uint32_t)(now-asked->submit_us)):0;
+         native_adreno_stall_ring[9]=pending>UINT32_MAX?UINT32_MAX:(uint32_t)pending;
+         native_adreno_stall_ring[0]=next;
++        native_adreno_fault_diag[6]=job?(uint32_t)job->owner:0;native_adreno_fault_diag[7]=next;
+     }
+     for(uint32_t i=0;i<NativeAdrenoRingStallWords;++i)native_adreno_stall[2+i]=words[i];
+     native_adreno_stall[1]=stall_timeouts;
+@@ -1165,6 +1167,10 @@
+     }
+     const uint32_t hung=fence<last?fence+1:fence;
+     Job *guilty=(!stranded && fence<last)?find(hung):nullptr;
++    if(guilty) {   /* houji: whose job it was (console gpuf) */
++        native_adreno_fault_diag[2]=(uint32_t)guilty->owner;native_adreno_fault_diag[3]=(uint32_t)guilty->queue;
++        native_adreno_fault_diag[4]=guilty->fence;
++    }
+     out->fence=hung;
+     if(guilty) {
+         NativeAdrenoVm *vm=guilty->vm?guilty->vm:vm_;
+diff --git a/drivers/Adreno740/NativeAdrenoRing.h b/drivers/Adreno740/NativeAdrenoRing.h
+--- a/drivers/Adreno740/NativeAdrenoRing.h
++++ b/drivers/Adreno740/NativeAdrenoRing.h
+@@ -221,6 +221,8 @@
+     uint32_t completedFence() const {return completed_;}
+     uint32_t submissions() const {return submissions_;}
+     uint32_t readPointer() const {return rptr_shadow_;}
++    /* houji: one GPU register through the ring's I/O (a fault's UCHE_CLIENT_PF); nonzero when it cannot be read */
++    int readRegister(uint32_t reg,uint32_t *value) const {return io_.read32?io_.read32(io_.cookie,reg,value):-1;}
+     uint32_t writePointer() const {return next_;}
+ };
+ #endif

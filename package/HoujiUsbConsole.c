@@ -1951,6 +1951,18 @@ static void command_line(void)
         }
         printf("HOUJI GPUS: map handles next %u br1 %u bv1 %u bv2 %u\n",native_adreno_stall_mem[55],native_adreno_stall_mem[56],
                native_adreno_stall_mem[57],native_adreno_stall_mem[58]);
+        /* NativeAdrenoSubmit.cpp findFault, when FAR's upper word was 0: the stalled job's IB1s and IB2s searched for FAR's low word.
+         * [0] matches, [1] those followed by a 0 word (a 64-bit address with no upper word), [2] level (1 IB1, 2 IB2), [3..4] that IB,
+         * [5] dword offset, [6..15] the words around the match; [16] the nearest dword below within 1 MiB followed by a 0 word, [17] its
+         * distance, [18] level, [19..20] IB, [21] offset, [22..29] words around it; [30] IBs read, [31] dwords read. */
+        extern volatile uint32_t native_adreno_stall_fault[32] __attribute__((weak_import));
+        if (&native_adreno_stall_fault) {
+            volatile uint32_t *f=native_adreno_stall_fault;
+            printf("HOUJI GPUS FIND: matches %u zero-high %u level %u ib %x%08x at %u | %08x %08x %08x %08x %08x %08x %08x %08x [%08x] %08x\n",
+                   f[0],f[1],f[2],f[4],f[3],f[5],f[6],f[7],f[8],f[9],f[10],f[11],f[12],f[13],f[14],f[15]);
+            printf("HOUJI GPUS FIND: below %08x by %u level %u ib %x%08x at %u | %08x %08x %08x %08x %08x %08x [%08x] %08x | ibs %u dwords %u\n",
+                   f[16],f[17],f[18],f[20],f[19],f[21],f[22],f[23],f[24],f[25],f[26],f[27],f[28],f[29],f[30],f[31]);
+        }
     }
     else if (!strcmp(u.command,"topo")) {
         /* The scheduler's clusters (ml_get_topology_info): which CPUs a "bind" of a cluster id puts a thread on. */
@@ -2005,6 +2017,13 @@ static void command_line(void)
         /* NativeAdrenoPublish.cpp native_adreno_fault_map: around the last fault's address, the mapping that ends before it and the one at or
          * past it (iova, bytes, handle, kind | permissions << 8; kinds 0 driver, 1 system WC, 2 system cached, 3 kernel, 4 import read,
          * 5 import written, 6 import uncached), in the VM the GPU ran and in the guilty job's */
+        /* unixnu-adreno-fault-diag.patch: FSYNR1 and UCHE_CLIENT_PF of the last fault, the guilty job's pid, queue and fence, faults
+         * captured, and the pid and fence of the job the last stall snapshot stopped on */
+        extern volatile uint32_t native_adreno_fault_diag[8] __attribute__((weak_import));
+        if (&native_adreno_fault_diag)
+            printf("HOUJI GPUF DIAG: fsynr1 %x uche_client_pf %x | guilty pid %u queue %x fence %u | faults %u | stalled pid %u fence %u\n",
+                   native_adreno_fault_diag[0],native_adreno_fault_diag[1],native_adreno_fault_diag[2],native_adreno_fault_diag[3],
+                   native_adreno_fault_diag[4],native_adreno_fault_diag[5],native_adreno_fault_diag[6],native_adreno_fault_diag[7]);
         extern volatile uint64_t native_adreno_fault_map[16] __attribute__((weak_import));
         if (&native_adreno_fault_map) for (unsigned v=0;v<2;v++) {
             volatile uint64_t *m=&native_adreno_fault_map[8*v];
