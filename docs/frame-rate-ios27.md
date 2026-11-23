@@ -1057,6 +1057,20 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   - *The fix (GPU userspace, not built):* `TU_PASS_RING` 8192 to 65536 (Turnip's record array 4.5 MiB of zero-fill bss, the stamp BO
     1 MiB, made only with the trace on; 3.3 s at 20 000 a second) and, in the plugin's trace thread, a wake every 50 ms taking records
     100 ms old. frames.trace then grows by about 25 MB an open: the 64 MiB cap and `TRACE_LEN` need raising with it.
+- **The trace fix built: gpu40** (`turnip-houji-op-trace.patch`, `adrenometal-zzzzzz-trace-ring.patch`, seed leanlc38, reset root407):
+  - Turnip: `TU_PASS_RING` 65536; its record array allocated (calloc) on the first `tu_pass_trace_on()` with `SHENG_DIAG` set, so
+    without gtr=1/diag=1 nothing is allocated, stamped or emitted (the stamp BO and every stamp packet were already behind that
+    switch). Each pass record adds, in the 4-byte hole before `gpu_begin`, why it is not GMEM (`tu_pass_reason`: autotune, hs bit 3,
+    hs, can't fit, non-framebuffer barrier, empty area, tessellation, tiles, TU_DEBUG, other), its attachment count and the attachments
+    it loads and stores (bit = index, colour or depth/stencil); the plugin puts them in the type 13 record's `cpu1`.
+  - Plugin trace thread: every 50 ms (was 250; its own 16384-record buffer could overrun too), records 100 ms old (was 300), fsync
+    still every 2 s, frames.trace cap 128 MiB (was 64).
+  - `gpuops.py`: the new fields in each pass's key, the frame's render jobs (3 ms or more) broken down apart, and the ring's
+    completeness over each open (records made in the 1 s from the gesture, by CPU record time, against their sequence numbers).
+  - root408 (`tt=1 hs=9 gp=0 gtr=1`, 985 bytes, 3 traced Q4 opens, 16 MiB read each): hangs 0, faults 0, slots live 0, bad IB2 0, no
+    crash; frames.trace 11.4, 25.3, 41.5 MB after the three opens. But the trace was read 2.1-2.3 s after the gesture and the plugin's
+    writer was then 1-2 s behind (records up to +1.1 s and +0.3 s): the window's records were not in the file yet. `t-bal.sh` now
+    reads the trace after the tl ends plus `TRACE_WAIT` (3 s); `fixgesture.py` calibrates from a single open.
 
 ## Faults found on the way
 
