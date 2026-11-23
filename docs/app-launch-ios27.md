@@ -28,3 +28,22 @@ Warm (4): first frame 18-75 ms, fps 53/89/79/85, <=9 ms 46-64 %.
 Both tools agree on the values; launchan's cold/warm label needed the kill lines on the kernel clock (fixed).
 GPU stamps: 393 gtl jobs over the run; per-launch GPU analysis next.
 Guard: gpuf 0 hangs 0 faults; slots live 0, bad IB2 0 (boot end).
+
+## Corrected baseline (second run, root420 live console, metric fixed: animation = the long run of <=100 ms gaps, settle = its end)
+
+| | cold (5) | warm (4) |
+|---|---|---|
+| tap -> first app frame | 256-423 ms | -18-91 ms |
+| animation duration | 560-1083 ms | 648-790 ms |
+| animation fps | 90-98 (median 97) | 88-96 (median 92) |
+| frames <=9 ms | 47-65 % | 47-54 % |
+
+Findings:
+- The earlier warm "53-89 fps" and "0 frames over 0 ms" were metric artifacts (settle tail pollution; a leading <-100 ms stall
+  after warm's first frame ended the one-sided trim). Warm does NOT genuinely drop frames: its animation is 88-96 fps, the same
+  band as cold's 90-98.
+- The launch zoom is capped at ~90-98 fps in BOTH cases -> the limiter is common (not dyld/spawn, not a DVFS cold ramp). Median
+  gap 8 ms: frames run at 8.33 ms when they come, but ~40-50 % of gaps exceed 9 ms.
+- Cold's 256-423 ms tap->first frame is the latency problem; the earlier ps shows ~15 Settings AppIntents/Keyboard extensions
+  spawning at cold launch (ClassKit/Developer/SafetyCheck/Camera/Spotlight/Installed/TV/Passcode/Music/Keyboard, ppid 1).
+- Guard clean on every pass: gpuf 0 hangs 0 faults.
