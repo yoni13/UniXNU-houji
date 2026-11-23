@@ -753,6 +753,24 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   reads snooped. The kernel (`shaders/scanout_convert.ll`, `scanout_opaque`) copies one pixel a thread, a 4-byte load and a 4-byte
   store, alpha forced to 0xff because the display blends the scanout by its alpha (SSPP SRC_FORMAT 0x237ff); 3.2 M threads in 16x8
   groups. Core Animation cannot draw into the scanout: one firmware framebuffer, no flip.
+- **A narrow SYSMEM switch and a four-pixel scanout copy** (GPU userspace gpu37, seed leanlc35; boot argument `hs=N`,
+  `turnip-houji-sysmem-unpadded.patch`: a pass over an unpadded linear colour attachment whose render area is the framebuffer's, a
+  million pixels or more, renders in system memory, bit 0 every one, bit 1 those of more than 3 draws, tested after the lazily
+  allocated attachments' check, so a pass with a memoryless attachment stays in GMEM; bit 2 the scanout copy four pixels a thread,
+  `scanout_opaque4` in `adrenometal-zzzzz-hs-copy4.patch`; P4, `tt=1`, `sko=4`, `m2v-lbox=1`, 995 bytes; 12 untraced and 4 traced
+  opens a boot, the driver's job stamps): untraced fps and GPU ms a frame: root383 `hs=5` 45.9 (35.6-56.8), 18.96; root384 `hs=6`
+  47.3, 19.61; root385 `hs=1` 52.9 (6 opens), 17.41; root386 `hs=5` 54.4 (7 opens), 16.74; against tt=1 alone 40.2 / 19.7 (root380)
+  and 52.6-53.4 / 17.5 (root374-375): no gain beyond the boots' spread. cpu7 a frame: the compositing thread 4.7-6.9 ms, encoding
+  6.0-8.6, SpringBoard's main thread 1.2-3.7 (tum=s's 3.2-5.8 for encoding did not come with it). Peaks 70.0-72.3 C. Hangs: root383,
+  root384, root386 at boot only (fences 2384-2444, before the opens' 8964 and up; root386's two at 0x944000 between the two driver
+  buffers); root385 (`hs=1`, the old copy) one in the opens (fence 19943, after the 15th open's jobs), no fault, no guilty job. `hs=5`:
+  0 Control Center hangs or faults in 2 boots and 32 opens; a screenshot with Control Center open (root386) shows it drawn whole, no
+  tinted or translucent blocks. Why no gain (root387, `gtr=1 hs=5`, without m2v-lbox for the bytes): of the full-screen unpadded passes
+  774 rendered in system memory by the switch and 1704 stayed in GMEM, all of them with 3 colour attachments; the switch's conditions
+  leave a pass in GMEM where it has a memoryless attachment without memory (the check before it, kept on purpose) or where its render
+  area is not the framebuffer's; the ring cannot tell which. tum=s moved those passes too, backing the memoryless attachments. The
+  four-pixel copy (`43c8f163`, grid 19x334) took 0.90 ms stamped and was followed by 3.06 ms of gaps a frame (17 frames): no faster
+  than the one-pixel copy, so its limit is not the instruction count.
 
 ## Faults found on the way
 
