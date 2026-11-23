@@ -957,6 +957,22 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     allocation can take its BO. Counters in `lazy-aged.txt`: slots an allocation found live, IB2 calls to a freed BO or under 4 GiB
     (`tu_cs_emit_ib`), with the last handle and address. Also `sbl=1` (`adrenometal-zzzzz-hs-copy4.patch`): the presenter's blit
     instead of the scanout kernels.
+- **The first frame off cpu7, the copy's share, and the race once more** (root398, root399, GPU userspace gpu38, seed leanlc36,
+  `tt=1 hs=9 gp=0`, 979 / 985 bytes; gpu39 with the fix built, seed leanlc37, not booted yet):
+  - *Faults, before the fix.* root398: one in an open (fence 28269, Q4 side), FAR 0x1_50d74f80, guilty backboardd. root399: two at
+    boot, guilty **pid 141**, the last FAR 0x663f000: its IB1 holds `70bf8003 06de1000 00000001 00000121` (an IB2 call to
+    0x1_06de1000) followed by `70bf8003 0663f000 00000000`, two entries of one stream, the second with no upper word: the slot race
+    in another process.
+  - *Q4's late first frame.* Untraced, the compositing thread on cpu5 (Q4) or on cpu3 (Q3): first frames 248-441 ms (Q3 336-369),
+    P4 28-115 ms; so not cpu5's domain. Its user stacks over the first 500 ms of each open (`ustack`, read from a kernel thread):
+    running or runnable in 138-143 of 250 samples in Q4, 143-147 in Q3, 135-141 in P4, the rest blocked in its run loop
+    (`CA::WindowServer::IOMFBServer::thread_body`, `CFRunLoopServiceMachPort`) alike: it is neither starved of its CPU nor blocked
+    more than on cpu7. Not yet explained.
+  - *The scanout copy's GPU time* (`copyshare.py`, root399's four traced opens read 8 MiB each, 166 frames, 8.58 ms a frame): jobs of
+    the copy alone 0.30 ms a frame, jobs with the copy and other work 0.75 from the copy's start to the job's end (and 1.00 before
+    it), other work 2.29, jobs with no ring entry at all 4.25 (every job backboardd's: entries the trace lost). The copy shows in
+    about 0.45 jobs a frame of one a presented frame: at about 2.3 ms a copy, **2-2.5 ms a frame, a quarter to a third** of the GPU
+    frame, not the 4.6 ms (over half) under GMEM (root379).
 
 ## Faults found on the way
 
