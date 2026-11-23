@@ -810,6 +810,25 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   (FSR 0x400, FAR 0xedf7feffbf19, no IB found, the job pending about 1 s) matches root385's stall in the opens (hs=1) and root380's at
   boot (tt=1 alone, FSR 0x400, FAR 0xedf7ffffbf19): a stall seen without hs too, not a fault. hs=9 does not meet the guardrail of 0
   Control Center hangs (1 in 32 opens).
+- **The FSR 0x400 stall: a ring switch the CP never finished** (sources and logs, no boot). The stall snapshot's `ring` words
+  (`native_adreno_stall_ring`, `NativeAdrenoSubmit.cpp` `snapshot`): root380 (tt=1, boot) next 1617, waited 1621 on ring 1, CP on
+  ring 1, a switch in flight, unfinished 2 on ring 0 and 5 on ring 1, waited 818 ms; root385 (hs=1) 19942/19943 on ring 0, CP on ring 1,
+  in flight, 5 and 1, 506 ms; root390 (hs=9) 22810/22811 on ring 0, CP on ring 1, in flight, 5 and 0, 1014 ms. FSR 0x400 is the SMMU
+  context's FSR.FORMAT (AArch64 descriptors), no fault bit: FAR and FSYNR0 are stale; no IB was found under either read pointer.
+  - *Not a lost interrupt.* A switch completes when CP_CONTEXT_SWITCH_CNTL reads with STOP (bit 0) clear, in the interrupt or in any
+    `driveSwitch` (every submission, retirement and every turn of a wait, `waitOnRing`), so a lost CP_SW interrupt delays it by at
+    most a turn; for a second STOP stayed set (or the register could not be read). IFPC is off (`NativeAdrenoService.cpp`), so the
+    write was not dropped by a power collapse. *Not a job's hang either:* after `PreemptSwitchTimeoutUs` (1 s) `driveSwitch` gives
+    the second ring up (`markPreemptDead(2)`), `hangCheck` finds a ring-0 job on a CP left on ring 1 and calls it stranded: a restart
+    with no guilty job and the jobs replayed on ring 0 (root390: hangs 1, guilty 0, replayed 4). The second ring stays given up for
+    the rest of the boot (`preempt_dead_` is never cleared), so a boot has at most one such stall.
+  - *Not decided from the logs:* whether the CP sat in ring-1 work it would not yield (root380: 5 ring-1 jobs left with the CP on
+    ring 1) or idle on an empty ring 1 (root390: none left). The words that tell (the switch log `native_adreno_switch_log`: control
+    word, RBBM_STATUS, CP_RB_RPTR/WPTR, both records; the timeout rows `native_adreno_switch_timeout`; the raw stall words) are
+    recorded but no console command prints them, nor `gtl dump` a job's ring (`native_adreno_tl` slot 6).
+  - *hs.* GTL dumps: hs runs 74-85 jobs/s against 40-58 (tt=1, hs=5/6), the render server's GPU timeline 205-208 idle gaps over 1 ms
+    an open against 143-169; jobs of other processes 0.4-4.6/s, not following hs. A switch to ring 1 needs ring 0 idle, and each
+    one needs a switch back: more gaps can mean more switches, but the count is not in the logs.
 
 ## Faults found on the way
 
