@@ -982,6 +982,19 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     across boots, not shown to be a cost of the fix); first frame median 107 / 112 ms; peak hottest 69.5 C (root401's first side, from
     55 C), otherwise 56.3-67.9 C.
   - Not yet shown: that the fix holds over more boots, or under Q4.
+- **Q4's "late first frame" was the swap readout, not the open** (root403, gpu39, seed leanlc37, `tt=1 hs=9 gp=0`, 979 bytes; sides
+  Q4u, Q4n (a tl of SpringBoard's main thread alone from 0.2 s before the swipe), Q4w (only the 0.2 s wait), traced Q4, P4u):
+  - Faults: hangs 0, faults 0 for the whole boot, slots live 0, bad IB2 0: the third clean gpu39 boot, the first with Q4.
+  - First swap after the gesture: Q4u 122, 221-386 ms; Q4n 153, 369-464; Q4w 318-412; traced Q4 16-151; P4u 35-114. Neither the
+    wait nor a tl brought Q4's down.
+  - But backboardd's GPU jobs (gtl, submit times on the gesture's clock) start at about +110 ms in Q4 as in P4, and go on every 8 ms,
+    long before the "first frame". Console `swaps` keeps the newest 128 swaps, read 1.56 s after the swipe (1.37 s traced): in P4 the
+    oldest kept lies 0.4-1.8 s before the gesture, in **22 of 23 untraced Q4 opens and 3 of 4 traced ones it lies after it**: the
+    "first frame" was the oldest swap kept, and the Open fps window (0.8 s from it) started late in the animation.
+  - So every Q4 figure so far (traced 92.5-97.6, untraced 97.9 fps, root395/396/398) measured a later part of the open, not the open:
+    void until measured again. The P4 figures are not affected (their readouts reach before the gesture).
+  - `t-bal.sh` now reads `swaps` twice (0.8 s and 1.5 s after the swipe, traced 0.9 and 1.5), merged by the scripts
+    (`framebud.py` now merges duplicates too).
 
 ## Faults found on the way
 
