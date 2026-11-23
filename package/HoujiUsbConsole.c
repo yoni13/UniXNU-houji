@@ -1279,8 +1279,10 @@ static void gtl_command(const char *a)
         printf("HOUJI GTL: %u of %u jobs, mach now %llu ns\n",n,total,(unsigned long long)now_ns);
         for (uint32_t k=total-n;k<total;k++) {
             volatile uint64_t *e=native_adreno_tl[k&(cap-1)];
-            printf("HOUJI GTL %u %llu %llu %llu %llu %u %u\n",(uint32_t)e[0],(unsigned long long)e[2],(unsigned long long)e[3],
-                   (unsigned long long)e[1],(unsigned long long)e[5],(uint32_t)(e[4]>>32),(uint32_t)(e[0]>>58));
+            /* then slot 6: the job's ring, its priority + 1, the ring the CP ran at its submission, a switch in flight then, its replays */
+            printf("HOUJI GTL %u %llu %llu %llu %llu %u %u r%u p%u l%u f%u x%u\n",(uint32_t)e[0],(unsigned long long)e[2],(unsigned long long)e[3],
+                   (unsigned long long)e[1],(unsigned long long)e[5],(uint32_t)(e[4]>>32),(uint32_t)(e[0]>>58),(uint32_t)(e[6]&15),
+                   (uint32_t)((e[6]>>4)&15),(uint32_t)((e[6]>>16)&15),(uint32_t)((e[6]>>20)&15),(uint32_t)((e[6]>>24)&255));
             delay(800);
         }
         printf("HOUJI GTL: end\n");return;
@@ -2007,6 +2009,46 @@ static void command_line(void)
         if (&native_adreno_fault_map) for (unsigned v=0;v<2;v++) {
             volatile uint64_t *m=&native_adreno_fault_map[8*v];
             printf("HOUJI GPUF MAP %s: below %llx +%llx h%llu k%llx | at %llx +%llx h%llu k%llx\n",v?"guilty":"ran",m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7]);
+        }
+    }
+    else if (!strcmp(u.command,"gpup")) {
+        /* The switch between the GPU's two rings (NativeAdrenoPublish.cpp native_adreno_preempt_stats: triggers, completed, skipped, faulted,
+         * disjoint skips, write pointer restores, the last switch's us, the ring the CP runs, a switch in flight, CP_CONTEXT_SWITCH_CNTL now,
+         * why the second ring was given up (0 not; 1 the trigger refused, 2 a switch did not finish, 3 a job there waited too long, 4 a hang
+         * in it), restarts that replayed its jobs); the switches that timed out (NativeAdrenoSubmit.cpp native_adreno_switch_timeout: the
+         * stall words, CP_CONTEXT_SWITCH_CNTL then, 0x80000000 | ring left << 8 | ring asked, the CP's progress words); the newest switch
+         * events (NativeAdrenoPreempt.cpp native_adreno_switch_log: number, opened and closed us, from | to << 8 | outcome << 16 (1 done,
+         * 2 timed out, 3 trigger failed), CNTL after the trigger and at the close, RBBM_STATUS, RBBM_INT_0_STATUS, CP_HW_FAULT,
+         * CP_RB_RPTR | CP_RB_WPTR << 16, both rings' records (rptr, wptr, errno, info) at the trigger and at the close, the progress words
+         * of a timeout): whether a switch that never finished met a CP idle, in ring work, or faulted. Off (one ring): "no second ring". */
+        extern bool native_adreno_preempt_stats(uint32_t *out) __attribute__((weak_import));
+        extern volatile uint32_t native_adreno_switch_timeout[2][30] __attribute__((weak_import));
+        extern volatile uint32_t native_adreno_switch_timeouts __attribute__((weak_import));
+        extern volatile uint32_t native_adreno_switch_log[16][34] __attribute__((weak_import));
+        extern volatile uint32_t native_adreno_switch_count __attribute__((weak_import));
+        uint32_t s[26]={0};
+        if (!&native_adreno_preempt_stats || !native_adreno_preempt_stats(s)) printf("HOUJI GPUP: no second ring (or the driver's lock busy)\n");
+        else printf("HOUJI GPUP: triggers %u completed %u skipped %u faulted %u disjoint %u wptr %u last us %u | loaded %u flight %u cntl %x "
+                    "dead %u rescues %u | rec0 %x %x %x %x rec1 %x %x %x %x\n",s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7],s[8],s[9],s[16],s[17],
+                    s[18],s[19],s[20],s[21],s[22],s[23],s[24],s[25]);
+        if (&native_adreno_switch_timeouts) {
+            const uint32_t n=native_adreno_switch_timeouts;
+            printf("HOUJI GPUP: timeouts %u\n",n);
+            for (uint32_t t=0;t<n && t<2;t++) {
+                volatile uint32_t *r=native_adreno_switch_timeout[t];char line[300];unsigned at=0;
+                for (unsigned i=0;i<30 && at+10<sizeof line;i++) at+=(unsigned)snprintf(line+at,sizeof line-at," %x",r[i]);
+                printf("HOUJI GPUP T%u:%s\n",t,line);
+            }
+        }
+        if (&native_adreno_switch_count) {
+            const uint32_t n=native_adreno_switch_count;
+            printf("HOUJI GPUP: switch events %u\n",n);
+            for (uint32_t k=n>16?n-16:0;k<n;k++) {
+                volatile uint32_t *r=native_adreno_switch_log[k&15];char line[340];unsigned at=0;
+                for (unsigned i=5;i<34 && at+10<sizeof line;i++) at+=(unsigned)snprintf(line+at,sizeof line-at," %x",r[i]);
+                printf("HOUJI GPUP E%u %llu %llu:%s\n",r[0],((unsigned long long)r[2]<<32)|r[1],((unsigned long long)r[4]<<32)|r[3],line);
+                delay(800);
+            }
         }
     }
     else if (!strncmp(u.command,"m2v fast ",9)) {
