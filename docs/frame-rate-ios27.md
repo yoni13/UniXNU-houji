@@ -679,6 +679,24 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   16 opens, 998 bytes of command line): GPU 17.5-20.7 ms a frame (86-95 %) against 16.3-18.3; the encoding thread 7.2-9.4 ms against
   5.9-7.4; traced 47.9 fps (8, 45.3-52.8), untraced 43.4 (5, 38.5-48.7) against 52.6-53.4. 0 GPU hangs or faults the whole boot. Slower:
   stays off.
+- **Where the GPU's time outside render passes goes: a code and data audit** (no boot; root370, root372-375):
+  - *Not ring overflow.* Within every run of passes read, Turnip's pass numbers are contiguous (up to 526, no duplicates, 1-3 single
+    gaps), and Turnip notes every render pass at one place (`tu_cmd_render`). About 13 render passes a frame is real.
+  - *No missing Metal passes.* The "38 a frame" was an estimate: a census window is five open+close cycles with no frame count.
+    Per cycle metal2vulkan made about 5,200 passes (root354) and Turnip about 6,500 (root373). A Metal pass is one or more Vulkan
+    render pass instances, never none (`render.rs`); the carry (`render/carried.rs`) and inline-first (`render/inline_first.rs`)
+    paths reuse a bind state and record inline, and merge nothing.
+  - *The census render-mode counter (CNSM) reads 0 because of its gate.* `tu_render_mode_counts` is counted only under
+    `tu_pass_trace_on()` (SHENG_DIAG).
+  - *Where the outside time sits in a job* (root373, 248 jobs of 3 ms or more with passes, tt=0): before the first pass 2.26 ms mean
+    (median 1.75), between passes 2.40 (0.72), after the last 2.76 (2.52). Stamps bracket the whole tile loop, loads and stores included.
+  - *The jobs with no render pass.* The bridge's scanout presenter (`GpuScanoutPresenter.h`) copies each frame (1200x2670 BGRX,
+    12.8 MB) from the drawable into the scanout buffer with a compute dispatch (`scanout_opaque`), its own command buffer: the
+    0.5-0.6 ms passless job of every frame, 0.50 ms a frame with tt=0 and tt=1 alike.
+  - *GPU ms a frame by job length*, tt=0 (root372, 161 frames) vs tt=1 (root374-375, 405 frames): under 0.8 ms 0.50 / 0.50, 0.8-2 ms
+    0.85 / 0.78, 2-6 ms 0.64 / 1.61, 6-10 ms 7.23 / 4.75, 10 ms and over 13.30 / 9.81; 22.5 / 17.5 in all. The shadow copies were inside
+    Core Animation's big jobs. With tt=1 about 14.5 ms a frame is in jobs over 6 ms, of four passes (about 1.5 ms) each: about
+    10-12 ms a frame outside render passes is still unattributed (compute dispatches, transfers, barriers and flushes).
 
 ## Faults found on the way
 
