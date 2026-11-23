@@ -858,6 +858,36 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     limit is not instructions: a blit's gain is unmeasured and may be small, heat nearly none. The driver's direct scanout
     (`NativeLegacyDisplay.cpp`, `dpu-scanout=2`: the pipes fetch the compositor's surface, no copy) needs `native_ufs_dpu_map`, a display
     SMMU window houji does not have (its constants are another panel's), and the same alpha change first.
+- **Placement, cpu7's clock, the display pipes and the encoding thread's profile** (root393, root394; kernel with the console's `dpu`
+  and the boot argument aliases `gp=N` (gpu-preempt) and `htc=N` (houji_thermal_trigger_c); P4/P7/PC/C7 sides, 3 untraced and 3
+  traced opens each, `tt=1 hs=9 gp=0`, `tu-bk=64` and `m2v-lbox=1` kept: 979 bytes; root394 adds `m2v-count=2`, 991 bytes, the
+  bridge's per-commit notes after each traced open and three opens with the encoding thread's user stacks sampled):
+  - *Display (console `dpu`, read only, both boots alike, no fault).* MDSS 0xa0000000 (DPU 10). CTL0 alone active (INTF_ACTIVE 0x2),
+    fetching VIG0 and VIG1 (FETCH_PIPE_ACTIVE 0x30000), staged on LM0 and LM1 (CTL_LAYER 0x100002d: both pipes at mix value 5, border
+    out). Each pipe 600x2670 (VIG1 from x 600), SRC0_ADDR 0xfc400000, the framebuffer's physical address (a 32-bit fetch, no
+    translation), stride 4800, **SRC_FORMAT 0x237ff** (ARGB8888 with bit 8, alpha enable), UNPACK 0x03020001, OP_MODE 0x80000000.
+    Mixers: every blend stage read (0-3) has OP 0x400 and alpha word 0x00ff0000: the foreground's alpha is its constant 0xff (FG_CONST,
+    the background the inverse), as upstream programs an opaque plane, so the mixer does not use the pixels' alpha. If the pipes'
+    stage (mix 5, upstream's DPU_STAGE_3, base 0x68) is that one, forcing alpha in the copy is not needed on this panel and the
+    presenter's blit would show the same image; not seen on the panel yet (the console's screenshot reads memory, not the mixer).
+    Direct scanout of the compositor's surfaces (above 0x8C0000000) needs a display SMMU translation: the pipes fetch 32-bit addresses.
+  - *Safety.* root393: 0 hangs, 0 faults. root394: one hang with an SMMU fault (FSR 0x80000002, FAR 0x51098740, between driver
+    buffers at 0x30008000 and 0x100000000, a guilty job) at fence 27622, between the second and third traced P4 opens (480-509 s): the
+    driver-buffer-hole fault of the boot-time hangs (root378, root386, root391), here inside a Control Center cycle.
+  - *Placement (root393, traced, ms a frame on cpu7 running / waiting).* P4: compositing 4.5-4.9 / 6.2-6.5, encoding 6.1-6.2 / 3.7-4.5,
+    SpringBoard 0.7-1.1 / 13.0-13.2, 68.8-72.1 fps. P7 (cpu7's cap 3053 MHz): cpu7 averaged 2853-2870 MHz, encoding 6.2-6.4,
+    67.8-70.4 fps: no gain (P7u peak 70.6 C). PC (SpringBoard on cpu3): SpringBoard runs 5.4-6.6 ms there (6x), waits 0; compositing
+    still waits 5.3-6.9, encoding 3.5-4.2; 70.7-78.4 fps. C7: 73.3-78.9 fps, encoding waits 2.5-3.5. Untraced (2-3 opens a side):
+    P4 64.6, P7 68.9, PC 63.7, C7 77.0 fps; GPU 8.5-9.4 ms a frame. root394 (counting on) was slower in every side (traced 55-72 fps).
+    With SpringBoard gone from cpu7 the compositing and encoding threads still queue on each other (about 10 ms of running a frame).
+  - *tu-bk=64 back:* P4 encoding 6.1-6.2 ms (root393), not the 4.5-5.5 of root389-390: the rise was not tu-bk's absence.
+  - *The largest command buffer's share* (`cb-split.py`; the 512-row note ring kept only an open's last ~200 commits): in the 12 heavy
+    frames captured (P4, P7: 4.6-17.8 ms of encoding a frame) 55-64 % work-weighted, as under GMEM (62 %, root317).
+  - *The encoding thread's samples* (3 x 1.5 s, 2 ms; `encprof.py` with gpu38's link map, `dsc-sym.py`; the console prints the top 24
+    stacks, 850 of 1635 runnable samples): 44.5 % woken and waiting for a CPU in `pthread_cond_wait` (runnable); of the rest
+    memcpy/memset 49 % (named callers `EncoderCore::end_with_replay` 69 samples, `EncoderCore::retain` 55, `made_framebuffer` 10),
+    kernel traps 36 % (`Group::submit` 21, `CommandBufferShared::schedule` 10, the rest without a plugin frame), malloc 9 %, the
+    plugin's own code 7 %.
 
 ## Faults found on the way
 
