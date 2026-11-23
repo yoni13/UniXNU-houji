@@ -1068,9 +1068,12 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   - `gpuops.py`: the new fields in each pass's key, the frame's render jobs (3 ms or more) broken down apart, and the ring's
     completeness over each open (records made in the 1 s from the gesture, by CPU record time, against their sequence numbers).
   - root408 (`tt=1 hs=9 gp=0 gtr=1`, 985 bytes, 3 traced Q4 opens, 16 MiB read each): hangs 0, faults 0, slots live 0, bad IB2 0, no
-    crash; frames.trace 11.4, 25.3, 41.5 MB after the three opens. But the trace was read 2.1-2.3 s after the gesture and the plugin's
-    writer was then 1-2 s behind (records up to +1.1 s and +0.3 s): the window's records were not in the file yet. `t-bal.sh` now
-    reads the trace after the tl ends plus `TRACE_WAIT` (3 s); `fixgesture.py` calibrates from a single open.
+    crash; frames.trace 11.4, 25.3, 41.5 MB after the three opens. No breakdown: the console's `hex` reads at most 8 MiB at once
+    (`HoujiUsbConsole.c`), so the 16 MiB asked for from the file's end minus 16 MiB came back as its older 8 MiB, which ends before
+    the open's window (records up to +1.1 s and +0.3 s after the gesture). First read as the plugin's writer lagging; root409 (3
+    traced Q4 opens, same build, read later, hangs 0 and faults 0) showed the 8 MiB cap (`8388608 bytes from f7faa0`), and was
+    stopped. `t-bal.sh` now reads a longer `TRACE_LEN` in 8 MiB pieces, after the tl ends plus `TRACE_WAIT` seconds;
+    `fixgesture.py` calibrates from a single open.
 
 ## Faults found on the way
 
