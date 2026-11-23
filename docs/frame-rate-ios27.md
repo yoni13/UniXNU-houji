@@ -1023,6 +1023,40 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   - GPU time across gpu39 boots, P4: 8.58-8.64 (root401/402) and 9.35-9.48 here, against 7.71-7.95 (gpu38, root389-392), but 8.57
     in gpu38's root398 too: not shown to be a cost of the fix; to watch.
   - Peak hottest 70.2 C once (root406's second P4 side, from 55 C), otherwise 61.0-65.7 C.
+- **Lost gesture lines, Q4 the reference, and a log audit of the GPU frame** (no boot; logs root389-406, Turnip, plugin and Adreno740
+  sources):
+  - *Gesture lines.* The kernel console drops lines of every kind: GESTURE AT in 6 of 16 opens of root405 and of root406, some swipe
+    echoes too, never all of a gesture's. `fixgesture.py` (run by `t-bal.sh` at the end) infers a lost one from the open's swipe echo,
+    else its GESTURE TIMING line, plus the boot's median offset between that line and GESTURE AT (-25 to +33 ms over root405/406),
+    marked `inferred`: counted for fps and GPU time, left out of first frames (`openfps.py`, `gtlbusy.py`). root405/406 with all 32
+    opens: P4 65.8 / 72.3 fps, Q4 77.8 / 78.3; GPU (gtlbusy) P4 9.42 / 8.50, Q4 10.52 / 10.80 ms.
+  - *Reference placement Q4* (`t-bal.sh` default sides `Q4u P4u Q4u P4u`).
+  - *No GPU clock change.* GPU DCVS over the 10 s intervals with opens, above the 366 MHz floor: 75-83 % at 903 MHz, mean 865-880
+    MHz in every boot from root389 to root406 (root393 819). Jobs a frame 3.0-3.65 throughout.
+  - *The P4 "rise" from 7.7-7.95 to 9.4 ms was the measure.* `gtlbusy.py` takes the busiest 650 ms anywhere in the dumped jobs over
+    fps x 0.65 frames; with a fixed window (GPU busy, the union of stamped jobs, 0.1-0.7 s after the first swap, over the swaps in it)
+    P4's medians are 7.92-9.73 ms on gpu38 (root389-398) and 8.22-8.76 on gpu39 (root401-406): no shift. Q4 10.24 / 11.25 (root405/406).
+  - *Q4's extra GPU time is the frame's render job.* Jobs of 3 ms or more: P4 0.81-0.86 a swap, median 6.7-7.0 ms, 5.7-6.2 ms a
+    frame; Q4 0.98-1.00 a swap, median 7.3-8.1 ms, 7.5-7.6 ms a frame. Jobs under 3 ms: 2.4-2.9 ms a frame (P4) and 2.9-3.6 (Q4). So
+    about one P4 swap in six has no render job of its own (not explained: a frame presented again?), and in Q4 each render is about
+    10 % longer: under Q4 the render job is three quarters of the GPU frame.
+  - *The kernel's framing costs nothing measurable.* Every job's prologue (`NativeAdrenoRing::emitPrologue`): BR thread,
+    CACHE_FLUSH7, CACHE_INVALIDATE7, CP_WAIT_FOR_IDLE, start stamp, both threads, IFPC off; its fence (`emitFramedFence`): end stamp,
+    CCU depth and colour invalidates, BV timestamp (CACHE_CLEAN), BR wait for it, ring timestamp (CACHE_CLEAN, IRQ). The stamps lie
+    inside it, so the framing falls between one job's end and the next's start: for jobs submitted before the previous one ended,
+    that gap is 2 us (median and p90, every boot). Coalescing jobs would save nothing; the "job head" of `gpuops.py` (0.8-1.1 ms a
+    frame) is the time to the job's first traced command buffer, not the kernel's.
+  - *Why gtr=1 jobs had no command buffer entry: Turnip's pass ring overruns.* Every entry (render pass, dispatch, transfer, flush,
+    primary command buffer) takes a sequence number when recorded into an 8192-slot ring (`TU_PASS_RING`, records and GPU stamp
+    slots by `seq % 8192`); the plugin's trace thread (`NativeBridgeMetalFrontend.mm`) wakes every 250 ms and takes the records
+    made 300 ms or more before. An open makes about 20 000 records a second (40 % cache flushes, 26 % primary command buffers), so the
+    ring holds 0.4 s against a lag of up to 0.55 s: inside root399's and root404's opens, gaps of 2 000-6 000 sequence numbers in
+    100-350 ms (root399 open 1: about 15 000 of 18 400 lost). Not a path without stamps: every primary command buffer gets one, and
+    the records read with no GPU stamp (not run yet) are only 4-5 %, mostly flushes. The losses also lengthen `gpuops.py`'s job heads
+    and tails.
+  - *The fix (GPU userspace, not built):* `TU_PASS_RING` 8192 to 65536 (Turnip's record array 4.5 MiB of zero-fill bss, the stamp BO
+    1 MiB, made only with the trace on; 3.3 s at 20 000 a second) and, in the plugin's trace thread, a wake every 50 ms taking records
+    100 ms old. frames.trace then grows by about 25 MB an open: the 64 MiB cap and `TRACE_LEN` need raising with it.
 
 ## Faults found on the way
 
