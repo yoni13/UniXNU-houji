@@ -47,3 +47,15 @@ Findings:
 - Cold's 256-423 ms tap->first frame is the latency problem; the earlier ps shows ~15 Settings AppIntents/Keyboard extensions
   spawning at cold launch (ClassKit/Developer/SafetyCheck/Camera/Spotlight/Installed/TV/Passcode/Music/Keyboard, ppid 1).
 - Guard clean on every pass: gpuf 0 hangs 0 faults.
+
+## Step-2 breakdown (root420 profiled rounds, + gtl dumps + threads + dvfs)
+
+- Clocks: at tap the touch floor lifts d0 1132->2035 MHz (its cap; skin 28.5 C lifts stock caps); d1/d2 hold 2630. Not clock-starved.
+- Fresh Preferences: main thread 1104-1122 ms CPU (210 ms sys) in its first ~1 s; 9 small helper threads 10-92 ms.
+- GPU during the launch animation: 600 jobs dumped per launch window, GPU busy 4-13 %, median job 0.53-0.55 ms.
+  **The zoom is NOT GPU-bound** -> the ~90-98 fps cap common to cold and warm is a CPU-side frame-production limit
+  (mid-animation commits arriving late: 47-65 % of gaps <=9 ms, median 8 ms).
+- Cold first frame 256-423 ms: SpringBoard's zoom starts only after Settings' spawn+scene work; the app's main thread is busy
+  the whole window. Extension fleet (~15 AppIntents processes) spawns at cold launch.
+- Next lever (step 3, zero-build): static touchpct/framepct through the launch window, then p7cap lift - keeping
+  tt=1 hs=9 gp=0 + Q4; verify across >=2 clean boots, 0 hangs/faults.
