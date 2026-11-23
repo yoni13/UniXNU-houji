@@ -1397,6 +1397,20 @@ static void posters_thread(void *arg __unused,wait_result_t result __unused)
         proc_iterate(PROC_ALLPROCLIST,posters_proc,NULL,NULL,NULL);
     }
 }
+/* "killpid PID": SIGKILL to one process (its name printed), for the launch benchmarks: the benchmark's cold launch needs the app
+ * gone, and iOS keeps a closed app's process resident (Preferences survives every open/close, root418's probe). The posters' SIGKILL
+ * (above) is the precedent. Refused for pid 1 and the console's own process. */
+static void killpid_command(const char *args)
+{
+    int pid=(int)strtoq(args,NULL,10);
+    if (pid<=1) { printf("HOUJI KILLPID: pid %d refused\n",pid); return; }
+    proc_t p=proc_find(pid);
+    if (p==PROC_NULL) { printf("HOUJI KILLPID: %d not found\n",pid); return; }
+    printf("HOUJI KILLPID: killing %s[%d]\n",proc_best_name(p),proc_pid(p));
+    psignal(p,SIGKILL);
+    /* The reference is proc_find's; let it go once the signal is queued. */
+    proc_rele(p);
+}
 static void posters_arm(void)
 {
     unsigned v=0;thread_t t;
@@ -2238,6 +2252,7 @@ static void command_line(void)
         if (kernel_thread_start(key_thread,&key_index,&t)==KERN_SUCCESS) thread_deallocate(t);
     }
     else if (!strncmp(u.command,"prof ",5)) { extern void houji_prof_command(const char *); houji_prof_command(u.command+5); }
+    else if (!strncmp(u.command,"killpid ",8)) killpid_command(u.command+8);
     else if (!strncmp(u.command,"camera ",7)) { extern void houji_camera_command(const char *); houji_camera_command(u.command+7); }
     else if (!strncmp(u.command,"screen ",7)) { extern void houji_screen_command(const char *); houji_screen_command(u.command+7); }
     else if (!strncmp(u.command,"type ",5)) { type_command(u.command+5); bzero(u.command,sizeof(u.command)); }
