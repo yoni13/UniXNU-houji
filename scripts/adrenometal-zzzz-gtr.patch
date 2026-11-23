@@ -1,0 +1,13 @@
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -362,7 +362,9 @@
+         else unsetenv("NATIVE_METAL_DRAIN_WAKE");
+         // diag=1 turns on every diagnostic of the GPU stack in this process: the frontend's frame trace, Turnip's pass stamps and
+         // submission ring, the runtime's stage ring, and in the render server the status and telemetry lines. Without it none of them runs.
+-        if (bootArgSet("diag=1") || bootArgSet("gpu-trace=1")) setenv("SHENG_DIAG", "1", 1);
++        // houji: gtr=1 (6 bytes of the 1000-byte command line) is the GPU stack's own trace alone: SHENG_DIAG (Turnip's pass and
++        // operation ring, stamped, and the frontend's frames.trace), without the kernel driver's diagnostics (diag=1) or SHENG_GPU_TRACE.
++        if (bootArgSet("diag=1") || bootArgSet("gpu-trace=1") || bootArgSet("gtr=1")) setenv("SHENG_DIAG", "1", 1);
+         else unsetenv("SHENG_DIAG");
+         if (bootArgSet("gpu-trace=1")) setenv("SHENG_GPU_TRACE", "1", 1);
+         else unsetenv("SHENG_GPU_TRACE");
