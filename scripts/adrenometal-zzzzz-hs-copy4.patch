@@ -18,18 +18,22 @@ diff --git a/GpuScanoutPresenter.h b/GpuScanoutPresenter.h
          tables_[0] = nil; tables_[1] = nil;
          for (Source &s : sources_) s = Source{};
          if (FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/copy-errors.txt", "a")) {
-@@ -115,6 +116,23 @@
+@@ -115,11 +116,31 @@
          const uint32_t rows = gHalfRows.load(std::memory_order_relaxed) ? frame.height / 2 : frame.height;
          id<MTLBuffer> source = sourceFor(frame);
          if (!source) return kNoResource;
+-        if (!(frame.stride & 3) && !(scanout_.stride & 3) && pipeline(opaque_, opaqueFailed_, @"scanout_opaque")) {
 +        // houji: boot argument hs bit 2, the copy four pixels a thread (scanout_opaque4); scanout_opaque where it is off or fails.
-+        const bool four = (houjiHs() & 4) && !(frame.stride & 3) && !(scanout_.stride & 3) &&
++        // houji: boot argument sbl=1, the blit below instead of either kernel (the display's mixer blends the plane by its constant
++        // alpha, houji's DPU readout, so the forced alpha may not be needed): for the panel check and the copy's GPU time.
++        const bool blitOnly = houjiBlit();
++        const bool four = !blitOnly && (houjiHs() & 4) && !(frame.stride & 3) && !(scanout_.stride & 3) &&
 +                          pipeline(opaque4_, opaque4Failed_, @"scanout_opaque4");
 +        if (four) {
-+            id<MTLCommandBuffer> commands = [queue_ commandBuffer];
-+            id<MTLComputeCommandEncoder> encoder = commands ? [commands computeCommandEncoder] : nil;
-+            if (!encoder) return kNoResource;
-+            const uint32_t params[4] = {frame.width, rows, (uint32_t)(frame.stride / 4), (uint32_t)(scanout_.stride / 4)};
+             id<MTLCommandBuffer> commands = [queue_ commandBuffer];
+             id<MTLComputeCommandEncoder> encoder = commands ? [commands computeCommandEncoder] : nil;
+             if (!encoder) return kNoResource;
+             const uint32_t params[4] = {frame.width, rows, (uint32_t)(frame.stride / 4), (uint32_t)(scanout_.stride / 4)};
 +            [encoder setComputePipelineState:opaque4_];
 +            [encoder setBuffer:source offset:0 atIndex:0];
 +            [encoder setBuffer:target_ offset:0 atIndex:1];
@@ -39,10 +43,15 @@ diff --git a/GpuScanoutPresenter.h b/GpuScanoutPresenter.h
 +            [commands commit];
 +            return finishCopy(commands);
 +        }
-         if (!(frame.stride & 3) && !(scanout_.stride & 3) && pipeline(opaque_, opaqueFailed_, @"scanout_opaque")) {
-             id<MTLCommandBuffer> commands = [queue_ commandBuffer];
-             id<MTLComputeCommandEncoder> encoder = commands ? [commands computeCommandEncoder] : nil;
-@@ -237,6 +255,19 @@
++        if (!blitOnly && !(frame.stride & 3) && !(scanout_.stride & 3) && pipeline(opaque_, opaqueFailed_, @"scanout_opaque")) {
++            id<MTLCommandBuffer> commands = [queue_ commandBuffer];
++            id<MTLComputeCommandEncoder> encoder = commands ? [commands computeCommandEncoder] : nil;
++            if (!encoder) return kNoResource;
++            const uint32_t params[4] = {frame.width, rows, (uint32_t)(frame.stride / 4), (uint32_t)(scanout_.stride / 4)};
+             [encoder setComputePipelineState:opaque_];
+             [encoder setBuffer:source offset:0 atIndex:0];
+             [encoder setBuffer:target_ offset:0 atIndex:1];
+@@ -237,6 +258,30 @@
      id<MTLCommandQueue> queue_;
      id<MTLBuffer> target_;
      id<MTLComputePipelineState> convert_ = nil, opaque_ = nil;
@@ -58,6 +67,17 @@ diff --git a/GpuScanoutPresenter.h b/GpuScanoutPresenter.h
 +            hs = at && at[3] >= '0' && at[3] <= '9' ? at[3] - '0' : 0;
 +        }
 +        return (unsigned)hs;
++    }
++    static bool houjiBlit() {
++        static int on = -1;
++        if (on < 0) {
++            char args[1100] = {};
++            size_t size = sizeof args - 1;
++            const char *at = sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0 ? args : nullptr;
++            while (at && (at = strstr(at, "sbl=")) && at != args && at[-1] != ' ') at += 4;
++            on = at && at[4] == '1';
++        }
++        return on > 0;
 +    }
      bool convertFailed_ = false, opaqueFailed_ = false;
      id<MTLBuffer> tables_[2] = {nil, nil};

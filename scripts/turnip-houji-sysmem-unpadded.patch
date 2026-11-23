@@ -99,7 +99,7 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
  };
  
  /* A freed BO whose fence completed stays whole (kernel handle, GPU mapping, CPU lease) in a size-class cache and is handed to the next
-@@ -836,6 +839,44 @@
+@@ -836,6 +839,58 @@
  
  /* Called under retire->lock. All fence polls are nonblocking. Failed/uncertain
   * releases retain the record and the IOVA; a busy BO is retried by a later sweep. */
@@ -111,6 +111,18 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
 + * and none freed in the last 500 ms. Counts: freed, kept past their fence, released by age, by the cap, the most bytes kept, in
 + * lazy-aged.txt beside the render server's frames.trace at most once a second. */
 +static uint64_t darwin_lazy_freed, darwin_lazy_kept, darwin_lazy_aged, darwin_lazy_capped, darwin_lazy_peak;
++/* houji: a BO slot an allocation found still in use (its handle the slot of a live BO: the finish race above, or another path), and
++ * IB2 calls whose target BO was freed or whose address has no upper word (tu_cs_emit_ib): with the last such handle and address.
++ * Written with the lazy counts (lazy-aged.txt) whenever any is nonzero. */
++static uint32_t darwin_slot_live, darwin_bad_ib2, darwin_bad_ib2_handle;
++static uint64_t darwin_bad_ib2_iova;
++void
++tu_houji_bad_ib2(uint32_t handle, uint64_t iova)
++{
++   p_atomic_inc(&darwin_bad_ib2);
++   darwin_bad_ib2_handle = handle;
++   darwin_bad_ib2_iova = iova;
++}
 +static bool
 +darwin_lazy_defer(void)
 +{
@@ -135,16 +147,18 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
 +   FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/lazy-aged.txt", "w");
 +   if (!f)
 +      return;
-+   fprintf(f, "lazy BOs freed %llu kept %llu released by age %llu by the cap %llu peak MiB %llu\n", (unsigned long long) darwin_lazy_freed,
++   fprintf(f, "lazy BOs freed %llu kept %llu released by age %llu by the cap %llu peak MiB %llu | slots live at allocation %u | bad IB2 %u "
++              "last handle %u iova %llx\n", (unsigned long long) darwin_lazy_freed,
 +           (unsigned long long) darwin_lazy_kept, (unsigned long long) darwin_lazy_aged, (unsigned long long) darwin_lazy_capped,
-+           (unsigned long long) (darwin_lazy_peak >> 20));
++           (unsigned long long) (darwin_lazy_peak >> 20), darwin_slot_live, darwin_bad_ib2, darwin_bad_ib2_handle,
++           (unsigned long long) darwin_bad_ib2_iova);
 +   fclose(f);
 +}
 +
  static VkResult
  darwin_reap_locked(struct tu_device *dev, struct darwin_retire_state *retire)
  {
-@@ -849,6 +890,17 @@
+@@ -849,6 +904,17 @@
      * after it (they would miss the cache). Entries that are not done yet keep their order at the front of the ring. */
     const unsigned total = retire->count;
     unsigned kept = 0;
@@ -162,10 +176,12 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
     for (unsigned i = 0; i < total; ++i) {
        struct darwin_retired_bo *bo = &retire->entries[(retire->head + i) % retire->capacity];
        bool ready = true;
-@@ -871,6 +923,22 @@
+@@ -869,6 +935,22 @@
+                have_completed_fence = true;
+                completed_fence = bo->fence;
              }
-          }
-       }
++         }
++      }
 +      /* houji: a lazily allocated BO past its fence stays mapped tu-bc seconds (darwin_lazy_defer); over 256 MiB kept, the oldest go
 +       * first (the ring is in the order they were freed), none younger than 500 ms. */
 +      if (ready && bo->lazy && lazy_defer) {
@@ -180,29 +196,91 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
 +         } else {
 +            ++*(capped && age < lazy_keep_ns ? &darwin_lazy_capped : &darwin_lazy_aged);
 +            lazy_bytes -= bo->size;
-+         }
-+      }
+          }
+       }
        if (ready && !(bo->cacheable && darwin_cache_put(dev, retire, bo))) {
-          VkResult released = darwin_release_native(dev, retire, bo->handle, bo->iova, bo->size, &bo->mapping, &bo->token);
-          if (released == VK_NOT_READY)
-@@ -888,6 +956,8 @@
+@@ -888,6 +970,8 @@
     for (unsigned i = kept; i < total; ++i)
        retire->entries[(retire->head + i) % retire->capacity] = {};
     retire->count = kept;
-+   if (lazy_defer)
++   if (lazy_defer || darwin_slot_live || darwin_bad_ib2)
 +      darwin_lazy_note();
     return VK_SUCCESS;
  }
  
-@@ -1258,7 +1328,10 @@
+@@ -1041,6 +1125,8 @@
+    uint32_t gem_handle = (uint32_t)handle;
+    struct tu_bo *bo = tu_device_lookup_bo(dev, gem_handle);
+    assert(bo && bo->gem_handle == 0);
++   if (bo->gem_handle)
++      p_atomic_inc(&darwin_slot_live);
+ 
+    name = tu_debug_bos_add(dev, size, name);
+ 
+@@ -1237,6 +1323,17 @@
+    TU_RMV(bo_destroy, dev, bo);
+ 
+    struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
++   /* houji: the record's fields first, then the struct zeroed, and only then the retire lock. The reap below can put the BO straight
++    * into the cache (its fence already passed), and once the lock is released another thread's allocation can take it: a reused BO
++    * keeps its handle, so that allocation fills this same slot. Zeroed after the lock, as before, the slot's new owner lost its live
++    * struct (handle, iova and map 0): a command stream growing into it then made entries whose offset came from a NULL map, IB2 calls
++    * to the low word of a CPU address (houji root396, FAR 0x39bfc000 with no upper word) or, once the slot was filled again, to an
++    * address nothing maps (root395). Upstream's msm_bo_finish zeroes the struct before closing the handle for the same reason. */
++   struct darwin_retired_bo record = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
++                                      bo->darwin_token, 0, bo->darwin_alloc_size != 0, bo->darwin_read_only, bo->lazy,
++                                      (uint64_t) os_time_get_nano()};
++   /* The BO structs live in a sparse array: zero the entry to mark it free. */
++   memset(bo, 0, sizeof(*bo));
+    pthread_mutex_lock(&retire->lock);
+    darwin_reap_locked(dev, retire);
+    if (retire->count == retire->capacity && retire->failure == VK_SUCCESS) {
+@@ -1257,8 +1354,10 @@
+       uint32_t fence = darwin_submitting ? DARWIN_FENCE_PENDING : dw.last_fence;
        pthread_mutex_unlock(&dw.lock);
        unsigned slot = (retire->head + retire->count) % retire->capacity;
-       retire->entries[slot] = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
+-      retire->entries[slot] = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
 -                               bo->darwin_token, fence, bo->darwin_alloc_size != 0, bo->darwin_read_only};
-+                               bo->darwin_token, fence, bo->darwin_alloc_size != 0, bo->darwin_read_only, bo->lazy,
-+                               (uint64_t) os_time_get_nano()};
-+      if (bo->lazy)
++      record.fence = fence;
++      retire->entries[slot] = record;
++      if (record.lazy)
 +         ++darwin_lazy_freed;
        ++retire->count;
        ++retire->enqueued;
        darwin_reap_locked(dev, retire);
+@@ -1269,9 +1368,6 @@
+    }
+    pthread_mutex_unlock(&retire->lock);
+ 
+-   /* The BO structs live in a sparse array: zero the entry to mark it free. */
+-   memset(bo, 0, sizeof(*bo));
+-
+    u_rwlock_rdunlock(&dev->dma_bo_lock);
+ }
+ 
+diff --git a/src/freedreno/vulkan/tu_cs.h b/src/freedreno/vulkan/tu_cs.h
+--- a/src/freedreno/vulkan/tu_cs.h
++++ b/src/freedreno/vulkan/tu_cs.h
+@@ -377,6 +377,8 @@
+ /**
+  * Emit a CP_INDIRECT_BUFFER command packet.
+  */
++void tu_houji_bad_ib2(uint32_t handle, uint64_t iova);
++
+ static inline void
+ tu_cs_emit_ib(struct tu_cs *cs, const struct tu_cs_entry *entry)
+ {
+@@ -386,7 +388,12 @@
+    assert(entry->offset % sizeof(uint32_t) == 0);
+ 
+    tu_cs_emit_pkt7(cs, CP_INDIRECT_BUFFER, 3);
+-   tu_cs_emit_qw(cs, entry->bo->iova + entry->offset);
++   /* houji: a target BO already freed, or an address with no upper word (no client BO lies under 4 GiB), is counted
++    * (tu_knl_darwin.cc tu_houji_bad_ib2): the CP faults on it. */
++   const uint64_t ib_iova = entry->bo->iova + entry->offset;
++   if (!entry->bo->gem_handle || !(ib_iova >> 32))
++      tu_houji_bad_ib2(entry->bo->gem_handle, ib_iova);
++   tu_cs_emit_qw(cs, ib_iova);
+    tu_cs_emit(cs, entry->size / sizeof(uint32_t));
+ }
+ 
