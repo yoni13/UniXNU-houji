@@ -829,6 +829,15 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   - *hs.* GTL dumps: hs runs 74-85 jobs/s against 40-58 (tt=1, hs=5/6), the render server's GPU timeline 205-208 idle gaps over 1 ms
     an open against 143-169; jobs of other processes 0.4-4.6/s, not following hs. A switch to ring 1 needs ring 0 idle, and each
     one needs a switch back: more gaps can mean more switches, but the count is not in the logs.
+- **hs=9 on one GPU ring (`gpu-preempt=0`)** (root391, root392; kernel with the console's `gpup` and the ring fields of `gtl dump`;
+  P4, `tt=1`, `sko=4`, `m2v-lbox=1`, `hs=9`, `gpu-preempt=0`, `tu-bk=64` left out for room: 999 bytes; 12 untraced and 4 traced
+  opens each). Every job ran on ring 0 (`gtl dump`: r0 l0 in all 5781 jobs of root392's untraced opens), `gpup`: no second ring, no
+  switch. Untraced **73.0 fps** (63.2-84.1), GPU **7.71 ms** a frame, and **70.5** (49.4-106.6), **7.95 ms**; first frame 113 ms;
+  traced 66.2 and 74.5. cpu7 a frame: the compositing thread 4.0-5.6 ms, encoding 4.5-7.2, SpringBoard's main thread 0.9-2.7. Peaks
+  71.6 C. Screenshots whole. Hangs: **none in the 32 Control Center opens**; root392 none at all; root391 two at boot (fence 12393,
+  the opens from 17872), each with an SMMU fault (FSR 0x80000002, FAR 0x131e440, between the driver's 0x302000 and 0x10000000
+  buffers, guilty jobs), the boot-time fault seen before in root386 under two rings: a different class from the switch stall. Against
+  root389-390 (two rings): the same fps and GPU time within the run-to-run spread, the switch stall gone by construction.
 
 ## Faults found on the way
 
