@@ -771,6 +771,32 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   area is not the framebuffer's; the ring cannot tell which. tum=s moved those passes too, backing the memoryless attachments. The
   four-pixel copy (`43c8f163`, grid 19x334) took 0.90 ms stamped and was followed by 3.06 ms of gaps a frame (17 frames): no faster
   than the one-pixel copy, so its limit is not the instruction count.
+- **Memoryless attachments in system memory: why the passes stayed in GMEM and a premature unmap** (sources, no boot):
+  - *Why 1704 of the full-screen unpadded passes stayed in GMEM under hs.* The switch is tested after `use_sysmem_rendering`'s check
+    that returns GMEM for a pass with a lazily allocated attachment without memory, and its own conditions are a render area equal to the
+    framebuffer and a million pixels; metal2vulkan's framebuffer is the pass layout's extent (`render_target.rs`
+    `framebuffer_over(..., layout.extent)`), the attachments', and these passes' render area is 1200x2670, so the remaining cause is the
+    lazily allocated attachment: a Metal memoryless texture is a `TRANSIENT_ATTACHMENT` image (`image_plan.rs` 631) bound to a lazily
+    allocated memory type (`memory.rs`, `MemoryClass::Memoryless`). All these passes have 3 colour attachments; the ring keeps only the
+    first one's flags (linear, unpadded, loaded, stored), so which of the other two is memoryless, and its load and store actions, is not
+    recorded. tum=s (`strict_sysmem`) skips that check and backs them (`tu_allocate_transient_attachments`, `tu_allocate_lazy_memory`).
+  - *Their memory's lifetime.* Turnip allocates a lazily allocated memory's BO when a pass first needs it, at a GPU address reserved at
+    `vkAllocateMemory` (`tu_bo_init_new_explicit_iova`), and frees it with the memory. Turnip's Darwin submission names only the
+    command-stream BOs to the kernel (`darwin_submit_add_entries`), so a job does not keep its data BOs mapped; a freed BO is kept until
+    the newest fence submitted by then passes (`turnip-darwin-free-during-submit.patch`) and then goes to the BO cache, where it stays
+    mapped tu-bc seconds (8 here), or is unmapped. A lazily allocated BO is never cacheable (`tu_knl_darwin.cc` 946:
+    `cacheable = cache_enabled && !(flags & TU_BO_ALLOC_REPLAYABLE) && !lazy_vma`): it is unmapped as soon as that fence passes. A
+    memory freed while a command buffer that uses it is recorded but not yet submitted is then unmapped before the GPU reads it; every
+    other BO is covered by the cache's seconds. metal2vulkan releases an image once no texture object and no command buffer holds it
+    (`texture.rs` `ImageObjects::drop`); whether every path that ends with a memoryless attachment's release holds it to completion was
+    not proven from the sources.
+  - *Against the faults.* tum=s's fault (0x149816880) lies past every mapped BO of its VM, nothing above: where explicit addresses, not
+    the pool, are; root362's tt=1 Control Center faults (0x15a770a40, 0x158ac8940) are in the same range, and in a default boot a
+    lazily allocated attachment gets memory in a pass the autotuner renders in system memory, the same path, more rarely.
+  - *Fix designs.* (a) Keep a freed lazily allocated BO mapped as the cache keeps the others (an aged list, the same tu-bc seconds and a
+    size cap), then let the switch take passes with memoryless attachments too; (b) a pooled per-device scratch BO for transient
+    attachments: their GPU address is fixed at `vkAllocateMemory` (the lazy VMA), so a shared BO cannot simply be bound; (a) is the
+    smaller change.
 
 ## Faults found on the way
 
