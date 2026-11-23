@@ -176,10 +176,11 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
     for (unsigned i = 0; i < total; ++i) {
        struct darwin_retired_bo *bo = &retire->entries[(retire->head + i) % retire->capacity];
        bool ready = true;
-@@ -869,6 +935,22 @@
+@@ -868,7 +934,23 @@
+             } else {
                 have_completed_fence = true;
                 completed_fence = bo->fence;
-             }
++            }
 +         }
 +      }
 +      /* houji: a lazily allocated BO past its fence stays mapped tu-bc seconds (darwin_lazy_defer); over 256 MiB kept, the oldest go
@@ -192,7 +193,7 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
 +            if (!bo->fence_kept_noted) {
 +               bo->fence_kept_noted = true;
 +               ++darwin_lazy_kept;
-+            }
+             }
 +         } else {
 +            ++*(capped && age < lazy_keep_ns ? &darwin_lazy_capped : &darwin_lazy_aged);
 +            lazy_bytes -= bo->size;
@@ -217,47 +218,37 @@ diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl
  
     name = tu_debug_bos_add(dev, size, name);
  
-@@ -1237,6 +1323,17 @@
-    TU_RMV(bo_destroy, dev, bo);
- 
-    struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
-+   /* houji: the record's fields first, then the struct zeroed, and only then the retire lock. The reap below can put the BO straight
-+    * into the cache (its fence already passed), and once the lock is released another thread's allocation can take it: a reused BO
-+    * keeps its handle, so that allocation fills this same slot. Zeroed after the lock, as before, the slot's new owner lost its live
-+    * struct (handle, iova and map 0): a command stream growing into it then made entries whose offset came from a NULL map, IB2 calls
-+    * to the low word of a CPU address (houji root396, FAR 0x39bfc000 with no upper word) or, once the slot was filled again, to an
-+    * address nothing maps (root395). Upstream's msm_bo_finish zeroes the struct before closing the handle for the same reason. */
-+   struct darwin_retired_bo record = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
-+                                      bo->darwin_token, 0, bo->darwin_alloc_size != 0, bo->darwin_read_only, bo->lazy,
-+                                      (uint64_t) os_time_get_nano()};
-+   /* The BO structs live in a sparse array: zero the entry to mark it free. */
-+   memset(bo, 0, sizeof(*bo));
-    pthread_mutex_lock(&retire->lock);
-    darwin_reap_locked(dev, retire);
-    if (retire->count == retire->capacity && retire->failure == VK_SUCCESS) {
-@@ -1257,8 +1354,10 @@
-       uint32_t fence = darwin_submitting ? DARWIN_FENCE_PENDING : dw.last_fence;
+@@ -1258,7 +1344,10 @@
        pthread_mutex_unlock(&dw.lock);
        unsigned slot = (retire->head + retire->count) % retire->capacity;
--      retire->entries[slot] = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
+       retire->entries[slot] = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
 -                               bo->darwin_token, fence, bo->darwin_alloc_size != 0, bo->darwin_read_only};
-+      record.fence = fence;
-+      retire->entries[slot] = record;
-+      if (record.lazy)
++                               bo->darwin_token, fence, bo->darwin_alloc_size != 0, bo->darwin_read_only, bo->lazy,
++                               (uint64_t) os_time_get_nano()};
++      if (bo->lazy)
 +         ++darwin_lazy_freed;
        ++retire->count;
        ++retire->enqueued;
        darwin_reap_locked(dev, retire);
-@@ -1269,9 +1368,6 @@
+@@ -1267,10 +1356,15 @@
+        * and view; connection teardown must drain them, even if this record cannot fit. */
+       retire->failure = vk_device_set_lost(&dev->vk, "deferred BO queue cannot grow; retaining native allocation");
     }
-    pthread_mutex_unlock(&retire->lock);
- 
--   /* The BO structs live in a sparse array: zero the entry to mark it free. */
--   memset(bo, 0, sizeof(*bo));
+-   pthread_mutex_unlock(&retire->lock);
 -
+-   /* The BO structs live in a sparse array: zero the entry to mark it free. */
++   /* The BO structs live in a sparse array: zero the entry to mark it free. houji: before the retire lock goes, not after it. The
++    * reap above can put this BO straight into the cache (its fence already passed), and once the lock is released another thread's
++    * allocation can take it from there: a reused BO keeps its handle, so that allocation fills this same slot. Zeroed after the lock,
++    * the slot's new owner lost its live struct (handle, iova and map 0): a command stream growing into it then made entries whose
++    * offset came from a NULL map, IB2 calls to the low word of a CPU address (houji root396, FAR 0x39bfc000 with no upper word) or,
++    * once the slot was filled again, to an address nothing maps (root395). Upstream's msm_bo_finish zeroes it before closing the
++    * handle for the same reason. */
+    memset(bo, 0, sizeof(*bo));
++   pthread_mutex_unlock(&retire->lock);
+ 
     u_rwlock_rdunlock(&dev->dma_bo_lock);
  }
- 
 diff --git a/src/freedreno/vulkan/tu_cs.h b/src/freedreno/vulkan/tu_cs.h
 --- a/src/freedreno/vulkan/tu_cs.h
 +++ b/src/freedreno/vulkan/tu_cs.h
