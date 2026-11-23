@@ -913,6 +913,30 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     `made_framebuffer`, no cache), `EncoderCore::retain` (55: a 2320-byte tuple boxed at every pass's end, `render.rs` 6365),
     `end_with_replay` (69: a 456-byte record appended to the command buffer's state, its vector regrown), `darwin_queue_submit` (21);
     `madvise` and the other kernel traps without a frame are the rest. Their milliseconds a frame are not in these samples.
+- **Fault attribution, the compositing thread off cpu7, the encoding thread's system time** (root395-root397; kernel with
+  `unixnu-adreno-fault-diag.patch`: FSYNR1, UCHE_CLIENT_PF and the guilty job's pid, queue and fence in `gpuf`, the IB search in
+  `gpus`; `tt=1 hs=9 gp=0`, `tu-bk=64`, `m2v-lbox=1`, 979 bytes, root397 `gtr=1` 985; `threads 65` before and after every open):
+  - *Faults.* root395: one at boot (fence 3496, the opens from 18352), FAR 0x1_38808380, past the guilty space's last mapping (a 12.4
+    MiB buffer at 0x1_2477f000), as tum=s's. root396: one at boot (fence 2531, FAR 0xc261000) and **one in a Control Center cycle**
+    (fence 35525, between the opens ending 35440 and starting 35738), FAR 0x39bfc000. root397: none. Both captured: FSYNR1 0, which
+    msm's `a6xx_fault_block` names the CP; UCHE_CLIENT_PF 0x81; guilty pid 65 (backboardd), queue 0. root396's search found the low word
+    once, followed by 0, in an IB1 at 0x1_0f147000, dword 288: `70e30001 00000000` (CP_SET_MODE 0), two register writes, then
+    `70bf8003 39bfc000 00000000`: **CP_INDIRECT_BUFFER to 0x39bfc000 with no upper word**, the order of Turnip's SYSMEM pass
+    (`tu6_sysmem_render_begin`, then `tu_cs_emit_call(&cmd->draw_cs)`). The CP fetched an IB2 whose address Turnip built as
+    `entry->bo->iova + entry->offset` (`tu_cs_emit_ib`, 64-bit), so that BO's `iova` read under 4 GiB, which no live BO has (Turnip's
+    Darwin VA allocator hands out only from va_start, 0x1_0000_0000; freed BOs' structs are zeroed, `darwin_bo_finish`). Both faults
+    are the CP fetching a command buffer at an address no live mapping has: a command-stream BO's lifetime or state at record time,
+    the case `turnip-darwin-skip-freed-entries.patch` already met at the top level (submissions naming freed BOs).
+  - *Placement (both boots).* Untraced P4 72.6 fps (10 opens, 61.5-87.6), GPU 7.85 ms, first frame 116 ms; Q4 (the compositing
+    thread on cpu5 alone; the scheduler has no cpu5-6 cluster) 97.9 (12 opens, 72.8-113.2), 8.77 ms, **first frame 394 ms**: in Q4
+    the later the first frame the higher the fps (365-466 ms: 98.7-113.2; 177-267 ms: 72.8-85.1), the animation's tail alone, so the
+    untraced fps overstates it. Traced, first frames 109-152 ms in both: P4 68.7-78.0 fps (compositing 4.3-4.8 ms on cpu7, waiting
+    5.3-5.9; encoding 5.4-5.7, waiting 3.5-4.2; SpringBoard 0.9-2.1, waiting 11.5-12.2), Q4 92.5-97.6 (compositing 6.7-7.2 on cpu5,
+    waiting 0; encoding 6.2-6.5, waiting 0; SpringBoard 1.2-1.5, waiting 6.4-7.0). Peaks 57.9-66.4 C.
+  - *Encoding thread's system time* (`threads-delta.py`, 56 opens): 9-12 % of its CPU (P4u 94 of 821 ms an open, P4 98 of 1032):
+    page faults, `madvise` and submissions together are about 0.5-0.6 ms of its 5.5 ms a frame. The compositing thread 14-16 %.
+  - *gtr=1 (root397)*: not measured. frames.trace grows about 10 MB a traced open under hs=9 and reached its 64 MiB cap by the third;
+    the 1 MB tail read covered a fraction of an open (88 % of its GPU time "without a command buffer entry").
 
 ## Faults found on the way
 
