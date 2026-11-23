@@ -1,0 +1,156 @@
+diff --git a/GpuScanoutPresenter.h b/GpuScanoutPresenter.h
+--- a/GpuScanoutPresenter.h
++++ b/GpuScanoutPresenter.h
+@@ -9,6 +9,7 @@
+ // the kernel blits it. No CPU touches a pixel; there is no staging copy and no software fallback here. Used through the public Metal API, on any device (the native frontend on the tablet, the Mac's device for the host check).
+ #pragma once
+ #import <Metal/Metal.h>
++#include <sys/sysctl.h>
+ #include <unistd.h>
+ #include <stdio.h>
+ #include <time.h>
+@@ -93,7 +94,7 @@
+         queue_ = [device_ newCommandQueue];
+         target_ = validScanout() && queue_ ? [device_ newBufferWithBytesNoCopy:scanout_.base length:scanout_.bytes
+                                                                        options:MTLResourceStorageModeShared deallocator:nil] : nil;
+-        convert_ = nil; opaque_ = nil; convertFailed_ = false; opaqueFailed_ = false;
++        convert_ = nil; opaque_ = nil; convertFailed_ = false; opaqueFailed_ = false; opaque4_ = nil; opaque4Failed_ = false;
+         tables_[0] = nil; tables_[1] = nil;
+         for (Source &s : sources_) s = Source{};
+         if (FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/copy-errors.txt", "a")) {
+@@ -115,6 +116,23 @@
+         const uint32_t rows = gHalfRows.load(std::memory_order_relaxed) ? frame.height / 2 : frame.height;
+         id<MTLBuffer> source = sourceFor(frame);
+         if (!source) return kNoResource;
++        // houji: boot argument hs bit 2, the copy four pixels a thread (scanout_opaque4); scanout_opaque where it is off or fails.
++        const bool four = (houjiHs() & 4) && !(frame.stride & 3) && !(scanout_.stride & 3) &&
++                          pipeline(opaque4_, opaque4Failed_, @"scanout_opaque4");
++        if (four) {
++            id<MTLCommandBuffer> commands = [queue_ commandBuffer];
++            id<MTLComputeCommandEncoder> encoder = commands ? [commands computeCommandEncoder] : nil;
++            if (!encoder) return kNoResource;
++            const uint32_t params[4] = {frame.width, rows, (uint32_t)(frame.stride / 4), (uint32_t)(scanout_.stride / 4)};
++            [encoder setComputePipelineState:opaque4_];
++            [encoder setBuffer:source offset:0 atIndex:0];
++            [encoder setBuffer:target_ offset:0 atIndex:1];
++            [encoder setBytes:params length:sizeof params atIndex:3];
++            [encoder dispatchThreadgroups:MTLSizeMake(((frame.width + 3) / 4 + 15) / 16, (rows + 7) / 8, 1) threadsPerThreadgroup:MTLSizeMake(16, 8, 1)];
++            [encoder endEncoding];
++            [commands commit];
++            return finishCopy(commands);
++        }
+         if (!(frame.stride & 3) && !(scanout_.stride & 3) && pipeline(opaque_, opaqueFailed_, @"scanout_opaque")) {
+             id<MTLCommandBuffer> commands = [queue_ commandBuffer];
+             id<MTLComputeCommandEncoder> encoder = commands ? [commands computeCommandEncoder] : nil;
+@@ -237,6 +255,19 @@
+     id<MTLCommandQueue> queue_;
+     id<MTLBuffer> target_;
+     id<MTLComputePipelineState> convert_ = nil, opaque_ = nil;
++    id<MTLComputePipelineState> opaque4_ = nil;   // houji: scanout_opaque4 (hs bit 2)
++    bool opaque4Failed_ = false;
++    static unsigned houjiHs() {
++        static int hs = -1;
++        if (hs < 0) {
++            char args[1100] = {};
++            size_t size = sizeof args - 1;
++            const char *at = sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0 ? args : nullptr;
++            while (at && (at = strstr(at, "hs=")) && at != args && at[-1] != ' ') at += 3;
++            hs = at && at[3] >= '0' && at[3] <= '9' ? at[3] - '0' : 0;
++        }
++        return (unsigned)hs;
++    }
+     bool convertFailed_ = false, opaqueFailed_ = false;
+     id<MTLBuffer> tables_[2] = {nil, nil};
+     Source sources_[kSources] = {};
+diff --git a/shaders/scanout_convert.ll b/shaders/scanout_convert.ll
+--- a/shaders/scanout_convert.ll
++++ b/shaders/scanout_convert.ll
+@@ -106,10 +106,82 @@
+   ret void
+ }
+ 
++; scanout_opaque4 (houji, boot argument hs bit 2): scanout_opaque four pixels a thread, one 16-byte load and store (the row's last
++; pixels when its width is not a multiple of 4 one at a time): a quarter of the threads and of the memory requests.
++;   kernel void scanout_opaque4(device const uint *src [[buffer(0)]], device uint *dst [[buffer(1)]], constant uint4 &p [[buffer(3)]],
++;                               uint2 gid [[thread_position_in_grid]])   gid.x counts groups of four pixels
++define void @scanout_opaque4(ptr addrspace(1) noundef readonly air-buffer-no-alias %src, ptr addrspace(1) noundef air-buffer-no-alias %dst, ptr addrspace(2) noundef readonly align 16 dereferenceable(16) air-buffer-no-alias %p, <2 x i32> noundef %gid) local_unnamed_addr #0 {
++entry:
++  %w = load i32, ptr addrspace(2) %p, align 16
++  %ph = getelementptr inbounds i32, ptr addrspace(2) %p, i64 1
++  %h = load i32, ptr addrspace(2) %ph, align 4
++  %pss = getelementptr inbounds i32, ptr addrspace(2) %p, i64 2
++  %ss = load i32, ptr addrspace(2) %pss, align 8
++  %pds = getelementptr inbounds i32, ptr addrspace(2) %p, i64 3
++  %ds = load i32, ptr addrspace(2) %pds, align 4
++  %gx = extractelement <2 x i32> %gid, i64 0
++  %y = extractelement <2 x i32> %gid, i64 1
++  %x = shl i32 %gx, 2
++  %inx = icmp ult i32 %x, %w
++  %iny = icmp ult i32 %y, %h
++  %in = and i1 %inx, %iny
++  br i1 %in, label %body, label %done
++
++body:
++  %x64 = zext i32 %x to i64
++  %y64 = zext i32 %y to i64
++  %ss64 = zext i32 %ss to i64
++  %srow = mul i64 %y64, %ss64
++  %si = add i64 %srow, %x64
++  %sp = getelementptr inbounds i32, ptr addrspace(1) %src, i64 %si
++  %ds64 = zext i32 %ds to i64
++  %drow = mul i64 %y64, %ds64
++  %di = add i64 %drow, %x64
++  %dp = getelementptr inbounds i32, ptr addrspace(1) %dst, i64 %di
++  %x3 = add i32 %x, 3
++  %full = icmp ult i32 %x3, %w
++  br i1 %full, label %vec, label %tail0
++
++vec:
++  %v = load <4 x i32>, ptr addrspace(1) %sp, align 4
++  %px = or <4 x i32> %v, <i32 -16777216, i32 -16777216, i32 -16777216, i32 -16777216>
++  store <4 x i32> %px, ptr addrspace(1) %dp, align 4
++  br label %done
++
++tail0:
++  %t0 = load i32, ptr addrspace(1) %sp, align 4
++  %u0 = or i32 %t0, -16777216
++  store i32 %u0, ptr addrspace(1) %dp, align 4
++  %x1 = add i32 %x, 1
++  %c1 = icmp ult i32 %x1, %w
++  br i1 %c1, label %tail1, label %done
++
++tail1:
++  %sp1 = getelementptr inbounds i32, ptr addrspace(1) %sp, i64 1
++  %dp1 = getelementptr inbounds i32, ptr addrspace(1) %dp, i64 1
++  %t1 = load i32, ptr addrspace(1) %sp1, align 4
++  %u1 = or i32 %t1, -16777216
++  store i32 %u1, ptr addrspace(1) %dp1, align 4
++  %x2 = add i32 %x, 2
++  %c2 = icmp ult i32 %x2, %w
++  br i1 %c2, label %tail2, label %done
++
++tail2:
++  %sp2 = getelementptr inbounds i32, ptr addrspace(1) %sp, i64 2
++  %dp2 = getelementptr inbounds i32, ptr addrspace(1) %dp, i64 2
++  %t2 = load i32, ptr addrspace(1) %sp2, align 4
++  %u2 = or i32 %t2, -16777216
++  store i32 %u2, ptr addrspace(1) %dp2, align 4
++  br label %done
++
++done:
++  ret void
++}
++
+ attributes #0 = { mustprogress nofree norecurse nosync nounwind willreturn "frame-pointer"="all" "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" }
+ 
+ !llvm.module.flags = !{!0, !1, !2, !3, !4, !5, !6, !7, !8}
+-!air.kernel = !{!9, !22}
++!air.kernel = !{!9, !22, !26}
+ !air.compile_options = !{!17, !18}
+ !llvm.ident = !{!19}
+ !air.version = !{!20}
+@@ -141,3 +213,4 @@
+ !23 = !{!12, !13, !25, !24}
+ !24 = !{i32 3, !"air.thread_position_in_grid", !"air.arg_type_name", !"uint2", !"air.arg_name", !"gid"}
+ !25 = !{i32 2, !"air.buffer", !"air.buffer_size", i32 16, !"air.location_index", i32 3, i32 1, !"air.read", !"air.address_space", i32 2, !"air.arg_type_size", i32 16, !"air.arg_type_align_size", i32 16, !"air.arg_type_name", !"uint4", !"air.arg_name", !"p"}
++!26 = !{ptr @scanout_opaque4, !10, !23}

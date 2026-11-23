@@ -1,0 +1,59 @@
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -1501,6 +1501,31 @@
+       return true;
+    }
+ 
++   /* houji: boot argument hs=N, bits 0 and 1: a full-screen pass (its render area the framebuffer's, a million pixels or more) over an
++    * unpadded linear colour attachment (tu_attachment_unpadded: an IOSurface the compositor draws into) renders in system memory: bit 0
++    * every such pass, bit 1 those of more than 3 draws. In GMEM such a pass loads and stores its whole surface through the unpadded path
++    * and replays its draws per tile, which the bandwidth autotuner does not weigh: the same fragment shader with as many draws took 5-10
++    * times longer there than where the autotuner chose system memory (root379). Placed after the lazily allocated attachments' test
++    * above, so a pass with a memoryless attachment stays in GMEM, and its attachment without memory, as before. */
++   if (const unsigned hs = tu_houji_sysmem_mode()) {
++      const VkExtent2D area = cmd->state.render_areas[0].extent;
++      const struct tu_framebuffer *fb = cmd->state.framebuffer;
++      bool unpadded = false;
++      for (unsigned i = 0; fb && i < cmd->state.pass->attachment_count; i++) {
++         const struct tu_image_view *iview = cmd->state.attachments[i];
++         if (iview && tu_attachment_unpadded(cmd, iview)) {
++            unpadded = true;
++            break;
++         }
++      }
++      if (unpadded && fb && area.width == fb->width && area.height == fb->height &&
++          (uint64_t) area.width * area.height >= 1000000 &&
++          ((hs & 1) || ((hs & 2) && cmd->state.rp.drawcall_count > 3))) {
++         cmd->state.rp.gmem_disable_reason = "houji: unpadded full-screen pass (hs)";
++         return true;
++      }
++   }
++
+    tu_autotune::render_mode optimal_mode =
+       cmd->device->autotune->get_optimal_mode(cmd, rp_ctx, rp_key);
+    bool use_sysmem = optimal_mode == tu_autotune::render_mode::SYSMEM;
+diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h
+--- a/src/freedreno/vulkan/tu_frame_diagnostic.h
++++ b/src/freedreno/vulkan/tu_frame_diagnostic.h
+@@ -35,7 +35,20 @@
+       return (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 8000000000ull) & 1 ? 'g' : 0;
+    return mode;
+ }
++/* houji: boot argument hs=N (use_sysmem_rendering, and the scanout presenter's bit 2): its digit, 0 when absent. */
++static inline unsigned tu_houji_sysmem_mode() {
++   static int mode = -1;
++   if (mode < 0) {
++      char args[1100] = {};
++      size_t size = sizeof args - 1;
++      const char *at = sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0 ? args : nullptr;
++      while (at && (at = strstr(at, "hs=")) && at != args && at[-1] != ' ') at += 3;
++      mode = at && at[3] >= '0' && at[3] <= '9' ? at[3] - '0' : 0;
++   }
++   return (unsigned) mode;
++}
+ #else
++static inline unsigned tu_houji_sysmem_mode() {return 0;}
+ static inline char tu_sheng_render_mode() {return 0;}
+ static inline bool tu_swap_trace_on() {return false;}
+ static inline void tu_frame_event(uint32_t,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0) {}
