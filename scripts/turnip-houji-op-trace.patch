@@ -1,0 +1,351 @@
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -495,10 +495,26 @@
+ }
+ 
+ /* "Normal" cache flushes outside the renderpass, that don't require any special handling */
++template <chip CHIP>
++static void
++tu_emit_cache_flush_body(struct tu_cmd_buffer *cmd_buffer);
++
++/* houji: a flush outside a render pass is a pass ring entry (mode 5) with the trace on. */
+ template <chip CHIP>
+ void
+ tu_emit_cache_flush(struct tu_cmd_buffer *cmd_buffer)
+ {
++   const uint32_t flushes = (uint32_t) cmd_buffer->state.cache.flush_bits;
++   const uint32_t op = flushes && !cmd_buffer->state.pass
++      ? tu_op_begin(cmd_buffer, &cmd_buffer->cs, 5, 0, 0, 0, 0, 0, flushes, 0, 0) : 0;
++   tu_emit_cache_flush_body<CHIP>(cmd_buffer);
++   tu_op_end(cmd_buffer, &cmd_buffer->cs, op);
++}
++
++template <chip CHIP>
++static void
++tu_emit_cache_flush_body(struct tu_cmd_buffer *cmd_buffer)
++{
+    struct tu_cs *cs = &cmd_buffer->cs;
+    struct tu_cache_state *cache = &cmd_buffer->state.cache;
+    BITMASK_ENUM(tu_cmd_flush_bits) flushes = cache->flush_bits;
+@@ -4113,7 +4129,8 @@
+    uint32_t fs_hash;                                    /* tu_hash32 of that fragment shader (the tail padding of the 72 bytes) */
+ };
+ static_assert(sizeof(struct tu_pass_rec) == 72, "pass record");
+-static struct tu_pass_rec tu_pass_ring[512];
++#define TU_PASS_RING 8192   /* houji: from 512, which an open overran in 0.3 s */
++static struct tu_pass_rec tu_pass_ring[TU_PASS_RING];
+ 
+ /* The host's diagnostics switch (SHENG_DIAG, set by the plugin from diag=1): without it no pass is stamped or kept in the ring. */
+ static bool
+@@ -4141,9 +4158,9 @@
+       if (!tu_pass_ts_bo && !tu_pass_ts_dev) {
+          tu_pass_ts_dev = dev;
+          struct tu_bo *bo = NULL;
+-         if (tu_bo_init_new(dev, NULL, &bo, 512 * 16, TU_BO_ALLOC_INTERNAL_RESOURCE, "pass timestamps") == VK_SUCCESS) {
++         if (tu_bo_init_new(dev, NULL, &bo, TU_PASS_RING * 16, TU_BO_ALLOC_INTERNAL_RESOURCE, "pass timestamps") == VK_SUCCESS) {
+             if (tu_bo_map(dev, bo, NULL) == VK_SUCCESS) {
+-               memset(bo->map, 0, 512 * 16);
++               memset(bo->map, 0, TU_PASS_RING * 16);
+                p_atomic_set(&tu_pass_ts_bo, bo);
+             } else {
+                tu_bo_finish(dev, bo);
+@@ -4155,9 +4172,9 @@
+    struct tu_bo *bo = p_atomic_read(&tu_pass_ts_bo);
+    if (!bo || tu_pass_ts_dev != dev)
+       return 0;
+-   uint64_t *words = (uint64_t *) bo->map + (seq % 512) * 2;
++   uint64_t *words = (uint64_t *) bo->map + (seq % TU_PASS_RING) * 2;
+    words[0] = words[1] = 0;
+-   return bo->iova + (seq % 512) * 16;
++   return bo->iova + (seq % TU_PASS_RING) * 16;
+ }
+ 
+ template <chip CHIP>
+@@ -4222,7 +4239,7 @@
+    }
+    const uint32_t seq = p_atomic_inc_return(&tu_pass_seq);
+    rec.seq = seq;
+-   tu_pass_ring[seq % 512] = rec;
++   tu_pass_ring[seq % TU_PASS_RING] = rec;
+    /* The GMEM swap trace (tu_swap_trace_on): the first 3000 passes and the first 1000 passes of 3000 px or wider, in order, each with
+     * its attachments (event 44: index, mode, image, format, swap, mutability, tile mode, load | store << 1 | unpadded << 2, samples,
+     * RB_MRT_BUF_INFO), so frames of both render modes line up with the screenshots. */
+@@ -4258,16 +4275,16 @@
+    uint32_t first = from ? from : 1;
+    if (first > last)
+       return 0;
+-   if (last - first >= 512)
+-      first = last - 511;
++   if (last - first >= TU_PASS_RING)
++      first = last - (TU_PASS_RING - 1);
+    uint32_t n = 0;
+    for (uint32_t s = first; s <= last && n < max; s++) {
+-      struct tu_pass_rec rec = tu_pass_ring[s % 512];
++      struct tu_pass_rec rec = tu_pass_ring[s % TU_PASS_RING];
+       if (rec.seq != s)
+          continue;
+       struct tu_bo *bo = p_atomic_read(&tu_pass_ts_bo);
+       if (bo) {
+-         const volatile uint64_t *words = (const volatile uint64_t *) bo->map + (s % 512) * 2;
++         const volatile uint64_t *words = (const volatile uint64_t *) bo->map + (s % TU_PASS_RING) * 2;
+          const uint64_t begin = words[0], end = words[1];
+          if (begin && end) {
+             rec.gpu_begin = tu_device_ticks_to_ns(tu_pass_ts_dev, begin);
+@@ -4302,6 +4319,86 @@
+    return seq;
+ }
+ 
++/* houji: the counts alone, for a pass the trace does not note (tu_render_mode_stats counted only with SHENG_DIAG before). */
++static uint32_t
++tu_count_render_mode(struct tu_cmd_buffer *cmd, bool sysmem)
++{
++   const VkExtent2D extent = cmd->state.render_areas[0].extent;
++   const uint64_t kpx = (uint64_t) extent.width * extent.height / 1000;
++   const char *reason = cmd->state.rp.gmem_disable_reason;
++   const unsigned slot =
++      !sysmem ? 0 : reason && !strcmp(reason, "Autotune selected sysmem") ? 2 : 4;
++   p_atomic_inc(&tu_render_mode_counts[slot]);
++   p_atomic_add(&tu_render_mode_counts[slot + 1], kpx);
++   if (!sysmem) {
++      for (unsigned i = 0; i < cmd->state.pass->attachment_count; i++) {
++         const struct tu_image_view *iview = cmd->state.attachments[i];
++         if (iview && tu_attachment_unpadded(cmd, iview)) {
++            p_atomic_inc(&tu_render_mode_counts[6]);
++            break;
++         }
++      }
++   }
++   return 0;
++}
++
++uint32_t
++tu_op_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs, uint8_t mode, uint8_t kind, uint32_t w, uint32_t h, uint32_t z,
++            uint32_t kpx, uint32_t bandwidth, uint32_t hash, uint32_t format)
++{
++   if (!tu_pass_trace_on())
++      return 0;
++   const uint32_t seq = p_atomic_inc_return(&tu_pass_seq);
++   const uint64_t iova = tu_pass_ts_slot(cmd, seq);
++   if (!iova)
++      return 0;
++   struct tu_pass_rec rec = {};
++   rec.ns = tu_trace_clock_ns();
++   rec.seq = seq;
++   rec.width = MIN2(w, 0xffff);
++   rec.height = MIN2(h, 0xffff);
++   rec.draws = MIN2(z, 0xffff);
++   rec.mode = mode;
++   rec.colors = kind;
++   rec.kpx = kpx;
++   rec.bandwidth = bandwidth;
++   rec.fs_hash = hash;
++   rec.format = (uint16_t) format;
++   tu_pass_ring[seq % TU_PASS_RING] = rec;
++   if (cmd->device->physical_device->info->chip >= 7)
++      tu_pass_stamp<A7XX>(cs, iova);
++   else
++      tu_pass_stamp<A6XX>(cs, iova);
++   return seq;
++}
++
++void
++tu_op_end(struct tu_cmd_buffer *cmd, struct tu_cs *cs, uint32_t seq)
++{
++   if (!seq)
++      return;
++   struct tu_bo *bo = p_atomic_read(&tu_pass_ts_bo);
++   if (!bo || tu_pass_ts_dev != cmd->device)
++      return;
++   const uint64_t iova = bo->iova + (seq % TU_PASS_RING) * 16 + 8;
++   if (cmd->device->physical_device->info->chip >= 7)
++      tu_pass_stamp<A7XX>(cs, iova);
++   else
++      tu_pass_stamp<A6XX>(cs, iova);
++}
++
++/* The first 32 bits of a shader's blake3 string, its id in the pass ring. */
++static uint32_t
++tu_op_hash8(const char *s)
++{
++   uint32_t h = 0;
++   for (unsigned i = 0; s && i < 8 && s[i]; i++) {
++      const char c = s[i];
++      h = h << 4 | (uint32_t) (c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : 0);
++   }
++   return h;
++}
++
+ extern "C" __attribute__((visibility("default"))) void tu_render_mode_stats(uint64_t out[8]);
+ extern "C" __attribute__((visibility("default"))) void
+ tu_render_mode_stats(uint64_t out[8])
+@@ -4322,7 +4419,7 @@
+ 
+    tu_autotune::rp_ctx_t rp_ctx = NULL;
+    const bool sysmem = use_sysmem_rendering(cmd_buffer, &rp_ctx, rp_key);
+-   const uint32_t seq = tu_pass_trace_on() ? tu_note_render_mode(cmd_buffer, sysmem) : 0;
++   const uint32_t seq = tu_pass_trace_on() ? tu_note_render_mode(cmd_buffer, sysmem) : tu_count_render_mode(cmd_buffer, sysmem);
+    const uint64_t stamps = seq ? tu_pass_ts_slot(cmd_buffer, seq) : 0;
+    if (stamps)
+       tu_pass_stamp<CHIP>(&cmd_buffer->cs, stamps);
+@@ -4669,6 +4766,7 @@
+       default:
+          break;
+       }
++      cmd_buffer->houji_op = tu_op_begin(cmd_buffer, &cmd_buffer->cs, 7, 0, 0, 0, cmd_buffer->queue_family_index, 0, 0, 0, 0);
+    } else if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_SECONDARY) {
+       const bool pass_continue =
+          pBeginInfo->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+@@ -5613,6 +5711,8 @@
+       struct u_trace_address addr_preempt_latency_rp_hash = {};
+       addr_preempt_latency_rp_hash.offset = global_iova(cmd_buffer, max_preemption_latency_rp_hash);
+ 
++      tu_op_end(cmd_buffer, &cmd_buffer->cs, cmd_buffer->houji_op);
++      cmd_buffer->houji_op = 0;
+       trace_end_cmd_buffer(&cmd_buffer->trace, &cmd_buffer->cs, cmd_buffer, addr_preempt_latency, addr_preempt_latency_rp_hash);
+ 
+       cmd_buffer->autotune_ctx.snapshot_preempt_data(&cmd_buffer->cs);
+@@ -9873,6 +9973,10 @@
+       tu_set_render_mode<CHIP>(cs, { .shader_uses_rt = true });
+    }
+ 
++   const uint32_t houji_op = tu_op_begin(cmd, cs, 3, info->indirect ? 1 : 0, info->indirect ? 0 : info->blocks[0],
++                                         info->indirect ? 0 : info->blocks[1], info->indirect ? 0 : info->blocks[2],
++                                         local_size[0] | local_size[1] << 10 | local_size[2] << 20, 0,
++                                         tu_op_hash8((const char *) shader->variant->blake3_str), 0);
+    if (info->indirect) {
+       trace_start_compute_indirect(&cmd->trace, cs, cmd, info->unaligned,
+                                    (char *)shader->variant->blake3_str);
+@@ -9921,6 +10025,7 @@
+ 
+       trace_end_compute(&cmd->trace, cs);
+    }
++   tu_op_end(cmd, cs, houji_op);
+ 
+    /* For the workaround above, because it's using the "wrong" context for
+     * SP_PS_INSTR_SIZE we should emit another dummy event write to avoid a
+--- a/src/freedreno/vulkan/tu_cmd_buffer.h
++++ b/src/freedreno/vulkan/tu_cmd_buffer.h
+@@ -667,6 +667,7 @@
+    struct vk_command_buffer vk;
+ 
+    struct tu_device *device;
++   uint32_t houji_op;   /* houji: this primary's own entry in the pass ring (tu_op_begin, mode 7), 0 untraced */
+ 
+    struct u_trace_iterator trace_renderpass_start;
+    struct u_trace trace, rp_trace;
+@@ -1023,3 +1024,22 @@
+ }
+ 
+ #endif /* TU_CMD_BUFFER_H */
++
++/* houji: GPU work outside render passes, in the pass ring (tu_pass_ring_read) after the passes' modes 0-2, with SHENG_DIAG only (the
++ * plugin sets it from gpu-trace=1 or diag=1); without it nothing is recorded or emitted. Each entry is stamped like u_trace
++ * (CP_EVENT_WRITE7 RB_DONE_TS of the always-on counter) before and after the work, no wait added. Modes: 3 a compute dispatch (width,
++ * height, draws its grid in workgroups, 0 when indirect; kpx its local size x | y << 10 | z << 20; fs_hash the shader's blake3 first 32
++ * bits; colors 1 when indirect), 4 a transfer (colors its kind: 1 copy buffer, 2 copy image, 3 buffer to image, 4 image to buffer,
++ * 5 blit, 6 resolve, 7 fill buffer, 8 update buffer, 9 clear colour image, 10 clear depth/stencil image; width, height the image's
++ * extent; kpx the regions or ranges; bandwidth the bytes of a buffer transfer; format), 5 a cache flush outside a render pass
++ * (bandwidth its tu_cmd_flush_bits), 6 an event wait outside a render pass (draws the events), 7 a primary command buffer from its
++ * begin to its end (draws its queue family). */
++uint32_t tu_op_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs, uint8_t mode, uint8_t kind, uint32_t w, uint32_t h, uint32_t z,
++                     uint32_t kpx, uint32_t bandwidth, uint32_t hash, uint32_t format);
++void tu_op_end(struct tu_cmd_buffer *cmd, struct tu_cs *cs, uint32_t seq);
++struct tu_op_scope {
++   struct tu_cmd_buffer *cmd;
++   uint32_t seq;
++   ~tu_op_scope() { tu_op_end(cmd, &cmd->cs, seq); }
++};
++
+--- a/src/freedreno/vulkan/tu_clear_blit.cc
++++ b/src/freedreno/vulkan/tu_clear_blit.cc
+@@ -2857,6 +2857,7 @@
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_image, src_image, pBlitImageInfo->srcImage);
+    VK_FROM_HANDLE(tu_image, dst_image, pBlitImageInfo->dstImage);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 5, dst_image->vk.extent.width, dst_image->vk.extent.height, 0, pBlitImageInfo->regionCount, 0, 0, dst_image->vk.format)};
+ 
+    for (uint32_t i = 0; i < pBlitImageInfo->regionCount; ++i) {
+       /* can't blit both depth and stencil at once with D32_S8
+@@ -3058,6 +3059,7 @@
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_image, dst_image, pCopyBufferToImageInfo->dstImage);
+    VK_FROM_HANDLE(tu_buffer, src_buffer, pCopyBufferToImageInfo->srcBuffer);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 3, dst_image->vk.extent.width, dst_image->vk.extent.height, 0, pCopyBufferToImageInfo->regionCount, 0, 0, dst_image->vk.format)};
+ 
+    trace_start_copy_buffer_to_image(&cmd->trace, &cmd->cs, cmd, dst_image->vk.format);
+ 
+@@ -3266,6 +3268,7 @@
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_image, src_image, pCopyImageToBufferInfo->srcImage);
+    VK_FROM_HANDLE(tu_buffer, dst_buffer, pCopyImageToBufferInfo->dstBuffer);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 4, src_image->vk.extent.width, src_image->vk.extent.height, 0, pCopyImageToBufferInfo->regionCount, 0, 0, src_image->vk.format)};
+ 
+    trace_start_copy_image_to_buffer(&cmd->trace, &cmd->cs, cmd, src_image->vk.format);
+ 
+@@ -3629,6 +3632,7 @@
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_image, src_image, pCopyImageInfo->srcImage);
+    VK_FROM_HANDLE(tu_image, dst_image, pCopyImageInfo->dstImage);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 2, dst_image->vk.extent.width, dst_image->vk.extent.height, 0, pCopyImageInfo->regionCount, 0, 0, dst_image->vk.format)};
+ 
+    trace_start_copy_image(&cmd->trace, &cmd->cs, cmd, src_image->vk.format,
+                           dst_image->vk.format);
+@@ -3902,6 +3906,7 @@
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_buffer, src_buffer, pCopyBufferInfo->srcBuffer);
+    VK_FROM_HANDLE(tu_buffer, dst_buffer, pCopyBufferInfo->dstBuffer);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 1, 0, 0, 0, pCopyBufferInfo->regionCount, (uint32_t) MIN2(pCopyBufferInfo->pRegions[0].size, 0xffffffffull), 0, 0)};
+ 
+    trace_start_copy_buffer(&cmd->trace, &cmd->cs, cmd);
+ 
+@@ -3952,6 +3957,7 @@
+ {
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_buffer, buffer, dstBuffer);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 8, 0, 0, 0, 1, (uint32_t) MIN2(dataSize, 0xffffffffull), 0, 0)};
+ 
+    struct tu_cs_memory tmp;
+    VkResult result = tu_cs_alloc(&cmd->sub_cs, DIV_ROUND_UP(dataSize, 64), 64 / 4, &tmp);
+@@ -4049,6 +4055,8 @@
+    VK_FROM_HANDLE(tu_buffer, buffer, dstBuffer);
+ 
+    fillSize = vk_buffer_range(&buffer->vk, dstOffset, fillSize);
++   VK_FROM_HANDLE(tu_cmd_buffer, houji_cmd, commandBuffer);
++   tu_op_scope houji_scope{houji_cmd, tu_op_begin(houji_cmd, &houji_cmd->cs, 4, 7, 0, 0, 0, 1, (uint32_t) MIN2(fillSize, 0xffffffffull), 0, 0)};
+ 
+    VkDeviceAddress dst_va = vk_buffer_address(&buffer->vk, dstOffset);
+ 
+@@ -4064,6 +4072,7 @@
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_image, src_image, pResolveImageInfo->srcImage);
+    VK_FROM_HANDLE(tu_image, dst_image, pResolveImageInfo->dstImage);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 6, dst_image->vk.extent.width, dst_image->vk.extent.height, 0, pResolveImageInfo->regionCount, 0, 0, dst_image->vk.format)};
+    const struct blit_ops *ops = &r2d_ops<CHIP>;
+    struct tu_cs *cs = &cmd->cs;
+ 
+@@ -4459,6 +4468,7 @@
+ {
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_image, image, image_h);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 9, image->vk.extent.width, image->vk.extent.height, 0, rangeCount, 0, 0, image->vk.format)};
+ 
+    trace_start_clear_color_image(&cmd->trace, &cmd->cs, cmd, image->vk.format);
+ 
+@@ -4501,6 +4511,7 @@
+ {
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    VK_FROM_HANDLE(tu_image, image, image_h);
++   tu_op_scope houji_scope{cmd, tu_op_begin(cmd, &cmd->cs, 4, 10, image->vk.extent.width, image->vk.extent.height, 0, rangeCount, 0, 0, image->vk.format)};
+ 
+    trace_start_clear_depth_stencil_image(&cmd->trace, &cmd->cs, cmd,
+                                          image->vk.format);
+--- a/src/freedreno/vulkan/tu_event.cc
++++ b/src/freedreno/vulkan/tu_event.cc
+@@ -147,6 +147,7 @@
+ {
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
+    struct tu_cs *cs = cmd->state.pass ? &cmd->draw_cs : &cmd->cs;
++   tu_op_scope houji_scope{cmd, cmd->state.pass ? 0 : tu_op_begin(cmd, &cmd->cs, 6, 0, 0, 0, eventCount, 0, 0, 0, 0)};
+ 
+    bool skip_barrier = true;
+ 
