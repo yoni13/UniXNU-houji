@@ -838,6 +838,26 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
   the opens from 17872), each with an SMMU fault (FSR 0x80000002, FAR 0x131e440, between the driver's 0x302000 and 0x10000000
   buffers, guilty jobs), the boot-time fault seen before in root386 under two rings: a different class from the switch stall. Against
   root389-390 (two rings): the same fps and GPU time within the run-to-run spread, the switch stall gone by construction.
+  Taken as the baseline (hs=9, gpu-preempt=0). Known issue left open: the boot-time SMMU fault at 0x131e440 (root391, root386).
+- **Toward 120 fps: cpu7 and the scanout copy, audited** (root389-root392 traced opens, `framebud.py`; sources; no boot):
+  - *cpu7 is shared, not slow.* All domains ran at 2.58-2.63 GHz (sko=4's caps), cpu7 too. The four threads pinned there ran 10.4-14.4 ms
+    a frame (compositing 4.0-5.6, encoding 4.5-7.2, SpringBoard's main thread 0.8-2.7) and waited for it runnable: SpringBoard's main
+    thread 10.0-14.9 ms a frame, compositing 4.3-6.6, encoding 3.0-4.0. The encoding thread then idles 4.4-6.5 ms to the swap (the GPU
+    and the copy). The opens with more encoding are the slower ones (root391 6.1-6.5 ms in three of four, root392's first 7.2); without
+    a BO cache count in the logs, tu-bk=64's absence is not separable from the boots' spread.
+  - *Cuts, by cpu7 ms a frame:* 3.05 GHz on cpu7 (p7c; Branch A measured about 1 ms each off compositing and encoding) 1.5-2;
+    parallel encoding (the largest command buffer, 62 % in root317 under GMEM, stays; the rest to cpu5-6 at 1.6-1.8x the cost)
+    1.7-2.7; SpringBoard's main thread off cpu7 0.8-2.7 (it ran 10-14 ms a frame on cpu3 in root369); tu-bk back 0-1 on cold opens;
+    metal2vulkan and Turnip per-pass and per-draw work unknown under hs=9 (no function profile since GMEM). The compositing thread is
+    QuartzCore's: only its clock and its core help it.
+  - *The scanout copy.* `GpuScanoutPresenter.h` forces alpha with a compute kernel and falls back to a blit (`copyFromBuffer`, one call
+    where strides allow). The SSPP format 0x237ff (ARGB8888, bit 8 alpha enable) was read on another board (device records,
+    gpucomp26); houji's pipes, format and blend were never read. Clearing bit 8 (0x236ff, XRGB as the upstream DPU writes it) on the
+    pipes that scan the framebuffer would let a blit replace the kernel and fix the translucent-alpha case by construction, but the copy
+    moves the same 12.8 MB read (IO-coherent, snooped) and 12.8 MB written (Normal NC) a frame, and the four-pixel kernel showed its
+    limit is not instructions: a blit's gain is unmeasured and may be small, heat nearly none. The driver's direct scanout
+    (`NativeLegacyDisplay.cpp`, `dpu-scanout=2`: the pipes fetch the compositor's surface, no copy) needs `native_ufs_dpu_map`, a display
+    SMMU window houji does not have (its constants are another panel's), and the same alpha change first.
 
 ## Faults found on the way
 
