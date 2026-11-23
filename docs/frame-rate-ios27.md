@@ -1172,8 +1172,20 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     - GPU frame: 10.40 ms (the second ring ran; root413/414 without it: 9.5-9.6): SYSMEM passes 5.03, flushes (cells) 1.91,
       autotune offscreen 1.40, between CBS 0.47, job head 0.39 / tail 0.33, compute 0.29 (the copy now named 9257011e), 22 % outside
       any pass in the render job (0.84). Top passes: fs 7ebccf52 73-83 draws 1.47+1.17 ms, then 241ef7ce, b48b83f4, 5b50d467.
-  - *Next:* `hsq=1` A/B (its GMEM effect measured against mj=1 alone), and, before any further encoder merging, the numbers above say
-    the merge is the wrong lever for the boundaries; the pass continuations are, and they trade against inline recording.
+  - **The A/B, measured on one fixed window** (`gpuwin.py`, GPU busy 0.1-0.7 s after the first swap; root417 without mj on this build;
+    root416's readouts failed and root418 repeated it):
+    - Q4: gpu39 no-mj 10.24 / 11.25 (root405/406); **gpu41 mj=0 10.30 (root417)** - no build drift (the same figure); mj=1 10.07 /
+      10.09 (root413/414) - within noise of 10.30: the merge fires about 20 times a boot and cannot move the frame; mj=1+**hsq=1
+      10.85** (root418, 9.76-14.29) - no gain, if anything a little worse.
+    - root416/418 lost 6-7 of their 8 GESTURE AT lines (root416's swap readouts had rolled past its gestures too: only one open
+      measurable, 49 fps); `fixgesture.py` recovered root418's. gtlbusy's fps (root418 Q4 82.7 mean) and the fixed window disagree
+      with opens this few; neither is trusted over the other here.
+    - Guardrails clean (root416/417/418: hangs 0, faults 0, slots live 0, bad IB2 0, no crash; screenshots normal; peaks 63-70 C;
+      boot lines 979 / 990 bytes).
+    - **Decision: neither adopted. `hsq=1` no gain on the fixed window; `mj=1` neutral. Both stay in the tree, off by default. The
+      reference line stays `tt=1 hs=9 gp=0`, Q4, on gpu41 (seed leanlc39).**
+    - Before any further encoder merging: the remaining boundary cost is the pass continuations', and it trades against inline
+      recording.
     `Barrier::everything()` (all commands before to all after, memory) and the scheduler plans none before it: the same barrier that
     would let an encoder record into its predecessor's still-open primary.
 
