@@ -97,3 +97,14 @@ Findings:
   Preferences' main thread CPU bursts (its 1.1 CPU-s in the first second) - i.e., the app's own first-layout passes stall the
   animation handshake; the 350 ms cold wait is spawn + first-scene layout on that same thread before the first swappable frame.
   Neither clocks, placement of SB/backboardd, nor boosts move it; the work is inside Preferences/SB UIKit.
+
+## Corrected attribution + the sko cap question (last measurements of the session)
+
+- The earlier "SB 4021 makes the frames" was an artifact: tl's PID:NAME takes a thread NAME, not a tid; '30:4021' never tracked it.
+  Retraced with 30:#4021 + the fresh Preferences' main (pid 2880 tid 42931, WARM launch):
+  - Preferences main: 695 samples, running 531, median run 1.30 ms; cpus: 2 (495 rows), 3 (99), 4 (63), others sparse.
+    Running TIME heavily on cpu2 (d3, 2630 MHz domain) and never on cpu7 during the zoom.
+  - One corrected note: 30:4021 was NOT tracked in the earlier "blocked 399/400" claims either - that ustack was SB main (314).
+- The user's open objection stands and is unresolved: sko=4 holds d1-d3 at 2630 MHz through the launch burst while the fresh
+  app runs on those domains; native d2/d3 tops are higher. NEVER tested: a higher sko/runtime p-cap during the launch window.
+- Guard at session end: gpuf hangs 0, faults 0 (root420b last read); boot 995 bytes (tte/tt=1 hs=9 gp=0 + prof args) intact.
