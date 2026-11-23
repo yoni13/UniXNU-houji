@@ -715,6 +715,28 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     the job); jobs with no command buffer entry 0.94; compute 0.71 (the scanout copy, shader 9257011e, grid 75x334, 16x8, about
     0.49 ms each); cache flushes outside passes 0.46 (bits 0x21ff 20.8 a frame, 0x3 16.6); command buffers otherwise 0.11, small gaps
     0.13, transfers 0.06. About 45 render passes a frame (the "13" of root370-373 was the 512-entry ring read late).
+- **The three largest GPU costs, audited** (root379's traces and the sources, no boot):
+  - *Fullscreen GMEM passes.* All 9.2 a frame are single-sample without depth/stencil, render area 1200x2670; the ring keeps no input
+    attachment flag. The same fragment shader with as many draws costs 5-10 times less where the autotuner chose SYSMEM: `7ebccf52`
+    over 40 draws 2.76 ms (76 draws) in GMEM against 0.33 (47) in SYSMEM, 11-40 draws 1.25 against 0.20; `b0100a10` 11-40 1.15
+    against 0.11, over 40 2.86 against 0.48. In GMEM they pay about 30-40 us a draw over a 0.7 ms floor (1 draw 0.72 ms, 3 draws 0.72),
+    in SYSMEM 5-7 us. Turnip's BANDWIDTH autotuner (`tu_autotune.cc` 1009-1033) weighs load+store bytes x pixels x 1.1 against the
+    draws' samples x bytes, and nothing of the unpadded attachment's GMEM loads and stores or of draws replayed per tile. Passes of
+    more than 3 draws: 4.2 a frame, 5.0 ms; of 1-3 draws 5.0 a frame, 3.7 ms. The mode table's 8.72 ms against the exclusive 6.58: no
+    overlap with other entries (0.00 ms); 2.1 ms of pass time lies outside its job's stamps (CP-time job stamps against end-of-pipe
+    pass stamps). Boot argument `tum=s` (`tu_frame_diagnostic.h`) renders every pass in SYSMEM: a test needs no build.
+  - *The gaps after the scanout copy.* 90 % of the gap time of 0.5 ms or more (244 of 272 ms) follows the scanout copy's command
+    buffer (compute `9257011e`), a median 4.2 ms after each (p90 5.6); jobs ending with the copy have a median tail of 2.2 ms (375 ms in
+    all), the others 0.33 (77 ms). Turnip's Darwin submission emits no GPU wait (no `CP_WAIT_*` in `tu_knl_darwin.cc`). The copy is a
+    compute dispatch, which RB_DONE_TS does not follow: its end stamp comes before its writes end, and the rest shows as the gap and
+    the job's tail, until the next flush or the job's fence waits for it. The copy is then about 0.71 + 2.0 + 1.9 = 4.6 ms of GPU a
+    frame: 12.8 MB read and 12.8 MB written in about 4-5 ms, about 5 GB/s, as if the GPU wrote the scanout pages uncached (they are
+    an import, `newBufferWithBytesNoCopy`, whose owner may map them uncached, driver kind `ImportUncached`; not verified). The
+    frontend's own record, offer to copy returned: median 5.4 ms, p90 24.8 (queued behind the frame's work).
+  - *Job heads and tails.* Tails: 83 % is the copy's (above). Heads: about 0.6 ms per job (median 602 us; 807 after a copy), 2.0 ms a
+    frame at 3.2-3.5 jobs: the kernel's prologue flush, invalidate and wait for idle come before the job's start stamp, so a head is
+    the time from there to the first command buffer's start, real per-submission work. Jobs by content: copy and render 99, copy, other
+    and render 51, other and render 93, render 50, copy alone 26 (median 2.5 ms).
 
 ## Faults found on the way
 
