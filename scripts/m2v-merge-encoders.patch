@@ -1,0 +1,466 @@
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/batches.rs b/crates/metal2vulkan-runtime/src/command_buffer/batches.rs
+index 3c0cec4..b4e9287 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/batches.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/batches.rs
+@@ -109,6 +109,12 @@ impl<E, S> Batches<E, S> {
+         self.batches.last().is_some_and(Batch::signals_any)
+     }
+ 
++    /// houji (`houji_census::merge`): whether an encoder ending now joins the current batch with the encoder before it: the batch
++    /// holds an encoder, and no wait or step split it since, nor a signal waits for its end ([`encoder`](Self::encoder)).
++    pub(crate) fn joinable(&self) -> bool {
++        self.encoders > 0 && !self.signals_pending()
++    }
++
+     /// The event waits and the event signals encoded so far, each call counted, binary
+     /// semaphores' none: an encoder that ends now has them all before it
+     /// (`CommandBuffer::ended_encoders`).
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/first_submission.rs b/crates/metal2vulkan-runtime/src/command_buffer/first_submission.rs
+index 0cfda95..21254b9 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/first_submission.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/first_submission.rs
+@@ -766,7 +766,8 @@ impl State {
+                 .ended
+                 .get(part.encoder)
+                 .is_some_and(|record| record.taken.dead());
+-            (dead || self.unrunnable.contains(&part.encoder)) && !part.raws.is_empty()
++            // houji: a merged part's commands are in the shared primary (`EncoderCore::open_merging`).
++            (dead || self.unrunnable.contains(&part.encoder)) && (!part.raws.is_empty() || part.joined)
+         });
+         debug_assert!(!held, "a detached or rebound use's work submitted");
+         match held {
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+index 548074e..53111fa 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/mod.rs
+@@ -1749,6 +1749,44 @@ impl State {
+         self.end_encoder(command_buffer, recorded);
+     }
+ 
++    /// houji (`houji_census::merge`, `EncoderCore::open_merging`): the open primary an encoder of `kind` opened now may record into,
++    /// the tail the previous encoder left, or why not (a `houji_census::MERGE_NO_*` count). Only where nothing goes between the two
++    /// at the submission: the same batch (no wait, signal or host step since, `Batches::joinable`), not a resource state encoder
++    /// (whose updates bind before its batch's work), the previous part plain (its own primary, or merged itself; no segment, sparse
++    /// update or ASTC twin write, which its submission records after it), no predicated laying (submitted again), and a device whose
++    /// batches record nothing before an encoder but its barrier (no completed-work barrier, no held depths: `submit.rs`).
++    pub(super) fn joinable_tail(&mut self, device: &Device, kind: EncoderKind) -> Result<vk::CommandBuffer, usize> {
++        use crate::houji_census as h;
++        if kind == EncoderKind::ResourceState {
++            return Err(h::MERGE_NO_KIND);
++        }
++        let Some(tail) = self.tail else {
++            return Err(h::MERGE_NO_TAIL);
++        };
++        if !self.batches.joinable() {
++            return Err(h::MERGE_NO_BATCH);
++        }
++        let facts = &device.properties().driver_facts;
++        if device.shared().completed_by_barrier
++            || facts.contains(&metal2vulkan::device::DriverFact::MultisampledDepthFasterOutOfGeneral)
++        {
++            return Err(h::MERGE_NO_DEVICE);
++        }
++        if self.predication_mut().laying() {
++            return Err(h::MERGE_NO_LAYING);
++        }
++        let plain = self.recorded.last().is_some_and(|last| {
++            last.segments.is_empty()
++                && last.sparse.is_empty()
++                && last.twin_writes.is_empty()
++                && ((last.raws.len() == 1 && last.raws[0] == tail) || (last.joined && last.raws.is_empty()))
++        });
++        match plain {
++            true => Ok(tail),
++            false => Err(h::MERGE_NO_PREVIOUS),
++        }
++    }
++
+     /// An encoder of `command_buffer` ended with `recorded`: it joins the current batch, or a
+     /// new one after the batch's signals. The tail before it ends: with its batch's end where
+     /// that batch ended before this encoder ([`CommandBufferShared::close_tail`]).
+@@ -1867,6 +1905,10 @@ impl State {
+         for write in part.twin_writes.drain(..) {
+             retained.push(Box::new(write));
+         }
++        if part.joined {
++            // houji: its commands are in the shared primary, which runs them still.
++            crate::houji_census::merge_count(crate::houji_census::MERGE_LATE);
++        }
+         part.raws.clear();
+         part.summary = part.summary.fences_only();
+     }
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/reencode.rs b/crates/metal2vulkan-runtime/src/command_buffer/reencode.rs
+index a396c7d..2f91bf0 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/reencode.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/reencode.rs
+@@ -401,6 +401,10 @@ impl State {
+                 segments,
+             } = replayed;
+             let recorded = &mut self.recorded[part];
++            if recorded.joined {
++                // houji: its first commands stay in the shared primary (`EncoderCore::open_merging`).
++                crate::houji_census::merge_count(crate::houji_census::MERGE_LATE);
++            }
+             recorded.raws = raws;
+             recorded.summary = summary;
+             // Its first segments go: the encoding again left a segment of its own in each
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/storage_form.rs b/crates/metal2vulkan-runtime/src/command_buffer/storage_form.rs
+index 9fe8d04..45161b1 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/storage_form.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/storage_form.rs
+@@ -89,6 +89,7 @@ impl CommandBuffer {
+                 summary: recorded.summary,
+                 sparse: Vec::new(),
+                 twin_writes: Vec::new(),
++                joined: false,
+             },
+         );
+         state.retained.extend(recorded.retained.into_entry());
+diff --git a/crates/metal2vulkan-runtime/src/command_buffer/submit.rs b/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
+index 600cfae..1d31597 100644
+--- a/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
++++ b/crates/metal2vulkan-runtime/src/command_buffer/submit.rs
+@@ -797,12 +797,17 @@ impl CommandBufferShared {
+             // it: no command buffer of barriers goes there, but one that also carries the
+             // completed work's barrier, the start or a held depth's move.
+             let part = &state.recorded[start + offset];
+-            let barriered = (part.barriered).is_some_and(|raw| part.raws.first() == Some(&raw));
++            // houji: a merged part (`EncoderCore::open_merging`) began with that barrier in the shared primary, which holds its
++            // commands: nothing of its own goes here.
++            let barriered = part.joined || (part.barriered).is_some_and(|raw| part.raws.first() == Some(&raw));
+             if barriered && completed_barrier.is_none() && start_stamp.is_none() && moves.is_empty()
+             {
+                 work.extend(&part.raws);
+                 continue;
+             }
++            if part.joined {
++                crate::houji_census::merge_count(crate::houji_census::MERGE_SUBMIT);
++            }
+             let (pair, count) = barrier_pair(completed_barrier.take(), *barrier);
+             let globals = &pair[..count];
+             if !globals.is_empty() || start_stamp.is_some() || !moves.is_empty() {
+diff --git a/crates/metal2vulkan-runtime/src/encoder.rs b/crates/metal2vulkan-runtime/src/encoder.rs
+index e932b56..7b2dd8a 100644
+--- a/crates/metal2vulkan-runtime/src/encoder.rs
++++ b/crates/metal2vulkan-runtime/src/encoder.rs
+@@ -158,6 +158,10 @@ pub(super) struct Recorded {
+     /// their second decoded twins after its work (`texture/decoded_twin.rs`); none for any other
+     /// encoder.
+     pub(super) twin_writes: Vec<TwinWrite>,
++    /// houji (`houji_census::merge`): the encoder recorded into the primary the part before it left open, after a barrier from
++    /// everything before ([`EncoderCore::open_merging`]): its commands are in that part's `VkCommandBuffer`, `raws` is empty, and its
++    /// batch records nothing before it (`command_buffer/submit.rs`).
++    pub(super) joined: bool,
+ }
+ 
+ /// Commands an encoder left to record later (`deferred.rs`).
+@@ -371,6 +375,8 @@ pub(super) struct EncoderCore {
+     barriered: Option<vk::CommandBuffer>,
+     /// The encoder's `VkCommandBuffer`s ended before a segment, in order.
+     ended: Vec<vk::CommandBuffer>,
++    /// houji: `raw` is the primary the command buffer's previous encoder left open ([`open_merging`](Self::open_merging)).
++    joined: bool,
+     /// The segments it left for commit, `executions_at` counting its own executions.
+     segments: Vec<Segment>,
+     /// Its first parts, which a command-predication record left out of the command buffer's
+@@ -611,6 +617,42 @@ impl EncoderCore {
+         call: &'static str,
+         kind: EncoderKind,
+         ordered: bool,
++    ) -> Result<EncoderCore, Error> {
++        Self::open_merging(command_buffer, call, kind, ordered, true)
++    }
++
++    /// houji: whether an encoder of `kind` opened now would merge (`houji_census::merge`, [`open_merging`](Self::open_merging)): a
++    /// render encoder asks before it decides to record its first instance inline (`render/inline_first.rs`), which a merged one
++    /// does not: an inline pass's commands before the pass go in a command buffer before the pass's, which would run before the
++    /// previous encoders' work in the shared primary. The last render encoder's end settled first, its carried draw left in place
++    /// (`settle_ended`).
++    pub(super) fn join_candidate(command_buffer: &CommandBuffer, kind: EncoderKind) -> bool {
++        if !crate::houji_census::merge() {
++            return false;
++        }
++        command_buffer.settle_ended();
++        let mut state = command_buffer.state();
++        if state.refusal().is_some() {
++            return false;
++        }
++        match state.joinable_tail(command_buffer.device(), kind) {
++            Ok(_) => true,
++            Err(why) => {
++                crate::houji_census::merge_count(why);
++                false
++            }
++        }
++    }
++
++    /// [`open`](Self::open), and under `mj=1` (`houji_census::merge`) where `may_join` and the command buffer allows it
++    /// (`State::joinable_tail`), in the primary its previous encoder left open, behind a barrier from everything before, as past
++    /// [`PLANNED_BARRIERS`]: the scheduler plans no barrier before it, and Turnip begins no primary for it (`tu_init_hw`).
++    pub(super) fn open_merging(
++        command_buffer: &CommandBuffer,
++        call: &'static str,
++        kind: EncoderKind,
++        ordered: bool,
++        may_join: bool,
+     ) -> Result<EncoderCore, Error> {
+         // The last render encoder's end, where its call left it to the device's lowering thread.
+         command_buffer.settle_end();
+@@ -618,24 +660,48 @@ impl EncoderCore {
+         if let Some(problem) = state.refusal() {
+             return Err(invalid(call, problem));
+         }
+-        // The pool's primary begun ahead where it holds one (`spares.rs`).
+-        let (raw, begun) = command_buffer.encoder_primary(&mut state)?;
+         let shared = command_buffer.device().shared();
+-        if !begun {
+-            let begin = vk::CommandBufferBeginInfo::default()
+-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+-            // SAFETY: the command buffer was just handed out of the pool, under the state lock.
+-            unsafe { shared.vk().begin_command_buffer(raw, &begin) }.map_err(vulkan)?;
+-        }
+-        shared.counts.encoder_command_buffer_begun(Begun::Encoder);
+-        if begun {
+-            shared.counts.encoder_primary_begun_ahead();
+-        }
+-        // The first encoder of a timed command buffer writes its start first (`gpu_time.rs`).
+-        command_buffer.open_start(&mut state, raw);
++        let merging = crate::houji_census::merge();
++        let tail = match (merging, may_join) {
++            (true, true) => match state.joinable_tail(command_buffer.device(), kind) {
++                Ok(tail) => Some(tail),
++                Err(why) => {
++                    crate::houji_census::merge_count(why);
++                    None
++                }
++            },
++            // A render encoder's refusal was counted as it asked (`join_candidate`).
++            (true, false) | (false, _) => None,
++        };
++        let joined = tail.is_some();
++        let raw = match tail {
++            Some(tail) => {
++                // The tail is this encoder's now: the next encoder's end closes it, not this one's.
++                state.tail = None;
++                crate::houji_census::merge_count(crate::houji_census::MERGE_JOINED);
++                tail
++            }
++            None => {
++                // The pool's primary begun ahead where it holds one (`spares.rs`).
++                let (raw, begun) = command_buffer.encoder_primary(&mut state)?;
++                if !begun {
++                    let begin = vk::CommandBufferBeginInfo::default()
++                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
++                    // SAFETY: the command buffer was just handed out of the pool, under the state lock.
++                    unsafe { shared.vk().begin_command_buffer(raw, &begin) }.map_err(vulkan)?;
++                }
++                shared.counts.encoder_command_buffer_begun(Begun::Encoder);
++                if begun {
++                    shared.counts.encoder_primary_begun_ahead();
++                }
++                // The first encoder of a timed command buffer writes its start first (`gpu_time.rs`).
++                command_buffer.open_start(&mut state, raw);
++                raw
++            }
++        };
+         // Past the encoders whose barriers the scheduler plans, a barrier from everything before
+-        // leads the encoder's commands (the module docs).
+-        let barriered = (state.encoders_ended() >= PLANNED_BARRIERS).then(|| {
++        // leads the encoder's commands (the module docs); a merged encoder's too.
++        let barriered = (joined || state.encoders_ended() >= PLANNED_BARRIERS).then(|| {
+             // SAFETY: the command buffer was just begun, outside a render pass, under the state
+             // lock; only this encoder records it.
+             unsafe { Barrier::everything().record(shared.vk(), raw) };
+@@ -666,6 +732,7 @@ impl EncoderCore {
+             pass: None,
+             barriered,
+             ended: Vec::new(),
++            joined,
+             segments: Vec::new(),
+             left_out: 0,
+             uses: EncoderUses::new(ordered),
+@@ -813,6 +880,7 @@ impl EncoderCore {
+             pass: None,
+             barriered: None,
+             ended: Vec::new(),
++            joined: false,
+             segments: Vec::new(),
+             left_out: 0,
+             uses: EncoderUses::new(ordered),
+@@ -2704,6 +2772,7 @@ impl EncoderCore {
+             raw,
+             barriered,
+             mut ended,
++            joined,
+             segments,
+             left_out,
+             uses,
+@@ -2797,9 +2866,19 @@ impl EncoderCore {
+                     summary: summary.fences_only(),
+                     sparse: Vec::new(),
+                     twin_writes: Vec::new(),
++                    joined: false,
+                 },
+             );
+         }
++        // houji: a merged encoder (`open_merging`) ends in the primary it joined, in one part: else its commands cannot keep their
++        // place (a segment, a continuation, a part left out), and the command buffer is abandoned rather than run them out of order;
++        // merging stops (`houji_census::MERGE_VIOLATION`).
++        let alone = !joined
++            || (segments.is_empty() && left_out == 0 && ended.len() == 1 && Some(ended[0]) == barriered && twin_writes.is_empty());
++        if !alone {
++            crate::houji_census::merge_count(crate::houji_census::MERGE_VIOLATION);
++            state.abandoned = true;
++        }
+         let parts = into_parts(ended, segments, base);
+         // The writes into ASTC carriers go with the last part (a blit encoder's only one).
+         let count = parts.len();
+@@ -2815,16 +2894,19 @@ impl EncoderCore {
+                 true => twin_writes.take().unwrap_or_default(),
+                 false => Vec::new(),
+             };
++            // houji: a merged encoder's commands are in the primary the part before it holds: none of its own to submit.
++            let merged = joined && alone;
+             state.end_encoder(
+                 &open.command_buffer,
+                 Recorded {
+                     encoder,
+-                    raws,
++                    raws: if merged { Vec::new() } else { raws },
+                     barriered,
+                     segments,
+                     summary,
+                     sparse: Vec::new(),
+                     twin_writes,
++                    joined: merged,
+                 },
+             );
+         }
+diff --git a/crates/metal2vulkan-runtime/src/houji_census.rs b/crates/metal2vulkan-runtime/src/houji_census.rs
+index 18608e8..43c4478 100644
+--- a/crates/metal2vulkan-runtime/src/houji_census.rs
++++ b/crates/metal2vulkan-runtime/src/houji_census.rs
+@@ -705,3 +705,86 @@ pub fn placement_misses(i: usize) -> Vec<u64> {
+     let Ok(kept) = PLACE_MISSES.lock() else { return Vec::new() };
+     kept.iter().skip(2 * i).take(2).flat_map(|(v, n)| v.iter().copied().chain([*n])).collect()
+ }
++
++/// houji: boot argument `mj=1`, merged encoders (`EncoderCore::open_merging`, `command_buffer/mod.rs` `State::joinable_tail`): an encoder
++/// records into the primary `VkCommandBuffer` its command buffer's previous encoder left open (the tail), behind a barrier from
++/// everything before, in place of a primary of its own. Each primary Turnip begins with its whole hardware state set up
++/// (`tu_init_hw`), 16 us of GPU apart from the work (root410: 140 primaries a frame, 1.71 ms). Off after a merged encoder could not
++/// keep its place ([`MERGE_VIOLATION`]).
++pub(crate) fn merge() -> bool {
++    use std::sync::atomic::AtomicI8;
++    static ON: AtomicI8 = AtomicI8::new(-1);
++    if ON.load(Ordering::Relaxed) < 0 {
++        let mut text = [0u8; 1100];
++        let mut length = text.len() - 1;
++        // SAFETY: a nul-terminated name and a buffer of `length` bytes the call writes at most.
++        let read = unsafe {
++            libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
++        };
++        let args = &text[..length.min(text.len())];
++        let on = read == 0
++            && args.windows(4).enumerate().any(|(at, w)| {
++                w == b"mj=1" && (at == 0 || args[at - 1] == b' ') && matches!(args.get(at + 4), None | Some(&b' ') | Some(&0))
++            });
++        ON.store(on as i8, Ordering::Relaxed);
++    }
++    ON.load(Ordering::Relaxed) == 1 && !MERGE_OFF.load(Ordering::Relaxed)
++}
++
++/// The merge counts ([`merge_count`]): encoders merged; encoders not merged because the command buffer had no open tail (its first
++/// encoder, or the tail closed), a batch boundary since (an event's wait or signal, a host step), a resource state encoder, the
++/// previous part not plain (a segment, sparse updates, ASTC twin writes), the device (its completed work made visible by a barrier, or
++/// held depths), a predicated loop's laying (a render encoder's counted as it asks, `EncoderCore::join_candidate`); merged encoders that could not keep
++/// their place at their end (a segment, a continuation, a part left out: the command buffer is abandoned and merging stops); merged
++/// parts failed, refused or encoded again after their end (their commands still in the shared primary); merged parts whose batch
++/// planned a timestamp, a held depth's move or a completed-work barrier before them.
++pub(crate) const MERGE_JOINED: usize = 0;
++pub(crate) const MERGE_NO_TAIL: usize = 1;
++pub(crate) const MERGE_NO_BATCH: usize = 2;
++pub(crate) const MERGE_NO_KIND: usize = 3;
++pub(crate) const MERGE_NO_PREVIOUS: usize = 4;
++pub(crate) const MERGE_NO_DEVICE: usize = 5;
++pub(crate) const MERGE_NO_LAYING: usize = 6;
++pub(crate) const MERGE_VIOLATION: usize = 7;
++pub(crate) const MERGE_LATE: usize = 8;
++pub(crate) const MERGE_SUBMIT: usize = 9;
++const MERGE_COUNTS: usize = 10;
++const MERGE_NAMES: [&str; MERGE_COUNTS] =
++    ["joined", "no-tail", "batch", "kind", "previous", "device", "laying", "violation", "late", "submit"];
++static MERGE_N: [AtomicU64; MERGE_COUNTS] = [const { AtomicU64::new(0) }; MERGE_COUNTS];
++static MERGE_OFF: AtomicBool = AtomicBool::new(false);
++
++pub(crate) fn merge_count(which: usize) {
++    MERGE_N[which].fetch_add(1, Ordering::Relaxed);
++    if which == MERGE_VIOLATION {
++        MERGE_OFF.store(true, Ordering::Relaxed);
++    }
++    merge_note();
++}
++
++/// The counts, at most once a second, into merge.txt beside the render server's frames.trace (Turnip's lazy-aged.txt is there too),
++/// by the render server alone.
++fn merge_note() {
++    use std::sync::OnceLock;
++    use std::time::Instant;
++    static START: OnceLock<Instant> = OnceLock::new();
++    static LAST: AtomicU64 = AtomicU64::new(0);
++    static RENDER_SERVER: OnceLock<bool> = OnceLock::new();
++    let server = *RENDER_SERVER.get_or_init(|| {
++        std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n == "backboardd")).unwrap_or(false)
++    });
++    if !server {
++        return;
++    }
++    let now = START.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1000;
++    let last = LAST.load(Ordering::Relaxed);
++    if now < last + 1000 || LAST.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_err() {
++        return;
++    }
++    let mut line = String::from("merge");
++    for (name, n) in MERGE_NAMES.iter().zip(MERGE_N.iter()) {
++        line.push_str(&format!(" {name} {}", n.load(Ordering::Relaxed)));
++    }
++    line.push_str(if MERGE_OFF.load(Ordering::Relaxed) { " off\n" } else { "\n" });
++    let _ = std::fs::write("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/merge.txt", line);
++}
+diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-runtime/src/render.rs
+index 0528ce4..7bfc627 100644
+--- a/crates/metal2vulkan-runtime/src/render.rs
++++ b/crates/metal2vulkan-runtime/src/render.rs
+@@ -2054,7 +2054,10 @@ impl CommandBuffer {
+         // groups record after the first group's pass: its draws' secondary begins only where a
+         // command records into it (`RenderCommandEncoder::begin_current_draws`).
+         let extended = ExtendedShadows::of(device, descriptor, &layout, rate_map.is_some());
+-        let opens = match again.is_none() && groups == 1 {
++        // houji (`houji_census::merge`, mj=1): a render encoder that merges into its command buffer's open primary records its pass
++        // at its end, not inline (`EncoderCore::join_candidate`).
++        let joining = again.is_none() && EncoderCore::join_candidate(self, EncoderKind::Render);
++        let opens = match again.is_none() && groups == 1 && !joining {
+             true => inline_first::opens_inline(device, &layout, rate_map.is_some(), &extended),
+             false => Err(NotInline::Encoders),
+         };
+@@ -2071,7 +2074,7 @@ impl CommandBuffer {
+         };
+         // A refusal past here leaves the secondary command buffer unused, freed with the pool.
+         let mut core = match again {
+-            None => EncoderCore::open(self, CALL, EncoderKind::Render, false)?,
++            None => EncoderCore::open_merging(self, CALL, EncoderKind::Render, false, joining)?,
+             Some(_) => EncoderCore::replaying(self, false)?,
+         }
+         .boxed();
+diff --git a/crates/metal2vulkan-runtime/src/sparse/encoder.rs b/crates/metal2vulkan-runtime/src/sparse/encoder.rs
+index 0629f18..0f4dd47 100644
+--- a/crates/metal2vulkan-runtime/src/sparse/encoder.rs
++++ b/crates/metal2vulkan-runtime/src/sparse/encoder.rs
+@@ -452,6 +452,7 @@ impl ResourceStateCommandEncoder {
+                 summary: Summary::of_fences(waits, fence_updates),
+                 sparse: updates,
+                 twin_writes: Vec::new(),
++                joined: false,
+             },
+         );
+         drop(state);

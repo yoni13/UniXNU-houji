@@ -30,21 +30,32 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
  }
  
  static bool
-@@ -1489,6 +1511,13 @@
+@@ -1489,6 +1511,24 @@
     /* tum=s (tu_sheng_render_mode) renders even those passes in system memory, backing their transient attachments at the
      * pass: the colour reference for the GMEM swap trace. */
     const bool strict_sysmem = sheng_mode == 's';
 +   /* houji: hs bit 3 takes the passes of bits 0 and 1 to system memory even with a lazily allocated attachment without memory, which
 +    * the pass then backs (tu_allocate_transient_attachments); a freed lazily allocated BO then stays mapped as the BO cache keeps the
 +    * others (tu_knl_darwin.cc darwin_lazy_defer): Turnip's Darwin submissions do not hold data BOs. */
-+   if ((tu_houji_sysmem_mode() & 8) && !forced_sysmem && tu_houji_sysmem_pass(cmd, tu_houji_sysmem_mode())) {
++   /* houji: hsq=1 (tu_houji_quad_gmem): a pass of stacked full-screen quads keeps its memoryless attachment without memory in GMEM: it
++    * skips bit 3 here and the test below renders it there, as without bit 3. The vertices are counted with hsq=1 (tu_draw stats). */
++   bool unbacked = false;
++   const bool quads = tu_houji_quad_gmem() && cmd->state.rp.drawcall_count >= 4 &&
++                      cmd->state.rp.verts <= 6 * cmd->state.rp.drawcall_count;
++   for (unsigned i = 0; quads && !unbacked && i < cmd->state.pass->attachment_count; i++) {
++      const struct tu_image_view *iview = cmd->state.attachments[i];
++      unbacked = iview && !(iview->image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) && iview->image->mem &&
++                 iview->image->mem->lazy && !iview->image->mem->bo;
++   }
++   const bool quad_gmem = quads && unbacked;
++   if ((tu_houji_sysmem_mode() & 8) && !forced_sysmem && !quad_gmem && tu_houji_sysmem_pass(cmd, tu_houji_sysmem_mode())) {
 +      cmd->state.rp.gmem_disable_reason = "houji: unpadded full-screen pass, memoryless attachments backed (hs bit 3)";
 +      return true;
 +   }
     for (unsigned i = 0; !(forced_sysmem && strict_sysmem) && i < cmd->state.pass->attachment_count; i++) {
        const struct tu_image_view *iview = cmd->state.attachments[i];
        if (iview && !(iview->image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) && iview->image->mem &&
-@@ -1501,6 +1530,17 @@
+@@ -1501,6 +1541,17 @@
        return true;
     }
  
@@ -62,10 +73,19 @@ diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd
     tu_autotune::render_mode optimal_mode =
        cmd->device->autotune->get_optimal_mode(cmd, rp_ctx, rp_key);
     bool use_sysmem = optimal_mode == tu_autotune::render_mode::SYSMEM;
+@@ -8788,6 +8839,8 @@
+          rp->fs_hash = tu_hash32(fs->variant->blake3_str);
+       }
+       rp->verts += draw_count;
++   } else if (tu_houji_quad_gmem()) {
++      rp->verts += draw_count;   /* houji: hsq=1's test of stacked quads (use_sysmem_rendering) */
+    }
+ 
+    rp->drawcall_bandwidth_per_sample_sum +=
 diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h
 --- a/src/freedreno/vulkan/tu_frame_diagnostic.h
 +++ b/src/freedreno/vulkan/tu_frame_diagnostic.h
-@@ -35,7 +35,20 @@
+@@ -35,7 +35,36 @@
        return (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 8000000000ull) & 1 ? 'g' : 0;
     return mode;
  }
@@ -81,8 +101,24 @@ diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/t
 +   }
 +   return (unsigned) mode;
 +}
++/* houji: boot argument hsq=1, apart from hs (whose parsers read one digit): with hs bit 3, a full-screen pass of stacked quads (4 draws
++ * or more, 6 vertices a draw at most) with a memoryless attachment that has no memory stays in GMEM, where that attachment lives in tile
++ * memory alone (use_sysmem_rendering). root387 (GMEM) against root410 (hs bit 3): fs 7623f474, 7 draws of 6 vertices, 1.0 ms against
++ * 2.0-2.4; fs 241ef7ce, 5 draws of 510 vertices, 0.82 ms against 65 us, which stays in system memory. */
++static inline bool tu_houji_quad_gmem() {
++   static int on = -1;
++   if (on < 0) {
++      char args[1100] = {};
++      size_t size = sizeof args - 1;
++      const char *at = sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0 ? args : nullptr;
++      while (at && (at = strstr(at, "hsq=")) && at != args && at[-1] != ' ') at += 4;
++      on = at && at[4] == '1' && (at[5] == ' ' || at[5] == 0);
++   }
++   return on > 0;
++}
  #else
 +static inline unsigned tu_houji_sysmem_mode() {return 0;}
++static inline bool tu_houji_quad_gmem() {return false;}
  static inline char tu_sheng_render_mode() {return 0;}
  static inline bool tu_swap_trace_on() {return false;}
  static inline void tu_frame_event(uint32_t,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0) {}
