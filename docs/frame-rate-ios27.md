@@ -1259,6 +1259,20 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     boot-order effect larger than the lever, not explained. Pixels (`fbshot.py`): two grabs of one boot identical (0 pixels);
     root431 against root432 510 pixels, all in the battery icon's bolt (1006,282)-(1036,325); root433 against root434 identical.
   - **Decision: pf=1 not adopted** (no GPU time measured); off by default. Effects below about 0.8 ms need an A/B inside one boot.
+- **Why the boot order moved the measure, and where pf=1's saving went** (root420-root434's logs; no build, no boot):
+  - *The boot-order effect is CPU pacing, not the GPU.* Per open, GPU ms a frame (`gpuwin.py`'s measure) falls as the open's swap
+    rate rises, inside every boot. The GPU's clock does not follow it: root431 (slow) spent 48-67 % of its opens' DCVS windows at
+    903 MHz, as the fast root432/434 did (49-69 %); root433 (slow) 7-16 %. The CPU governor's sampled states during the opens do:
+    in the slow boots domains sat at their minimum (root433 d1/d2 499/480 MHz, root431 d3 499 MHz in 18 of 35 samples), in the
+    fast ones at their caps. All four ran under the skin estimate's second step (skin 43.5-44.4 C: caps d1 1286 MHz, cpu7
+    1248 MHz), far below the stock 2630 MHz of the 25-32 C runs. `gpuwin.py` counts the union of the jobs, which holds the GPU's
+    waits inside a job, so a slower CPU reads as more GPU time a frame: the earlier separate-boot A/Bs (mj, hsq, h16, pf) carry
+    this confound.
+  - *pf=1's saving* (`pyrcost.py`, each fs df543221 pass, root422/426 against root430): from the end of the work before to the end
+    of the pass's primary, median 44 us without pf, 37 with (mean 57.3 / 53.9 against 55.0). The copy's own primary went (its
+    7 us `tu_init_hw` and its tail), but the pass recorded as a secondary takes 10 us against 8, and the 10-11 us CP switch that
+    preceded the copy's primary now precedes the pass's: about 5 us a level, 0.2 ms a frame at 42, inside the noise.
+    `tu_init_hw` is additive where a primary goes; the CP switch moves with the encoder boundary, it does not go.
 
 ## Faults found on the way
 
