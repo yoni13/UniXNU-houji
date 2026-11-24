@@ -25,10 +25,78 @@ index b25b5fb..dbe1fad 100644
  TU_GENX(tu_CmdCopyImage2);
  
 diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
-index f618617..128617c 100644
+index f618617..da60888 100644
 --- a/src/freedreno/vulkan/tu_cmd_buffer.cc
 +++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
-@@ -4858,9 +4858,14 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+@@ -4846,6 +4846,67 @@ tu_cmd_buffer_begin(struct tu_cmd_buffer *cmd_buffer,
+    return VK_SUCCESS;
+ }
+ 
++/* houji (the trace on, tu_pass_trace_on): CP-time stamps. Each is a CP_REG_TO_MEM of CP_ALWAYS_ON_COUNTER, written when the CP
++ * reaches the packet (not when the RB has drained the work before it, as the pass ring's RB_DONE_TS stamps are), into an entry of
++ * its own ring with the pass ring sequence number it goes with and a tag: kind << 28 (1 a primary's head, before tu_init_hw, beside
++ * its mode 8 entry; 2 a primary's end, after its last packet, beside its mode 7 entry) | its command pool's address >> 4 (28
++ * bits). The ring goes to m2v/cpstamps.bin (16-byte entries: ticks, sequence, tag), at most every 0.5 s, by the render server. */
++#define TU_HOUJI_CP_RING 65536
++static struct tu_bo *tu_houji_cp_bo;
++static struct tu_device *tu_houji_cp_dev;
++static uint32_t tu_houji_cp_seq;
++
++static void
++tu_houji_cp_stamp(struct tu_cmd_buffer *cmd, struct tu_cs *cs, uint32_t of, uint32_t kind)
++{
++   if (!of || !tu_pass_trace_on())
++      return;
++   struct tu_device *dev = cmd->device;
++   struct tu_bo *bo = p_atomic_read(&tu_houji_cp_bo);
++   if (!bo) {
++      static simple_mtx_t lock = SIMPLE_MTX_INITIALIZER;
++      simple_mtx_lock(&lock);
++      if (!tu_houji_cp_bo && !tu_houji_cp_dev) {
++         tu_houji_cp_dev = dev;
++         struct tu_bo *made = NULL;
++         if (tu_bo_init_new(dev, NULL, &made, TU_HOUJI_CP_RING * 16, TU_BO_ALLOC_INTERNAL_RESOURCE, "houji cp stamps") == VK_SUCCESS) {
++            if (tu_bo_map(dev, made, NULL) == VK_SUCCESS) {
++               memset(made->map, 0, TU_HOUJI_CP_RING * 16);
++               p_atomic_set(&tu_houji_cp_bo, made);
++            } else {
++               tu_bo_finish(dev, made);
++            }
++         }
++      }
++      simple_mtx_unlock(&lock);
++      bo = p_atomic_read(&tu_houji_cp_bo);
++   }
++   if (!bo || tu_houji_cp_dev != dev)
++      return;
++   const uint32_t at = p_atomic_inc_return(&tu_houji_cp_seq) % TU_HOUJI_CP_RING;
++   uint32_t *entry = (uint32_t *) bo->map + at * 4;
++   entry[0] = entry[1] = 0;
++   entry[2] = of;
++   entry[3] = kind << 28 | (uint32_t) (((uintptr_t) cmd->vk.pool >> 4) & 0x0fffffff);
++   tu_cs_emit_pkt7(cs, CP_REG_TO_MEM, 3);
++   tu_cs_emit(cs, CP_REG_TO_MEM_0_REG(TU_CALLX(dev, __CP_ALWAYS_ON_COUNTER)({}).reg) | CP_REG_TO_MEM_0_CNT(2) |
++                  CP_REG_TO_MEM_0_64B);
++   tu_cs_emit_qw(cs, bo->iova + at * 16);
++   /* The file, by the render server, every 512th stamp where 0.5 s passed since the last. */
++   static const bool server = getprogname() && !strcmp(getprogname(), "backboardd");
++   static uint64_t written_ns;
++   if (server && !(at & 511)) {
++      const uint64_t now = os_time_get_nano();
++      if (now - p_atomic_read(&written_ns) >= 500000000ull) {
++         p_atomic_set(&written_ns, now);
++         if (FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/cpstamps.bin", "wb")) {
++            fwrite(bo->map, 16, TU_HOUJI_CP_RING, f);
++            fclose(f);
++         }
++      }
++   }
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+                       const VkCommandBufferBeginInfo *pBeginInfo)
+@@ -4858,9 +4919,15 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
     /* setup initial configuration into command buffer */
     if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
        switch (cmd_buffer->queue_family_index) {
@@ -37,6 +105,7 @@ index f618617..128617c 100644
 +         /* houji (the trace on, tu_pass_trace_on): the primary's head, tu_init_hw, stamped as a pass ring entry of mode 8, so the
 +          * gap between two primaries splits into the jump between them and the head. */
 +         const uint32_t houji_head = tu_op_begin(cmd_buffer, &cmd_buffer->cs, 8, 0, 0, 0, 0, 0, 0, 0, 0);
++         tu_houji_cp_stamp(cmd_buffer, &cmd_buffer->cs, houji_head, 1);
           TU_CALLX(cmd_buffer->device, tu_init_hw)(cmd_buffer, &cmd_buffer->cs);
 +         tu_op_end(cmd_buffer, &cmd_buffer->cs, houji_head);
           break;
@@ -44,6 +113,23 @@ index f618617..128617c 100644
        default:
           break;
        }
+@@ -5778,6 +5845,8 @@ VKAPI_ATTR VkResult VKAPI_CALL
+ tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
+ {
+    VK_FROM_HANDLE(tu_cmd_buffer, cmd_buffer, commandBuffer);
++   /* houji: the primary's own pass ring entry (mode 7), for its end's CP-time stamp (tu_houji_cp_stamp). */
++   const uint32_t houji_cb = cmd_buffer->houji_op;
+ 
+    /* We currently flush CCU at the end of the command buffer, like
+     * what the blob does. There's implicit synchronization around every
+@@ -5814,6 +5883,7 @@ tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
+       trace_end_cmd_buffer(&cmd_buffer->trace, &cmd_buffer->cs, cmd_buffer, addr_preempt_latency, addr_preempt_latency_rp_hash);
+ 
+       cmd_buffer->autotune_ctx.snapshot_preempt_data(&cmd_buffer->cs);
++      tu_houji_cp_stamp(cmd_buffer, &cmd_buffer->cs, houji_cb, 2);
+    } else {
+       trace_end_secondary_cmd_buffer(
+          cmd_buffer->state.pass ? &cmd_buffer->rp_trace : &cmd_buffer->trace,
 diff --git a/src/freedreno/vulkan/tu_pipeline.cc b/src/freedreno/vulkan/tu_pipeline.cc
 index 087b4a9..14eb7ad 100644
 --- a/src/freedreno/vulkan/tu_pipeline.cc

@@ -1,0 +1,45 @@
+diff --git a/crates/metal2vulkan-runtime/src/render/inline_first.rs b/crates/metal2vulkan-runtime/src/render/inline_first.rs
+index 2bab4db..bb57486 100644
+--- a/crates/metal2vulkan-runtime/src/render/inline_first.rs
++++ b/crates/metal2vulkan-runtime/src/render/inline_first.rs
+@@ -217,6 +217,24 @@ pub(super) struct InlineBegin {
+ /// Whether a pass of `layout` on `device`, rate-mapped where `rate_mapped` says, with the
+ /// extended-range shadows `extended`, lets its first instance record inline (the module docs):
+ /// else the first check it fails ([`NotInline`]).
++/// houji: boot argument `pf=1`, read once ([`opens_inline`]).
++fn houji_pf() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| {
++        let mut text = [0u8; 1100];
++        let mut length = text.len() - 1;
++        // SAFETY: a nul-terminated name and a buffer of `length` bytes the call writes at most.
++        let read = unsafe {
++            libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
++        };
++        let args = &text[..length.min(text.len())];
++        read == 0
++            && args.windows(4).enumerate().any(|(at, w)| {
++                w == b"pf=1" && (at == 0 || args[at - 1] == b' ') && matches!(args.get(at + 4), None | Some(&b' ') | Some(&0))
++            })
++    })
++}
++
+ pub(super) fn opens_inline(
+     device: &Device,
+     layout: &PassLayout,
+@@ -238,6 +256,15 @@ pub(super) fn opens_inline(
+     for color in layout.colors.iter().flatten() {
+         let target = &color.target;
+         let texture = &target.texture;
++        // houji (boot argument pf=1): a pass that renders a level past its texture's first records
++        // as a pass that does not record inline (its first instance in a secondary at its end). Such a
++        // pass's draws commonly sample the texture's other levels (a mip pyramid drawn level from
++        // level): their copy of the texture (`texture/attached_reads.rs`), which its end records
++        // before the pass, then goes into the encoder's own command buffer, not into one of its own
++        // before the pass's (`EncoderCore::hold_pass`).
++        if target.level > 0 && houji_pf() {
++            return Err(NotInline::Attachments);
++        }
+         let unresolved = color.resolve.is_none() && color.copied_resolve.is_none();
+         // A memoryless color, neither loaded nor stored: its own transient image in place, of a
+         // 2D level and layer that a backing arriving later takes, cleared by transfer (the module
