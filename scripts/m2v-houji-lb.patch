@@ -263,10 +263,27 @@ index 9879f40..b6cce39 100644
      );
      let _ = std::fs::write(OPENS, line);
 diff --git a/crates/metal2vulkan-runtime/src/render/attached_levels.rs b/crates/metal2vulkan-runtime/src/render/attached_levels.rs
-index c9252e6..74beac7 100644
+index c9252e6..5419a07 100644
 --- a/crates/metal2vulkan-runtime/src/render/attached_levels.rs
 +++ b/crates/metal2vulkan-runtime/src/render/attached_levels.rs
-@@ -220,6 +220,9 @@ impl RenderLowering {
+@@ -110,10 +110,15 @@ impl RenderLowering {
+                         .map(|s| self.sampled_level(device, (plan, compiled), stages, slot, s))
+                         .collect()
+                 });
++                let explained: Vec<String> = reads.map_or(Vec::new(), |r| {
++                    (r.sampled.iter())
++                        .map(|s| houji_explain(device, (plan, compiled), stages, slot, s))
++                        .collect()
++                });
+                 crate::houji_diag::attached_line(
+                     *why as usize,
+                     &format!(
+-                        "{why:?} slot {slot:?} attached {attached} levels {level_count} reads {reads:?} sampler levels {computed:?}"
++                        "{why:?} slot {slot:?} attached {attached} levels {level_count} reads {reads:?} sampler levels {computed:?} explained {explained:?}"
+                     ),
+                 );
+             }
+@@ -220,6 +225,9 @@ impl RenderLowering {
                  _ => continue,
              };
              let finite = SamplerLevels::finite_texels(view.format);
@@ -276,7 +293,7 @@ index c9252e6..74beac7 100644
              let level = sampled.level(SamplerLevels::of(&desc, finite))?;
              highest = highest.max(Some(level));
          }
-@@ -227,6 +230,69 @@ impl RenderLowering {
+@@ -227,6 +235,132 @@ impl RenderLowering {
      }
  }
  
@@ -340,6 +357,69 @@ index c9252e6..74beac7 100644
 +    out.computed = false;
 +    out.lod_word = None;
 +    crate::houji_diag::lod_word_taken();
++    out
++}
++
++/// houji (the trace switch's refusal line): for `sampled`, the writes of the draw's plan that bind
++/// the texture at `slot` (combined, and with which sampler source), whether a constexpr one pairs with
++/// the samples' sampler (its immutable sampler's LOD clamps and mipmap mode), and where the bytes word
++/// `SampledLevels::lod_word` names stands: bound as bytes or as a buffer at its slot, the call's
++/// length, and the value.
++fn houji_explain(
++    _device: &Device,
++    (plan, compiled): (&BindingPlan, &RenderPipeline),
++    stages: &Stages<'_>,
++    slot: SlotRef,
++    sampled: &SampledLevels,
++) -> String {
++    let mut out = String::new();
++    for write in &plan.descriptors {
++        let WriteSource::CombinedImageSampler {
++            image: ImageSource::Texture { slot: of, .. },
++            sampler,
++        } = &write.source
++        else {
++            continue;
++        };
++        if *of != slot {
++            continue;
++        }
++        match sampler {
++            SamplerSource::Immutable => match immutable_sampler(compiled, write) {
++                Some((paired, desc)) => out.push_str(&format!(
++                    "immutable paired {} lod {}..{} bias {} mip {:?}; ",
++                    paired == sampled.sampler,
++                    desc.min_lod,
++                    desc.max_lod,
++                    desc.mip_lod_bias,
++                    desc.mipmap_mode
++                )),
++                None => out.push_str("immutable no-binding-sampler; "),
++            },
++            SamplerSource::Slot { slot: bound, .. } => out.push_str(&format!("runtime sampler slot {}; ", bound.index)),
++            _ => out.push_str("other sampler source; "),
++        }
++    }
++    if out.is_empty() {
++        out.push_str("no combined write for the slot; ");
++    }
++    if let Some(word) = sampled.lod_word {
++        let (s, b) = ((word >> 32) as u32, (word & 0xffff_ffff) as u32);
++        match stage_table(stages, slot.stage) {
++            None => out.push_str("no stage table"),
++            Some(table) => {
++                let buffer = table.buffers.get(&s).map(|(buffer, offset)| (buffer.length(), *offset));
++                match table.bytes.get(&s) {
++                    Some(bytes) => {
++                        let value = bytes.region.read_u32_at(u64::from(b)).map(f32::from_bits);
++                        out.push_str(&format!("bytes len {} word {b} value {value:?} buffer {buffer:?}", bytes.len));
++                    }
++                    None => out.push_str(&format!("no bytes at {s}, buffer (length, offset) {buffer:?}")),
++                }
++            }
++        }
++        out.push_str(&format!(" lb {}", houji_lb()));
++    }
 +    out
 +}
 +
