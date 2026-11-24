@@ -3,8 +3,10 @@
 the CP reaches the packet) against the pass ring's RB_DONE_TS stamps (frames.trace): for each pair of consecutive primaries,
   rb_gap   the next head's RB stamp less the previous end's RB stamp (what diagan.py calls jump)
   cp_end   the previous primary's CP end less its RB end (the CP reached its last packet before or after the RB drained)
+  cp_flush the previous primary's CP end (kind 2) less its CP before the end's flushes (kind 3, from gpu47; '-' before)
   cp_gap   the next head's CP time less the previous end's CP time (the CP between the two command buffers: the IB switch)
-  rb_lag   the next head's RB stamp less its CP time (the RB draining before the head's stamp)
+  rb_lag   the next head's RB stamp less its CP time (the RB draining before the head's stamp; from gpu47 the head's CP stamp
+           comes before its RB event, so cp_gap holds no RB wait)
 by the pair's kinds and whether both came from one command pool. Usage: cpgap.py CPSTAMPS.bin TL.log..."""
 import bisect, collections, re, statistics, struct, sys
 import tracebytes
@@ -46,14 +48,16 @@ for f in sys.argv[2:]:
         if j < 0 or heads[j][0] < p[1]:
             continue
         h = heads[j]
-        pe, hd = cp.get((2, p[3])), cp.get((1, h[3]))
+        pe, hd, pf = cp.get((2, p[3])), cp.get((1, h[3])), cp.get((3, p[3]))
         if not pe or not hd:
             continue
         rows[(k1 + k2, 'same pool' if pe[1] == hd[1] else 'other pool')].append(
-            (h[0] - p[1], pe[0] - p[1], hd[0] - pe[0], h[0] - hd[0]))
+            (h[0] - p[1], pe[0] - p[1], hd[0] - pe[0], h[0] - hd[0], pe[0] - pf[0] if pf else None))
 print(f'{len(cp)} CP stamps joined over {sum(len(v) for v in rows.values())} boundaries')
-print('pair, pools: n | medians us: rb_gap  cp_end  cp_gap  rb_lag   (p90 cp_gap, rb_lag)')
+print('pair, pools: n | medians us: rb_gap  cp_end  cp_gap  rb_lag cp_flush   (p90 cp_gap, rb_lag)')
 for k, v in sorted(rows.items(), key=lambda kv: -len(kv[1])):
     med = [statistics.median(x[i] for x in v) for i in range(4)]
+    fl = [x[4] for x in v if x[4] is not None]
+    fs = f'{statistics.median(fl):8.1f}' if fl else '       -'
     p90 = lambda i: sorted(x[i] for x in v)[9 * len(v) // 10]
-    print(f'  {k[0]} {k[1]:10s} {len(v):5d} | {med[0]:6.1f} {med[1]:7.1f} {med[2]:7.1f} {med[3]:7.1f}   ({p90(2):.1f}, {p90(3):.1f})')
+    print(f'  {k[0]} {k[1]:10s} {len(v):5d} | {med[0]:6.1f} {med[1]:7.1f} {med[2]:7.1f} {med[3]:7.1f} {fs}   ({p90(2):.1f}, {p90(3):.1f})')

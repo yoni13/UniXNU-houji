@@ -58,6 +58,10 @@ if [ -n "${HOLD:-}" ]; then
   done
 fi
 # The reference placement is Q4 (root405/406: +10 fps over P4, its first frame as P4's); the default sides compare it with P4.
+# TOGS="0 2" (a kernel with console tog, gpu47 on): the toggles (one hex digit, console tog) taken in turn by each side's opens (A B A B),
+# each open's logs named SIDE.tX (gpuwin.py root:Q4u.t2), the fb grab at each toggle's first open; tog 0 after the side.
+# PIN7=1: cpu7 voted at the cap in force when the side starts (console dvfs set p7pin, clamped to the cap at every sample: never above).
+TG=(${TOGS:-})
 for s in ${SIDES:-Q4u P4u Q4u P4u}; do
   # A side ending in n or w is untraced too (logged as ut-), for what about a traced open changes the first frame: n starts a tl of
   # SpringBoard's main thread alone (TLN, default 30:0) 0.2 s before the swipe, its output not used; w only waits those 0.2 s.
@@ -72,9 +76,16 @@ for s in ${SIDES:-Q4u P4u Q4u P4u}; do
   c 'dvfs set framepct 100'; c 'dvfs set touchpct 100'
   # GTLU=1: the GPU's job stamps (gtl) on in untraced sides too, dumped after each open's swaps (CP stamps only, no sampler)
   [ $b = $s ] || [ "${GTLU:-0}" = 1 ] && c 'gtl on' || c 'gtl off'
+  if [ "${PIN7:-0}" = 1 ]; then
+    n=$(wc -l < $L); c dvfs; sleep 2
+    cap7=$(tail -n +$n $L | grep -a 'policy stock' | tail -1 | sed -n 's/.* caps \([0-9]*\),\([0-9]*\),\([0-9]*\),.*/\3/p')
+    [ -n "$cap7" ] && { c "dvfs set p7pin $((cap7 / 1000))"; echo "  [pin] cpu7 at its cap $((cap7 / 1000)) MHz"; }
+  fi
   echo "== side $s (start ${h:-?} C)"
   s0=$(wc -l < $L)
   for k in $(seq 1 ${K:-3}); do
+    tg=; sx=
+    [ ${#TG[@]} -gt 0 ] && { tg=${TG[$(( (k - 1) % ${#TG[@]} ))]}; sx=.t$tg; c "tog $tg"; sleep 0.3; }
     m=$(wc -l < $L)
     if [ $b = $s ]; then
       # THREADS=1: backboardd's threads' CPU time (user + system, and system alone) before and after the open (threads-delta.py)
@@ -115,7 +126,7 @@ for s in ${SIDES:-Q4u P4u Q4u P4u}; do
       fi
       timeout 240 tail -n +$m -f $L | grep -a -m1 -q 'HOUJI TL: end'
       [ "${THREADS:-0}" = 1 ] && { c "threads $bb"; timeout 30 tail -n +$m -f $L | grep -a -m2 -q 'HOUJI THREADS: pid'; sleep 1; }
-      tail -n +$m $L > logs/$N-tl-$s-$k-$(date +%s).log
+      tail -n +$m $L > logs/$N-tl-$s$sx-$k-$(date +%s).log
     else
       [ "${THREADS:-0}" = 1 ] && { c "threads $bb"; sleep 1; }
       # USTD=MS: the compositing thread's user stacks for MS ms from the swipe (console ustack, read from a kernel thread: no sampler on
@@ -129,14 +140,18 @@ for s in ${SIDES:-Q4u P4u Q4u P4u}; do
       [ "${SHOT:-0}" = 1 ] && [ $k = 1 ] && timeout 90 python3 $D/phone.py shot $L logs/$N-shot-$s-$(date +%s).png >/dev/null 2>&1
       # FB=1 (a kernel with console fbdump): the whole panel at full resolution, 8-bit RGB, the first untraced open of each side, for
       # the visual A/B (fbshot.py diff)
-      [ "${FB:-0}" = 1 ] && [ $k = 1 ] && { sleep 1; timeout 90 python3 fbshot.py grab $L logs/$N-fb-$s-$(date +%s).png 2>&1 | sed 's/^/  [fb] /'; }
-      [ "${GTLU:-0}" = 1 ] && c 'gtl dump 500'; sleep 3; tail -n +$m $L > logs/$N-ut-$s-$k-$(date +%s).log
+      [ "${FB:-0}" = 1 ] && [ $k -le $(( ${#TG[@]} > 0 ? ${#TG[@]} : 1 )) ] && { sleep 1; timeout 90 python3 fbshot.py grab $L logs/$N-fb-$s$sx-$(date +%s).png 2>&1 | sed 's/^/  [fb] /'; }
+      [ "${GTLU:-0}" = 1 ] && c 'gtl dump 500'; sleep 3; tail -n +$m $L > logs/$N-ut-$s$sx-$k-$(date +%s).log
       [ -n "${USTD:-}" ] && tail -n +$m $L | grep -a 'HOUJI USTACK' | cut -c10- > logs/$N-ust-$s-$k.txt
     fi
     c 'swipe 600 2669 600 2000 150'; sleep 8
     hk=$(tail -n +$m $L | grep -a 'policy stock' | sed 's/.*hottest \([0-9]*\)\..*/\1/' | sort -n | tail -1)
+    sk=$(tail -n +$m $L | grep -a 'policy stock' | sed -n 's/.* skin \([0-9.]*\) C caps \([0-9,]*\) .*/\1 C caps \2/p' | tail -1)
+    echo "  [open $k${tg:+ tog $tg}] skin ${sk:-?}, hottest ${hk:-?} C"
     [ -n "$hk" ] && [ "$hk" -gt ${STOP_C:-70} ] && { echo "  STOP: hottest $hk C in open $k of $s"; break 2; }
   done
+  [ ${#TG[@]} -gt 0 ] && c 'tog 0'
+  [ "${PIN7:-0}" = 1 ] && c 'dvfs set p7pin 0'
   n=$(wc -l < $L); c gpuf; c gpus; c gpup; c dvfs; sleep 3
   tail -n +$n $L | grep -a 'HOUJI GPUF\|policy stock' | tail -2 | sed "s/^ *[0-9.]* /  [$s after] /" | cut -c1-240
   tail -n +$n $L | grep -a 'HOUJI GPUS: fence' | tail -1 | sed "s/^ *[0-9.]* /  [$s after] /" | cut -c1-160
