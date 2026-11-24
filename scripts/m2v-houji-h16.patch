@@ -1,0 +1,73 @@
+diff --git a/crates/metal2vulkan/src/lib.rs b/crates/metal2vulkan/src/lib.rs
+index 6faac18..515d360 100644
+--- a/crates/metal2vulkan/src/lib.rs
++++ b/crates/metal2vulkan/src/lib.rs
+@@ -57,3 +57,8 @@ mod spirv_binary;
+ // The crate's whole-translator tests, which reach internal items directly.
+ #[cfg(test)]
+ mod tests;
++
++/// houji: boot argument `h16=1`, set by the runtime as it opens its shader cache (`shader_cache::this_build` in the runtime, which
++/// keys the cache by it): functions exact on `half` values are decorated `RelaxedPrecision` as `narrow::round_native`'s results are
++/// (`lower::arith::math::float_fn`).
++pub static HOUJI_H16: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+diff --git a/crates/metal2vulkan/src/lower/arith/math.rs b/crates/metal2vulkan/src/lower/arith/math.rs
+index f0755e8..d867f1d 100644
+--- a/crates/metal2vulkan/src/lower/arith/math.rs
++++ b/crates/metal2vulkan/src/lower/arith/math.rs
+@@ -1302,6 +1302,17 @@ pub fn float_fn(
+     use FloatFn as F;
+     let r = float_fn_core(fb, op, f, contract, args, lib)?;
+     let r = match op {
++        // houji (boot argument h16=1, `HOUJI_H16`): where the module leaves `half` results to the device's own 16-bit precision
++        // (`narrow::round_native`), a function exact on `half` values is left to it too, so a 16-bit chain is not cut by it.
++        _ if op.closed_on_narrow()
++            && crate::HOUJI_H16.load(std::sync::atomic::Ordering::Relaxed)
++            && f.held == Held::Float(FloatFmt::Half)
++            && fb.module().relaxed_half()
++            && fb.module().quantize_form() == crate::spirv::builder::QuantizeForm::Converted =>
++        {
++            fb.module().note_relaxed(r);
++            r
++        }
+         _ if op.closed_on_narrow() => r,
+         // A `half` `mix`, the device's `FMix` in `float`, rounds once.
+         F::Mix if f.float_fmt() == Some(FloatFmt::Half) => narrow::round_native(fb, f, r)?,
+diff --git a/crates/metal2vulkan-runtime/src/shader_cache/mod.rs b/crates/metal2vulkan-runtime/src/shader_cache/mod.rs
+index dba2239..457385a 100644
+--- a/crates/metal2vulkan-runtime/src/shader_cache/mod.rs
++++ b/crates/metal2vulkan-runtime/src/shader_cache/mod.rs
+@@ -322,9 +322,33 @@ pub(crate) fn this_build() -> Hash256 {
+     hash.update(metal2vulkan::cache::ARTIFACT_FORMAT_VERSION.to_le_bytes());
+     hash.update(metal2vulkan::cache::SEMANTICS_VERSION.to_le_bytes());
+     hash.update(metal2vulkan::cache::SOURCE_DIGEST.as_bytes());
++    // houji: boot argument h16=1 (`metal2vulkan::HOUJI_H16`) changes the emitted code: its own build key, so a
++    // cache filled without it serves none of its pipelines, and the other way round.
++    if houji_h16() {
++        metal2vulkan::HOUJI_H16.store(true, std::sync::atomic::Ordering::Relaxed);
++        hash.update(b"houji h16\0");
++    }
+     hash.finalize().into()
+ }
+ 
++/// houji: whether the boot arguments hold `h16=1`, read once.
++fn houji_h16() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| {
++        let mut text = [0u8; 1100];
++        let mut length = text.len() - 1;
++        // SAFETY: a nul-terminated name and a buffer of `length` bytes the call writes at most.
++        let read = unsafe {
++            libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
++        };
++        let args = &text[..length.min(text.len())];
++        read == 0
++            && args.windows(5).enumerate().any(|(at, w)| {
++                w == b"h16=1" && (at == 0 || args[at - 1] == b' ') && matches!(args.get(at + 5), None | Some(&b' ') | Some(&0))
++            })
++    })
++}
++
+ /// The platform's per-user cache directory for this crate.
+ fn default_directory() -> Result<PathBuf, ShaderCacheError> {
+     let absolute = |name: &str| {

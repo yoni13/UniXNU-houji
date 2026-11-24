@@ -45,10 +45,10 @@ index f618617..128617c 100644
           break;
        }
 diff --git a/src/freedreno/vulkan/tu_pipeline.cc b/src/freedreno/vulkan/tu_pipeline.cc
-index 087b4a9..3f14e89 100644
+index 087b4a9..14eb7ad 100644
 --- a/src/freedreno/vulkan/tu_pipeline.cc
 +++ b/src/freedreno/vulkan/tu_pipeline.cc
-@@ -44,6 +44,91 @@ tu_darwin_last_program(uint32_t *vs, uint32_t *fs)
+@@ -44,6 +44,92 @@ tu_darwin_last_program(uint32_t *vs, uint32_t *fs)
     tu_last_program_hash[0] = tu_last_program_hash[1] = 0;
  }
  
@@ -66,7 +66,8 @@ index 087b4a9..3f14e89 100644
 +   static const bool on = getenv("SHENG_DIAG") && getprogname() && !strcmp(getprogname(), "backboardd");
 +   if (!on || !v || !v->bin)
 +      return;
-+   static const uint32_t wanted[] = {0x7ebccf52, 0x7642b2b4, 0xb0100a10, 0x241ef7ce, 0x7623f474, 0x5b50d467};
++   static const uint32_t wanted[] = {0x7ebccf52, 0x7642b2b4, 0xb0100a10, 0x241ef7ce, 0x7623f474, 0x5b50d467,
++                                     0xdf543221, 0xe6dfd790, 0x01165b63, 0x327aa9f3, 0x5eda5251, 0x2b0af9f8};
 +   const uint32_t hash = tu_hash32(v->blake3_str);
 +   bool want = v->info.instrs_count >= 400;
 +   for (uint32_t w : wanted)
@@ -140,7 +141,7 @@ index 087b4a9..3f14e89 100644
  /* Emit IB that preloads the descriptors that the shader uses */
  
  static void
-@@ -2128,6 +2213,11 @@ done:
+@@ -2128,6 +2214,11 @@ done:
        if (shaders[stage] && shaders[stage]->variant) {
           tu_append_executable(pipeline, shaders[stage]->variant,
                                nir_initial_disasm[stage]);
