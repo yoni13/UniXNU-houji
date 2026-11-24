@@ -1,0 +1,375 @@
+diff --git a/crates/metal2vulkan/src/cache/codec.rs b/crates/metal2vulkan/src/cache/codec.rs
+index 90e064f..ee47a43 100644
+--- a/crates/metal2vulkan/src/cache/codec.rs
++++ b/crates/metal2vulkan/src/cache/codec.rs
+@@ -1116,7 +1116,7 @@ codec_struct! {
+         snapshot_textures, snapshot_refusals, level_reads, private_bytes,
+     }
+     LevelReads { slot, any, named, sampled }
+-    SampledLevels { sampler, highest_lod_bits, computed }
++    SampledLevels { sampler, highest_lod_bits, computed, lod_word }
+     TessellationStage { domain, control_points, emulated }
+     TessellationDescriptor {
+         max_tessellation_factor, partition_mode, factor_format, factor_step_function,
+diff --git a/crates/metal2vulkan/src/pipeline/interface.rs b/crates/metal2vulkan/src/pipeline/interface.rs
+index 241d067..ff5c041 100644
+--- a/crates/metal2vulkan/src/pipeline/interface.rs
++++ b/crates/metal2vulkan/src/pipeline/interface.rs
+@@ -493,6 +493,12 @@ pub struct SampledLevels {
+     /// Some sample's level of detail is the module's to compute: implicit, biased, from
+     /// gradients, or an explicit level that is no constant. The sampler's `maxLod` bounds it.
+     pub computed: bool,
++    /// houji: where `computed` holds and every computed level of detail among the samples is the
++    /// same explicit one, the `f32` the module loads from its stage's buffer slot `s` at Metal byte
++    /// offset `b` from the slot's bind offset (the access lowering's uniform words read,
++    /// `level_reads::buffer_word`): `s << 32 | b`. A runtime that knows the bytes bound there may
++    /// take that value as the constant level of detail; any other reads `computed` as before.
++    pub lod_word: Option<u64>,
+ }
+ 
+ /// A sampler's level selection as a runtime binds it ([`SampledLevels::level`]): its
+diff --git a/crates/metal2vulkan/src/spirv/requirements/level_reads.rs b/crates/metal2vulkan/src/spirv/requirements/level_reads.rs
+index 822bfba..04ccf16 100644
+--- a/crates/metal2vulkan/src/spirv/requirements/level_reads.rs
++++ b/crates/metal2vulkan/src/spirv/requirements/level_reads.rs
+@@ -58,6 +58,16 @@ struct Found {
+     named: Option<u32>,
+     /// By sampler: the highest constant explicit level of detail, and whether one is computed.
+     sampled: BTreeMap<SamplerRef, (Option<f32>, bool)>,
++    /// houji: by sampler, what its computed levels of detail are ([`Words`]).
++    words: BTreeMap<SamplerRef, Words>,
++}
++
++/// houji: a sampler's computed levels of detail: each the one buffer word `lod_word` names
++/// ([`buffer_word`]), or some other (implicit, from gradients, or another explicit value).
++#[derive(Clone, Copy, PartialEq)]
++enum Words {
++    One(u64),
++    Other,
+ }
+ 
+ impl Found {
+@@ -69,7 +79,22 @@ impl Found {
+         let (highest, computed) = self.sampled.entry(sampler).or_default();
+         match lod {
+             Some(c) => *highest = Some(highest.map_or(c, |h: f32| h.max(c))),
+-            None => *computed = true,
++            None => {
++                *computed = true;
++                self.words.insert(sampler, Words::Other);
++            }
++        }
++    }
++
++    /// houji: a sample through `sampler` at the explicit level of detail the buffer word `word`
++    /// holds ([`buffer_word`]): computed, and that word where every computed one of the sampler's is.
++    fn sample_word(&mut self, sampler: SamplerRef, word: u64) {
++        let (_, computed) = self.sampled.entry(sampler).or_default();
++        let first = !*computed;
++        *computed = true;
++        let w = self.words.entry(sampler).or_insert(Words::One(word));
++        if !first && *w != Words::One(word) {
++            *w = Words::Other;
+         }
+     }
+ }
+@@ -205,6 +230,10 @@ pub fn level_reads(m: &TypedModule, meter: &mut Meter) -> Result<Vec<LevelReads>
+                     sampler,
+                     highest_lod_bits: highest.map(f32::to_bits),
+                     computed,
++                    lod_word: match f.words.get(&sampler) {
++                        Some(Words::One(word)) if computed => Some(*word),
++                        _ => None,
++                    },
+                 })
+                 .collect(),
+         })
+@@ -401,7 +430,16 @@ fn judge(
+                     (false, Some(l), None) => constant_f32(m, l)?,
+                     _ => None,
+                 };
+-                f.sample(sampler, lod);
++                // houji: an explicit level of detail that is no constant but one word of the stage's
++                // bytes (`buffer_word`), named so a runtime that knows the bytes may bound it.
++                let word = match (form.implicit, ops.lod, ops.grad, lod) {
++                    (false, Some(l), None, None) => buffer_word(m, l)?,
++                    _ => None,
++                };
++                match word {
++                    Some(word) => f.sample_word(sampler, word),
++                    None => f.sample(sampler, lod),
++                }
+             }
+             _ => f.any = true,
+         },
+@@ -410,6 +448,129 @@ fn judge(
+     Ok(())
+ }
+ 
++/// houji: where `l` is the `f32` the access lowering reads from a word of its stage's buffer slot
++/// at a constant Metal byte offset (`lower::access::emit`'s uniform words read): the bitcast of a
++/// load through an access chain `[0, off >> 2]` of the slot's `Resource` buffer global, `off` the
++/// slot's `select(RangeAtBindOffset(slot), c, residual + c)` (the residual `SlotBindOffset`, which
++/// the lowering adds to the pointer's offset; for `c` 0 the residual alone), its offset `c`
++/// constant and a multiple of 4: `slot << 32 | c`. `None` for any other form.
++fn buffer_word(m: &TypedModule, l: Value) -> BResult<Option<u64>> {
++    let def_of = |v: Value| -> Option<&Inst> {
++        m.blocks()
++            .iter()
++            .flat_map(|b| &b.insts)
++            .find(|n| n.result == Some(v))
++            .map(|n| &n.inst)
++    };
++    if !matches!(m.types().get(m.value(l)?.ty)?, Type::Float { width: 32 }) {
++        return Ok(None);
++    }
++    let Some(Inst::Convert {
++        op: crate::spirv::ir::ConvOp::Bitcast,
++        a: word,
++        ..
++    }) = def_of(l)
++    else {
++        return Ok(None);
++    };
++    if !matches!(m.types().get(m.value(*word)?.ty)?, Type::Int { width: 32, .. }) {
++        return Ok(None);
++    }
++    let Some(Inst::Load { ptr, .. }) = def_of(*word) else {
++        return Ok(None);
++    };
++    let Some(Inst::AccessChain { base, indices, .. }) = def_of(*ptr) else {
++        return Ok(None);
++    };
++    let [first, index] = indices[..] else {
++        return Ok(None);
++    };
++    if constant_u32(m, first)? != Some(0) {
++        return Ok(None);
++    }
++    let Some(global) = m.globals().iter().find(|g| g.value == *base) else {
++        return Ok(None);
++    };
++    let GlobalKind::Resource(slot) = &global.kind else {
++        return Ok(None);
++    };
++    if !matches!(slot.kind, ResourceKind::Buffer) {
++        return Ok(None);
++    }
++    let Some(Inst::Binary {
++        op: BinOp::ShiftRightLogical,
++        a: off,
++        b: two,
++        ..
++    }) = def_of(index)
++    else {
++        return Ok(None);
++    };
++    if constant_u32(m, *two)? != Some(2) {
++        return Ok(None);
++    }
++    let Some(Inst::Select { cond, t, f }) = def_of(*off) else {
++        return Ok(None);
++    };
++    // The condition: the slot's own `RangeAtBindOffset` specialization.
++    let at_bind = match m.value(*cond)?.origin {
++        ValueOrigin::Const(c) => match &m.consts().get(c)?.kind {
++            ConstKind::Spec {
++                key: crate::pipeline::sym::SpecKey::RangeAtBindOffset(of),
++                ..
++            } => of.stage == slot.stage && of.index == slot.index,
++            _ => false,
++        },
++        _ => false,
++    };
++    if !at_bind {
++        return Ok(None);
++    }
++    let Some(c) = constant_u32(m, *t)? else {
++        return Ok(None);
++    };
++    if c % 4 != 0 {
++        return Ok(None);
++    }
++    // The other arm: the residual plus the same offset, or for offset 0 the residual alone (a
++    // push-constant load).
++    let residual = match def_of(*f) {
++        Some(Inst::Binary {
++            op: BinOp::IAdd,
++            a,
++            b,
++            ..
++        }) => {
++            if constant_u32(m, *b)? == Some(c) {
++                Some(*a)
++            } else if constant_u32(m, *a)? == Some(c) {
++                Some(*b)
++            } else {
++                None
++            }
++        }
++        _ if c == 0 => Some(*f),
++        _ => None,
++    };
++    let Some(residual) = residual else {
++        return Ok(None);
++    };
++    let Some(Inst::Load { ptr: pushed, .. }) = def_of(residual) else {
++        return Ok(None);
++    };
++    let Some(Inst::AccessChain { base: block, .. }) = def_of(*pushed) else {
++        return Ok(None);
++    };
++    let from_push = m
++        .globals()
++        .iter()
++        .any(|g| g.value == *block && matches!(g.kind, GlobalKind::PushBlock));
++    if !from_push {
++        return Ok(None);
++    }
++    Ok(Some(u64::from(slot.index) << 32 | u64::from(c)))
++}
++
+ /// The value of `v` where it is a plain 32-bit integer constant.
+ fn constant_u32(m: &TypedModule, v: Value) -> BResult<Option<u32>> {
+     scalar_bits(m, v, |ty| matches!(ty, Type::Int { width: 32, .. }))
+diff --git a/crates/metal2vulkan-runtime/src/houji_diag.rs b/crates/metal2vulkan-runtime/src/houji_diag.rs
+index 9879f40..b6cce39 100644
+--- a/crates/metal2vulkan-runtime/src/houji_diag.rs
++++ b/crates/metal2vulkan-runtime/src/houji_diag.rs
+@@ -27,6 +27,14 @@ static OPENED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+ static ATTACHED_LINES: AtomicU64 = AtomicU64::new(0);
+ /// Slots that kept their copy, by `work_counts::AttachedLevels` (`render/attached_levels.rs`).
+ static ATTACHED_WHY: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
++/// houji (`lb=1`): draws' samples whose level of detail a word of the stage's bytes gave
++/// (`render/attached_levels.rs` `houji_lod_word`).
++static LOD_WORDS: AtomicU64 = AtomicU64::new(0);
++
++/// Count a level of detail taken from the stage's bytes (always counted: one relaxed add).
++pub(crate) fn lod_word_taken() {
++    LOD_WORDS.fetch_add(1, Ordering::Relaxed);
++}
+ 
+ fn millis() -> u128 {
+     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+@@ -58,8 +66,9 @@ pub(crate) fn opened(again: bool) {
+     }
+     let why: Vec<u64> = ATTACHED_WHY.iter().map(|n| n.load(Ordering::Relaxed)).collect();
+     let line = format!(
+-        "opens fresh {fresh} again {replayed} shadows {} attached-kept {why:?} at {}\n",
++        "opens fresh {fresh} again {replayed} shadows {} attached-kept {why:?} lod-words {} at {}\n",
+         LINES.load(Ordering::Relaxed),
++        LOD_WORDS.load(Ordering::Relaxed),
+         millis()
+     );
+     let _ = std::fs::write(OPENS, line);
+diff --git a/crates/metal2vulkan-runtime/src/render/attached_levels.rs b/crates/metal2vulkan-runtime/src/render/attached_levels.rs
+index c9252e6..74beac7 100644
+--- a/crates/metal2vulkan-runtime/src/render/attached_levels.rs
++++ b/crates/metal2vulkan-runtime/src/render/attached_levels.rs
+@@ -220,6 +220,9 @@ impl RenderLowering {
+                 _ => continue,
+             };
+             let finite = SamplerLevels::finite_texels(view.format);
++            // houji (lb=1): a level of detail the module reads from a word of the stage's bytes
++            // (`SampledLevels::lod_word`) taken as the constant it is for this draw, where it can be.
++            let sampled = houji_lod_word(stages, slot, sampled);
+             let level = sampled.level(SamplerLevels::of(&desc, finite))?;
+             highest = highest.max(Some(level));
+         }
+@@ -227,6 +230,69 @@ impl RenderLowering {
+     }
+ }
+ 
++/// houji: boot argument `lb=1`, read once.
++fn houji_lb() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| {
++        let mut text = [0u8; 1100];
++        let mut length = text.len() - 1;
++        // SAFETY: a nul-terminated name and a buffer of `length` bytes the call writes at most.
++        let read = unsafe {
++            libc::sysctlbyname(c"kern.bootargs".as_ptr(), text.as_mut_ptr().cast(), &mut length, std::ptr::null_mut(), 0)
++        };
++        let args = &text[..length.min(text.len())];
++        read == 0
++            && args.windows(4).enumerate().any(|(at, w)| {
++                w == b"lb=1" && (at == 0 || args[at - 1] == b' ') && matches!(args.get(at + 4), None | Some(&b' ') | Some(&0))
++            })
++    })
++}
++
++/// houji (`lb=1`): `sampled`, the samples of the texture at `slot` through one sampler, with the
++/// computed level of detail `SampledLevels::lod_word` names taken as the explicit constant it is
++/// for this draw: every computed one of them is the `f32` at byte `b` of the stage's buffer slot
++/// `s`, and the draw binds there the bytes a `set*Bytes` call copied (`ArgumentTable::bytes`, a
++/// copy no later write of the caller's memory or any command reaches), `b + 4` within the call's
++/// length, the value finite. Else `sampled` as it is, its level of detail computed, which
++/// `SampledLevels::level` bounds by the sampler alone. The value then takes the sampler's bias,
++/// clamps and mipmap mode in `SampledLevels::level` as any constant does, a linear mipmap mode's
++/// fractional level reaching the level past it.
++fn houji_lod_word(stages: &Stages<'_>, slot: SlotRef, sampled: &SampledLevels) -> SampledLevels {
++    let mut out = *sampled;
++    let Some(word) = sampled.lod_word else {
++        return out;
++    };
++    if !sampled.computed || !houji_lb() {
++        return out;
++    }
++    let (s, b) = ((word >> 32) as u32, (word & 0xffff_ffff) as u32);
++    let Some(table) = stage_table(stages, slot.stage) else {
++        return out;
++    };
++    let Some(bytes) = table.bytes.get(&s) else {
++        return out;
++    };
++    if table.buffers.contains_key(&s) || u64::from(b) + 4 > u64::from(bytes.len) {
++        return out;
++    }
++    let Some(bits) = bytes.region.read_u32_at(u64::from(b)) else {
++        return out;
++    };
++    let lod = f32::from_bits(bits);
++    if !lod.is_finite() {
++        return out;
++    }
++    let highest = sampled.highest_lod().map_or(lod, |c| if c.is_nan() { f32::NAN } else { c.max(lod) });
++    if !highest.is_finite() {
++        return out;
++    }
++    out.highest_lod_bits = Some(highest.to_bits());
++    out.computed = false;
++    out.lod_word = None;
++    crate::houji_diag::lod_word_taken();
++    out
++}
++
+ /// The table of `stage`'s slots among `stages`.
+ fn stage_table<'a>(stages: &Stages<'a>, stage: Stage) -> Option<&'a ArgumentTable> {
+     (stages.iter())
+diff --git a/crates/metal2vulkan-runtime/src/upload.rs b/crates/metal2vulkan-runtime/src/upload.rs
+index 8d37c19..3e49279 100644
+--- a/crates/metal2vulkan-runtime/src/upload.rs
++++ b/crates/metal2vulkan-runtime/src/upload.rs
+@@ -339,6 +339,22 @@ impl Upload {
+         }
+     }
+ 
++    /// houji: the `u32` at byte `at` of the region (native byte order, as a shader reads it), `None`
++    /// past its end or where its buffer is not mapped.
++    pub(super) fn read_u32_at(&self, at: u64) -> Option<u32> {
++        let mapped = self.buffer.contents()?;
++        if at.checked_add(4)? > self.len {
++            return None;
++        }
++        let mut word = [0u8; 4];
++        // SAFETY: `[offset + at, offset + at + 4)` is inside the region, mapped for its buffer's
++        // life, which the region holds.
++        unsafe {
++            std::ptr::copy_nonoverlapping(mapped.as_ptr().add((self.offset + at) as usize), word.as_mut_ptr(), 4);
++        }
++        Some(u32::from_ne_bytes(word))
++    }
++
+     /// [`write`](Self::write) at byte `at` of the region: a root table's resident-set fields as
+     /// the command buffer commits, or as a host step uploads it. A write past the region is cut.
+     pub(super) fn write_at(&self, at: u64, bytes: &[u8]) {
