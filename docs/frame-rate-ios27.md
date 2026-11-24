@@ -1188,6 +1188,29 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
       recording.
     `Barrier::everything()` (all commands before to all after, memory) and the scheduler plans none before it: the same barrier that
     would let an encoder record into its predecessor's still-open primary.
+- **gtr=1 diagnostics: what the boundaries, the copies and the heavy shaders are** (gpu42 = gpu41 + `turnip-houji-diag.patch`,
+  `m2v-houji-diag.patch`, `adrenometal-zzzzzzz-shader-names.patch`, all off without the trace switch; seed leanlc40, reset root419;
+  root420 `tt=1 hs=9 gp=0 gtr=1 m2v-count=1`, `HTC=1`, 997 bytes, 4 traced Q4 opens: hangs 0, faults 0, no crash, peak 64.5 C; the
+  1 MiB trace dumps hold +1.9 to +2.2 s of each open, so rates a frame below are root415's, structure root420's):
+  - *Primary boundaries* (`diagan.py`, mode 8 stamps around `tu_init_hw`): `tu_init_hw` 7.0 us (median and p90) on every primary,
+    0 us between it and the primary's begin. After a transfer or flushes-only primary the next head follows at once (0 us); after a
+    primary with a pass (P->P, P->T) 9-10 us pass before the next head: not `tu_init_hw`, not Turnip's submit (one autotune fence
+    per submit, `tu_queue.cc`), not attributed. So 16 us = 9-10 unattributed + 7 `tu_init_hw`.
+  - *The 42 transfer primaries a frame are usage shadows of a blur mip pyramid* (mode 9 copy detail, `m2v/shadows.txt`): every copy
+    is optimal-tiled to optimal-tiled BGRA8 (no external memory), 5 regions (all levels), 7-8 us; the 60 shadows logged are all
+    "a draw samples it where it presents a color attachment of the draw's own render pass instance", textures of 128x128, 128x192,
+    192x192, 192x128 (and 128x64, 576x384) of 4-7 levels. The pass after each copy is fs `df543221` (106 instructions, 13 fetches,
+    1 draw) at 64x64, 32x32, 16x16, 8x8 of a 128x128 one (likewise for the others): each mip level drawn from the level above it,
+    the whole texture copied before every level. `render/attached_levels.rs` ("levels before the attached one") would read the
+    texture in place but does not take these draws: why (its `level_reads`, the sampled view's levels) is the next question.
+  - *Heavy shaders* (`m2v/ir3.txt`, `m2v/spirv.bin`): no register pressure (max_reg 5, 16 waves; b0100a10 7 / 12), no spills, nops
+    6-10 % of the main body. **No 16-bit arithmetic in any of their SPIR-V**: Metal `half` is computed in f32 and rounded by
+    `OpFConvert` f32->f16->f32 round trips (b0100a10 170, 80a5154f 33, 7ebccf52 20; every f16 value used only by its convert back),
+    because metal2vulkan computes `half` natively only with fp16 denorm-preserve (`narrow::controlled_modes`) and Turnip reports
+    `shaderDenormPreserveFloat16 = false` on A7xx (`tu_device.cc`, the hardware flushes). ir3 narrows the `RelaxedPrecision` results
+    it can (7ebccf52 main body: 216 f32 ALU, 87 `mad.f16`, 58 conversions, 78 compare/select, 11 branches, 6 fetches).
+  - Render encoders: 27392 opened fresh, 0 replayed (`m2v/opens.txt`): replay is not why `mj` counted so few.
+  - Not verified: the Metal function names (`m2v/shaders.txt` was not written: the pipelines did not pass the frontend's named path).
 
 ## Faults found on the way
 
