@@ -1241,6 +1241,24 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     262144-byte arena at offsets 2416, 2624, 2992, 3200, 3568, 3776, ...). A buffer's word may change between the encoding and the
     command buffer's commit, as Metal allows, so `lb=1` does not read it: it refuses by design and never narrows Core Animation's draws.
   - Not verified: any GPU time for `lb=1` (it never fired); the exact routes left need the word checked again at the commit.
+- **pf=1 and the CP-time verdict** (gpu46 = gpu45 + `m2v-houji-pf.patch` and CP-time stamps in `turnip-houji-diag.patch`, fat LTO;
+  seed leanlc44, reset root429):
+  - *pf=1* (a pass rendering a level past its texture's first does not record inline: its usage-shadow copy goes into the encoder's
+    own primary, its first instance into a secondary). root430 (`gtr=1 pf=1`, 990 bytes, 2 traced opens, hangs 0, faults 0, peak
+    58.7 C): transfer-only primaries 0.7 a frame (42.5 before), the T->P pairs gone, about 82 primaries a frame.
+  - *The gap after a pass's primary is CP time* (`cpgap.py`, `m2v/cpstamps.bin`: CP_REG_TO_MEM of CP_ALWAYS_ON_COUNTER at each
+    primary's head and end, joined with the ring's RB_DONE_TS stamps; 8962 P->P boundaries): RB gap 11.0 us, the CP at the previous
+    end 0.6 us after its RB stamp, **the CP from the previous primary's last packet to the next one's first 11.0 us**, the head's RB
+    stamp 0.6 us before its CP stamp: the RB waits on the CP. The same switch after or before a flushes-only primary 0.8 us. The ring
+    holds back-to-back CP_INDIRECT_BUFFER packets alone (`NativeAdrenoSubmit.cpp`), 1-4 kernel jobs a frame: no kernel framing,
+    no Turnip packet between. Not separated yet: a cold fetch of the next IB against a CP thread (BV/BR) sync at the switch (the
+    head's CP stamp follows its RB event; the next round stamps the CP first).
+  - *pf=1 is neutral* (untraced Q4u, 8 opens a side, `GTLU=1`, all four boots hangs 0, faults 0, no crash, peaks 58.7-64.9 C):
+    root431 without 10.80 ms (45 swaps/s), root432 with 9.99 (55), root433 with 10.85 (42), root434 without 10.15 (58): means
+    10.48 against 10.42. The second boot of each pair is about 0.75 ms faster whatever its setting, its swap rate higher: a
+    boot-order effect larger than the lever, not explained. Pixels (`fbshot.py`): two grabs of one boot identical (0 pixels);
+    root431 against root432 510 pixels, all in the battery icon's bolt (1006,282)-(1036,325); root433 against root434 identical.
+  - **Decision: pf=1 not adopted** (no GPU time measured); off by default. Effects below about 0.8 ms need an A/B inside one boot.
 
 ## Faults found on the way
 
