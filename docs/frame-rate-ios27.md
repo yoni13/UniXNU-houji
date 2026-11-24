@@ -1305,6 +1305,34 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     (it ends in the BR thread, the BV thread held at its BV/BR counts), so it is the CP's two threads meeting again, not the IB
     fetch. Not verified: which packet the BR thread waits in. Fewer pass-primary boundaries (merging encoders, `mj=1`, whose
     separate-boot A/B carried the CPU-pacing confound) is the lever on it: next to measure within one boot.
+  - **Correction (read-only audit, root438):** concurrent binning does not run in any of these boots: Turnip's driconf
+    `tu_allow_concurrent_binning` defaults to false, and no boot sets `TU_DEBUG=forcecb`, `tu-debug=` or `/private/var/ngpu/tu_debug`,
+    so every pass records `CONCURRENT_BIN_DISABLE` and the BV thread, its counts and its waits never run. The BV/BR explanation
+    above is wrong. What the traces show instead: inside one primary pass -> pass and pass -> copy cost 0 us (201 each), pass ->
+    flush 1 us: the 11 us is the primary boundary's. It does not follow the previous primary's length (P->P 11 us after primaries of
+    8 to over 80 us; P->f 1 us after 8-12 us ones), only the pair: P->P 10.8, P->T 11.6, T->P 1.0, P->f 1.1, f->P 1.0 us. Nothing is
+    recorded between the two stamps: Turnip's submit adds no entries between primaries (autotune once a submission, no u_trace),
+    the darwin backend none, the kernel ring back-to-back `CP_INDIRECT_BUFFER`s. All boundaries a frame (143, 107 traced frames):
+    switches 1.03 ms + heads 0.98 ms = 2.01 ms.
+- **gpu48: the 11 us is not where the IBs lie, nor the begun-ahead primaries; why `mj` merges nothing** (`5315966`; gpu48 = gpu47 +
+  `gtr=1` per-primary IB records `m2v/cbiova.bin`, toggle bit 4 leaving metal2vulkan's begun-ahead primaries unused, the merge
+  state counted at each render open in `m2v/mj.txt`; `tog` takes two hex digits; seed leanlc46, reset root441; root442
+  `tt=1 hs=9 gp=0 gtr=1 mj=1`, `HTC=1`, 990 bytes, 4 traced Q4 opens tog 00/10/00/10: hangs 0, faults 0, no crash, peak 66.9 C):
+  - *IB placement* (`iovajoin.py`, 15031 back-to-back pairs joined with their records): every primary is one IB entry in its own BO,
+    and every pair jumps to another BO, typically 64-75 MB away. T->P makes the same far jumps at 0.9 us; P->P within the same 64 KiB
+    still 10.8 us. No relation to BO, page or distance: not the SMMU's walks, not a cold fetch of the next IB.
+  - *Begun-ahead primaries* (bit 4): P->P 10.50 / 10.51 us, P->T 11.62 / 11.56, T->P 0.87 / 0.92 without / with. No effect.
+  - *Verdict:* the 11 us is the CP's own transition from a primary that held a pass to one holding a pass or a copy, set by what the
+    two primaries are, not by where their commands lie or how they were begun; no allocation fix reaches it. Which packet of the next
+    primary the CP waits on (the front end runs ahead of the stamps) is not verified, and not pursued.
+  - *`mj` merges nothing because it switches itself off:* of 44032 render opens, 46 found `merge()` on (`mj.txt`). `MERGE_OFF` is set
+    only by a violation (a merged encoder that could not keep its place at its end: a segment, a continuation, a part left out);
+    `merge.txt` is rewritten at most once a second and only at a count, so the violation that turned merging off is never written,
+    and the file stays at the counts before it (root413-415 and root442 alike: about 20 joined). Control Center's passes split into
+    continuations, which is the violation's case: `mj=1` as built cannot merge them.
+  - **Control Center closed** at its measured floor under the exact-only rule: GPU about 10.1 ms a frame on the fixed window
+    (about 99 fps of GPU), 86-93 swaps/s untraced at near-stock caps (root440). The one lever left with a ceiling near the gap is
+    collapsing primaries (about 2.0 ms a frame of boundaries), a large metal2vulkan restructure against inline recording, not taken.
 
 ## Faults found on the way
 
