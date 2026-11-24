@@ -1,0 +1,20 @@
+diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
+index 0fa1308..2298b82 100644
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -4782,6 +4782,15 @@ - (void)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d
+    bool fresh=false;{std::lock_guard<std::mutex> lock(seenLock);fresh=seen.size()<512 && seen.insert(fs).second;}
+    if(fresh)os_log(OS_LOG_DEFAULT,"NativeAdrenoMetal shader fs %{public}08x vs %{public}08x | frag %{public}@ vert %{public}@ | %llu us",fs,vs,
+                    d.fragmentFunction.name,d.vertexFunction.name,(unsigned long long)(nowUs()-pipelineBegan));
++   // houji: the render server's lines into m2v/shaders.txt too (the console reads files, not the unified log), truncated by the first.
++   if(fresh && nativeIsRenderServer()) {
++    static std::atomic<bool> begun{false};
++    if(FILE *f=fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/shaders.txt",begun.exchange(true)?"a":"w")) {
++     fprintf(f,"fs %08x vs %08x | frag %s vert %s | %llu us\n",fs,vs,d.fragmentFunction.name.UTF8String?:"-",
++             d.vertexFunction.name.UTF8String?:"-",(unsigned long long)(nowUs()-pipelineBegan));
++     fclose(f);
++    }
++   }
+   }
+  }
+  if(handle && reflection && wantsReflection(options))*reflection=(MTLRenderPipelineReflection *)renderReflection(p);

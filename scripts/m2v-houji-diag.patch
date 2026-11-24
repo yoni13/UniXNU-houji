@@ -1,0 +1,125 @@
+diff --git a/crates/metal2vulkan-runtime/src/houji_diag.rs b/crates/metal2vulkan-runtime/src/houji_diag.rs
+new file mode 100644
+index 0000000..f402560
+--- /dev/null
++++ b/crates/metal2vulkan-runtime/src/houji_diag.rs
+@@ -0,0 +1,61 @@
++//! houji: diagnostics of the plugin's trace switch (`SHENG_DIAG`, which boot argument `gtr=1` or `diag=1` sets), in the render
++//! server alone: each shadow the shadow log names (`shadow_log.rs`) as a line of `m2v/shadows.txt`, and the render encoders opened
++//! (`CommandBuffer::render_command_encoder`) and opened again from a committed command buffer's log (`render/replay.rs`) in
++//! `m2v/opens.txt`. Without the switch nothing is counted or written.
++
++use std::io::Write;
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::OnceLock;
++
++const SHADOWS: &str = "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/shadows.txt";
++const OPENS: &str = "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/opens.txt";
++/// The most shadow lines written; the rest only counted.
++const MOST_LINES: u64 = 600;
++
++/// Whether the diagnostics are on: the switch set and this process the render server, read once.
++pub(crate) fn on() -> bool {
++    static ON: OnceLock<bool> = OnceLock::new();
++    *ON.get_or_init(|| {
++        std::env::var_os("SHENG_DIAG").is_some()
++            && std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n == "backboardd")).unwrap_or(false)
++    })
++}
++
++static LINES: AtomicU64 = AtomicU64::new(0);
++static OPENED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
++
++fn millis() -> u128 {
++    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
++}
++
++/// A shadow the shadow log names, `text` its line: the first [`MOST_LINES`] into `m2v/shadows.txt` (the first of the process
++/// truncates it), each with its number and the wall clock in milliseconds.
++pub(crate) fn shadow_line(text: &str) {
++    let n = LINES.fetch_add(1, Ordering::Relaxed);
++    if n >= MOST_LINES {
++        return;
++    }
++    let file = std::fs::OpenOptions::new().create(true).write(true).append(n > 0).truncate(n == 0).open(SHADOWS);
++    if let Ok(mut file) = file {
++        let _ = writeln!(file, "{n} {} {text}", millis());
++    }
++}
++
++/// A render encoder opened (`again`: opened again from a committed command buffer's log): every 256th, the counts into
++/// `m2v/opens.txt`, with the shadows named so far.
++pub(crate) fn opened(again: bool) {
++    if !on() {
++        return;
++    }
++    OPENED[again as usize].fetch_add(1, Ordering::Relaxed);
++    let (fresh, replayed) = (OPENED[0].load(Ordering::Relaxed), OPENED[1].load(Ordering::Relaxed));
++    if (fresh + replayed) % 256 != 0 {
++        return;
++    }
++    let line = format!(
++        "opens fresh {fresh} again {replayed} shadows {} at {}\n",
++        LINES.load(Ordering::Relaxed),
++        millis()
++    );
++    let _ = std::fs::write(OPENS, line);
++}
+diff --git a/crates/metal2vulkan-runtime/src/lib.rs b/crates/metal2vulkan-runtime/src/lib.rs
+index 74c637e..5be775a 100644
+--- a/crates/metal2vulkan-runtime/src/lib.rs
++++ b/crates/metal2vulkan-runtime/src/lib.rs
+@@ -114,6 +114,7 @@ mod exported_memory;
+ #[cfg(unix)]
+ mod exported_semaphore;
+ mod fence;
++mod houji_diag;
+ mod fetch_reach;
+ mod fill_value;
+ mod fragment_imageblock;
+diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-runtime/src/render.rs
+index 7bfc627..3d8838a 100644
+--- a/crates/metal2vulkan-runtime/src/render.rs
++++ b/crates/metal2vulkan-runtime/src/render.rs
+@@ -1988,6 +1988,8 @@ impl CommandBuffer {
+         let carried = self.take_carried();
+         // Metal's process ends here under some protection options (`command_buffer/protection.rs`).
+         self.refuse_protected_encoder("render_command_encoder")?;
++        // houji: counted with the trace switch (`houji_diag.rs`).
++        crate::houji_diag::opened(false);
+         self.open_render(descriptor, None, None, carried)
+             .map(RenderCommandEncoder::new)
+     }
+@@ -4275,6 +4277,8 @@ impl RenderLowering {
+         residency: Residency,
+         screen: Option<[u32; 2]>,
+     ) -> Result<Lowering, Error> {
++        // houji: counted with the trace switch (`houji_diag.rs`).
++        crate::houji_diag::opened(true);
+         command_buffer.open_render(descriptor, Some(residency), screen, None)
+     }
+ 
+diff --git a/crates/metal2vulkan-runtime/src/shadow_log.rs b/crates/metal2vulkan-runtime/src/shadow_log.rs
+index 42f9c9b..becd9ba 100644
+--- a/crates/metal2vulkan-runtime/src/shadow_log.rs
++++ b/crates/metal2vulkan-runtime/src/shadow_log.rs
+@@ -33,7 +33,8 @@ const ID_NAME: &str = "metal2vulkan-shadows";
+ /// Whether the log is on: read once.
+ pub(super) fn enabled() -> bool {
+     static ON: OnceLock<bool> = OnceLock::new();
+-    *ON.get_or_init(metal2vulkan::env_vars::log_shadows)
++    // houji: on with the trace switch too, its lines into a file (`houji_diag.rs`).
++    *ON.get_or_init(|| metal2vulkan::env_vars::log_shadows() || crate::houji_diag::on())
+ }
+ 
+ /// What a line names of a shadow's texture: its format, width and height, levels and usage.
+@@ -110,5 +111,9 @@ pub(super) fn made_of(
+          usage {:?}, over {truth}, a shadow: {why}",
+         texture.pixel_format, texture.levels, texture.usage,
+     );
++    if crate::houji_diag::on() {
++        crate::houji_diag::shadow_line(&text);
++        return;
++    }
+     inform_through(device.shared().instance.sink(), ID_NAME, text);
+ }

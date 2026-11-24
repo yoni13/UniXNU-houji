@@ -1,0 +1,154 @@
+diff --git a/src/freedreno/vulkan/tu_clear_blit.cc b/src/freedreno/vulkan/tu_clear_blit.cc
+index b25b5fb..dbe1fad 100644
+--- a/src/freedreno/vulkan/tu_clear_blit.cc
++++ b/src/freedreno/vulkan/tu_clear_blit.cc
+@@ -3658,6 +3658,21 @@ tu_CmdCopyImage2(VkCommandBuffer commandBuffer,
+    }
+ 
+    trace_end_copy_image(&cmd->trace, &cmd->cs);
++
++   /* houji (the trace on): the copy's images, a pass ring entry of mode 9 with no work of its own. kind: bit 0 the source linear,
++    * 1 the source over external memory, 2 the destination linear, 3 the destination over external memory; width and height the
++    * first region's extent; draws and kpx the source's width and height; bandwidth the source's usage, hash the destination's;
++    * format the source's. */
++   if (pCopyImageInfo->regionCount) {
++      const VkExtent3D e = pCopyImageInfo->pRegions[0].extent;
++      const uint8_t kind = (src_image->layout[0].tile_mode == TILE6_LINEAR ? 1 : 0) |
++                           (src_image->vk.external_handle_types ? 2 : 0) |
++                           (dst_image->layout[0].tile_mode == TILE6_LINEAR ? 4 : 0) |
++                           (dst_image->vk.external_handle_types ? 8 : 0);
++      tu_op_end(cmd, &cmd->cs,
++                tu_op_begin(cmd, &cmd->cs, 9, kind, e.width, e.height, src_image->vk.extent.width,
++                            src_image->vk.extent.height, src_image->vk.usage, dst_image->vk.usage, src_image->vk.format));
++   }
+ }
+ TU_GENX(tu_CmdCopyImage2);
+ 
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index f618617..128617c 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -4858,9 +4858,14 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+    /* setup initial configuration into command buffer */
+    if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+       switch (cmd_buffer->queue_family_index) {
+-      case TU_QUEUE_GENERAL:
++      case TU_QUEUE_GENERAL: {
++         /* houji (the trace on, tu_pass_trace_on): the primary's head, tu_init_hw, stamped as a pass ring entry of mode 8, so the
++          * gap between two primaries splits into the jump between them and the head. */
++         const uint32_t houji_head = tu_op_begin(cmd_buffer, &cmd_buffer->cs, 8, 0, 0, 0, 0, 0, 0, 0, 0);
+          TU_CALLX(cmd_buffer->device, tu_init_hw)(cmd_buffer, &cmd_buffer->cs);
++         tu_op_end(cmd_buffer, &cmd_buffer->cs, houji_head);
+          break;
++      }
+       default:
+          break;
+       }
+diff --git a/src/freedreno/vulkan/tu_pipeline.cc b/src/freedreno/vulkan/tu_pipeline.cc
+index 087b4a9..3f14e89 100644
+--- a/src/freedreno/vulkan/tu_pipeline.cc
++++ b/src/freedreno/vulkan/tu_pipeline.cc
+@@ -44,6 +44,91 @@ tu_darwin_last_program(uint32_t *vs, uint32_t *fs)
+    tu_last_program_hash[0] = tu_last_program_hash[1] = 0;
+ }
+ 
++/* houji (the plugin's trace switch SHENG_DIAG, boot argument gtr=1 or diag=1; the render server alone): the fragment shaders the
++ * frame trace names as the costliest (tu_hash32 of the variant, as the pass records keep it) and every one of 400 instructions or
++ * more, at most 64: each one's ir3 statistics and disassembly appended to m2v/ir3.txt once, and the SPIR-V the stage was created from,
++ * where this creation has it, to m2v/spirv.bin once (a header "SPV0", its hash, its size in bytes, the entry point's name length and
++ * name, then the words). Diagnostics only: without the switch it returns at its first test. */
++#include "vk_shader_module.h"
++#include "util/simple_mtx.h"
++extern "C" int try_disasm_a3xx(const uint32_t *dwords, int sizedwords, int level, FILE *out, unsigned gpu_id);
++static void
++tu_houji_dump_fs(struct tu_device *dev, const VkPipelineShaderStageCreateInfo *info, const struct ir3_shader_variant *v)
++{
++   static const bool on = getenv("SHENG_DIAG") && getprogname() && !strcmp(getprogname(), "backboardd");
++   if (!on || !v || !v->bin)
++      return;
++   static const uint32_t wanted[] = {0x7ebccf52, 0x7642b2b4, 0xb0100a10, 0x241ef7ce, 0x7623f474, 0x5b50d467};
++   const uint32_t hash = tu_hash32(v->blake3_str);
++   bool want = v->info.instrs_count >= 400;
++   for (uint32_t w : wanted)
++      want |= hash == w;
++   if (!want)
++      return;
++   static simple_mtx_t lock = SIMPLE_MTX_INITIALIZER;
++   static uint32_t seen[64];
++   static bool spirv_seen[64];
++   static unsigned seen_count;
++   static bool truncated;
++   simple_mtx_lock(&lock);
++   unsigned i = 0;
++   while (i < seen_count && seen[i] != hash)
++      i++;
++   const bool fresh = i == seen_count;
++   if (fresh && seen_count == ARRAY_SIZE(seen)) {
++      simple_mtx_unlock(&lock);
++      return;
++   }
++   if (fresh) {
++      seen[seen_count++] = hash;
++      FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/ir3.txt", truncated ? "a" : "w");
++      if (f) {
++         const struct ir3_info *n = &v->info;
++         fprintf(f, "== fs %08x %s instrs %u preamble %u nops %u mov %u cov %u stp %u ldp %u loops %u max_reg %d max_half_reg %d "
++                    "mergedregs %d constlen %u max_waves %d double_threadsize %d ss %u sy %u sstall %u systall %u last_baryf %u "
++                    "early_preamble %d sizedwords %u cat0-7 %u %u %u %u %u %u %u %u\n",
++                 hash, v->blake3_str, n->instrs_count, n->preamble_instrs_count, n->nops_count, n->mov_count, n->cov_count,
++                 n->stp_count, n->ldp_count, n->loops, n->max_reg, n->max_half_reg, v->mergedregs, n->constlen, n->max_waves,
++                 n->double_threadsize, n->ss, n->sy, n->sstall, n->systall, n->last_baryf, n->early_preamble, n->sizedwords,
++                 n->instrs_per_cat[0], n->instrs_per_cat[1], n->instrs_per_cat[2], n->instrs_per_cat[3], n->instrs_per_cat[4],
++                 n->instrs_per_cat[5], n->instrs_per_cat[6], n->instrs_per_cat[7]);
++         try_disasm_a3xx(v->bin, n->sizedwords, 0, f, fd_dev_gpu_id(&dev->physical_device->dev_id));
++         fprintf(f, "== end %08x\n", hash);
++         fclose(f);
++         truncated = true;
++      }
++   }
++   if (info && !spirv_seen[i]) {
++      const uint32_t *code = NULL;
++      uint32_t size = 0;
++      if (info->module != VK_NULL_HANDLE) {
++         VK_FROM_HANDLE(vk_shader_module, module, info->module);
++         code = (const uint32_t *) module->data;
++         size = module->size;
++      } else {
++         const VkShaderModuleCreateInfo *made = vk_find_struct_const(info->pNext, SHADER_MODULE_CREATE_INFO);
++         if (made) {
++            code = made->pCode;
++            size = (uint32_t) made->codeSize;
++         }
++      }
++      static bool spirv_truncated;
++      FILE *f = code && size ? fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/spirv.bin",
++                                     spirv_truncated ? "ab" : "wb") : NULL;
++      if (f) {
++         const char *name = info->pName ? info->pName : "";
++         const uint32_t head[4] = {0x30565053, hash, size, (uint32_t) strlen(name)};
++         fwrite(head, sizeof(head), 1, f);
++         fwrite(name, 1, head[3], f);
++         fwrite(code, 1, size, f);
++         fclose(f);
++         spirv_truncated = true;
++         spirv_seen[i] = true;
++      }
++   }
++   simple_mtx_unlock(&lock);
++}
++
+ /* Emit IB that preloads the descriptors that the shader uses */
+ 
+ static void
+@@ -2128,6 +2213,11 @@ done:
+       if (shaders[stage] && shaders[stage]->variant) {
+          tu_append_executable(pipeline, shaders[stage]->variant,
+                               nir_initial_disasm[stage]);
++         /* houji: the trace switch's shader dump (tu_houji_dump_fs). */
++         if (stage == MESA_SHADER_FRAGMENT) {
++            tu_houji_dump_fs(builder->device, stage_infos[stage], shaders[stage]->variant);
++            tu_houji_dump_fs(builder->device, stage_infos[stage], shaders[stage]->safe_const_variant);
++         }
+       }
+    }
+ 
