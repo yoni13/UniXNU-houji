@@ -1228,6 +1228,19 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     whose bolt is white in root423 and grey in root424: the charger's state (`HOUJI BATT STATS` about -430 mA against 0), not the
     rendering. No other difference.
   - **Decision: h16=1 not adopted** (no GPU time gained); it stays in the tree, off by default.
+- **lb=1 built, and why it does not fire** (gpu44, `m2v-houji-lb.patch`, seed leanlc42, reset root425; gpu45 = gpu44 + the refusal
+  line's explanation, thin LTO, seed leanlc43, reset root427):
+  - `level_reads` now names an explicit level of detail that is the `f32` the access lowering loads from a word of the stage's buffer
+    slot (`SampledLevels::lod_word`, `computed` kept true so every other reader bounds it by the sampler as before); under `lb=1`
+    `attached_levels` takes it as the constant level of detail only from the draw's `set*Bytes` copy (`ArgumentTable::bytes`), within
+    the call's length, finite, and then through `SampledLevels::level` (bias, clamps, a linear mipmap mode's fraction to the next level).
+  - root426 (`gtr=1 lb=1`, 990 bytes, 2 traced opens, hangs 0, faults 0, peak 61.7 C): every refused slot carries
+    `lod_word: Some(slot 1, byte 0)` (the analysis matches `df543221`), but `lod-words 0`: all 4644 slots still `Reaching`.
+  - root428 (gpu45, the same line, 1 traced open, hangs 0, faults 0, peak 58.7 C): the constexpr sampler pairs (`paired true`, LOD
+    0 to 65504, mipmap mode nearest); slot 1 holds **no bytes: Core Animation binds a buffer** there (`setFragmentBuffer`, a
+    262144-byte arena at offsets 2416, 2624, 2992, 3200, 3568, 3776, ...). A buffer's word may change between the encoding and the
+    command buffer's commit, as Metal allows, so `lb=1` does not read it: it refuses by design and never narrows Core Animation's draws.
+  - Not verified: any GPU time for `lb=1` (it never fired); the exact routes left need the word checked again at the commit.
 
 ## Faults found on the way
 
