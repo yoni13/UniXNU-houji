@@ -1273,6 +1273,38 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     7 us `tu_init_hw` and its tail), but the pass recorded as a secondary takes 10 us against 8, and the 10-11 us CP switch that
     preceded the copy's primary now precedes the pass's: about 5 us a level, 0.2 ms a frame at 42, inside the noise.
     `tu_init_hw` is additive where a primary goes; the CP switch moves with the encoder boundary, it does not go.
+- **gpu47: within-boot toggles, C-lite and the CP switch** (`26688e5`, kernel console `tog N`; GPU userspace gpu47, seed leanlc45;
+  `tt=1 hs=9 gp=0`, `HTC=1`, 979 bytes untraced / 985 with `gtr=1`; root435 reset, root436/438 traced, root439/440 untraced;
+  every boot hangs 0, faults 0, no crash, peak 60.2-70.0 C):
+  - *Toggles.* Console `tog X` (one hex digit) sets the host name `houji-tog-X`; metal2vulkan (bit 0 `pf`) and Turnip (bits 1-3)
+    read it at most every 50 ms, at each encoder / `vkBeginCommandBuffer`. `t-bal.sh TOGS="0 2"` alternates them over a side's opens,
+    `abab.py` pairs each toggled open with the base opens around it. (root436 ran an older kernel without `tog`: `mac.sh`'s checkout
+    on the Mac had failed and it reported the previous build's log; `mac.sh` now deletes the log first.)
+  - *C-lite* (bit 1; bit 2 its group A alone: the invalidates, the waits for idle and SP_UPDATE_CNTL; bit 3 group B alone: the static
+    registers, RB_CCU_CNTL, the VPC attribute buffer): `tu_init_hw`'s groups in IB entries of their own, left out at submission
+    for a primary that follows another general one in the same `vkQueueSubmit`; the CCU state unknown at the start, group A's flushes
+    left pending. Audit first: outside `tu6_init_static_regs` only `RB_DBG_ECO_CNTL` (restored by `r2d_run`), the conservative-raster
+    and stream registers (re-emitted by the clear/blit setup and every new command buffer's first draw) and RB_CCU_CNTL / the VPC
+    attribute buffer (set again by `tu_emit_cache_flush_ccu` from the unknown state) are written; no draw-state group outlives a
+    command buffer (`tu_disable_draw_states` kept).
+  - *It fires and the cost moves* (root438, traced, 2+2 opens): a following primary's head 7.0 -> 5.0 us (mean 6.8 -> 4.6), the gap
+    before pass and copy primaries 2.2 us shorter, but each copy 2.2 us longer (12.2 -> 14.5 us): the CCU programming, invalidates
+    and wait for idle the head did are done at the first use instead. About 4.6 us of head stays (thread control, the BV/BR setup, the
+    ambles).
+  - *Untraced, within one boot:* root439 (8+8 alternated opens, cpu7 pinned at its cap 2169 MHz): C-lite +0.10 +- 0.25 ms a frame over
+    a common window (0.45-0.7 s after the first swap; with 500 jobs dumped, C-lite's opens' dumps began up to 342 ms into the usual
+    0.1-0.7 s window, which first read as -3.2 ms: `GTLN=1200` since, `abab.py` checks the cover). root440 (4 sides x 6 opens, every
+    window covered, each side's first open left out, against the side's own base opens 3 and 5): bit 1 +0.24 +- 0.12, bit 2
+    -0.00 +- 0.25, bit 3 +0.63 +- 0.08 ms (bit 3 always last in its side; the base opens show no drift). `fbdump`: 4 (root439) and
+    24 (root440) grabs over bits 0/1/2/3 one CRC each, 0 pixels differ.
+  - **Decision: C-lite not adopted** (no gain; bits 1-3 stay off by default, nothing changes unless toggled). `pf + C-lite` not run:
+    C-lite already shortens the transfer primaries' heads.
+  - *The CP switch* (CP stamp now before the head's RB event, `cpgap.py`; root436/438): pass -> pass 10.5 us and pass -> copy 11.0 us
+    of CP time, with the RB idle (rb_lag 0.1 us); copy -> pass 0.2 us, flush-only boundaries 0.2 us; the end's flushes 1.7-1.8 us
+    (cp_flush). The next command buffer's fetch costs 0.2 us: the 11 us follows a primary that ran a pass with concurrent binning
+    (it ends in the BR thread, the BV thread held at its BV/BR counts), so it is the CP's two threads meeting again, not the IB
+    fetch. Not verified: which packet the BR thread waits in. Fewer pass-primary boundaries (merging encoders, `mj=1`, whose
+    separate-boot A/B carried the CPU-pacing confound) is the lever on it: next to measure within one boot.
 
 ## Faults found on the way
 

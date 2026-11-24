@@ -26,17 +26,27 @@ def measure(T):
     a = [x for x in sw if x >= g]
     if not a or sw[0] >= g:
         return None
-    w0, w1 = a[0] + 0.1, a[0] + 0.7
-    nf = sum(1 for x in sw if w0 <= x < w1)
+    w0, w1 = a[0] + W0, a[0] + 0.7
     J = [(int(m[2]) / 19.2, int(m[3]) / 19.2, int(m[4])) for m in re.finditer(r'HOUJI GTL (\d+) (\d+) (\d+) (\d+) (\d+) (\d+)', T)
          if int(m[2]) and int(m[3]) >= int(m[2])]
-    if len(J) < 20 or not nf:
+    if len(J) < 20:
         return None
     off = min(s - sub for s, e, sub in J)
+    # The console's gtl dump holds the newest jobs only (gtl dump 500): where its oldest job starts inside the window, the window
+    # starts there (frames and busy time over the covered part alone; root439: C-lite's more jobs a second left 71-342 ms uncovered).
+    w0 = max(w0, min(s - off for s, e, sub in J) / 1e6 + 0.002)
+    if w1 - w0 < 0.25:
+        return None
+    nf = sum(1 for x in sw if w0 <= x < w1)
+    if not nf:
+        return None
     iv = [(max(s - off, w0 * 1e6), min(e - off, w1 * 1e6)) for s, e, sub in J if e - off > w0 * 1e6 and s - off < w1 * 1e6]
-    return union(iv) / 1000 / nf, nf / 0.6
+    return union(iv) / 1000 / nf, nf / (w1 - w0)
 
 
+import os
+# W0 (s after the first swap, default 0.1): the window's start for every open alike (where some dumps start late, one late W0 for all)
+W0 = float(os.environ.get('W0', '0.1'))
 N, side = sys.argv[1], sys.argv[2]
 base = sys.argv[3] if len(sys.argv) > 3 else '0'
 rows = []

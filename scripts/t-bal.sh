@@ -74,7 +74,8 @@ for s in ${SIDES:-Q4u P4u Q4u P4u}; do
   case $b in PC|C7) c 'bind 30:0 cpu3';; *) c 'bind 30:0 cpu7';; esac
   case $b in P7|C7) c "dvfs set p7cap ${CAP7:-3053}";; *) c 'dvfs set p7cap 0';; esac
   c 'dvfs set framepct 100'; c 'dvfs set touchpct 100'
-  # GTLU=1: the GPU's job stamps (gtl) on in untraced sides too, dumped after each open's swaps (CP stamps only, no sampler)
+  # GTLU=1: the GPU's job stamps (gtl) on in untraced sides too, dumped after each open's swaps (CP stamps only, no sampler); GTLN
+  # the jobs dumped (default 500: under C-lite, root439, 500 began up to 342 ms into gpuwin's window; 1200 covers it)
   [ $b = $s ] || [ "${GTLU:-0}" = 1 ] && c 'gtl on' || c 'gtl off'
   if [ "${PIN7:-0}" = 1 ]; then
     n=$(wc -l < $L); c dvfs; sleep 2
@@ -92,7 +93,7 @@ for s in ${SIDES:-Q4u P4u Q4u P4u}; do
       [ "${THREADS:-0}" = 1 ] && { c "threads $bb"; sleep 1; }
       # swaps twice: the console keeps the newest 128, and at Q4's rate those read 1.3 s or more after the swipe all came after it
       # (root403: the open's first frames were missing, its "first frame" the oldest swap kept)
-      c "tl 2500 $B"; sleep 0.2; c 'swipe 1120 15 1120 700 200'; sleep 0.7; c swaps; sleep 0.6; c swaps; c 'gtl dump 500'
+      c "tl 2500 $B"; sleep 0.2; c 'swipe 1120 15 1120 700 200'; sleep 0.7; c swaps; sleep 0.6; c swaps; c "gtl dump ${GTLN:-500}"
       # NOTES=1 (a boot with m2v-count=2): the bridge's per-commit work rows of this open, for cb-split.py
       [ "${NOTES:-0}" = 1 ] && c 'notes 400'
       # the plugin's trace writer runs 1-2 s behind in an open (root408: read 2.1 s after the gesture, its records reached +0.3 to +1.1 s):
@@ -141,7 +142,7 @@ for s in ${SIDES:-Q4u P4u Q4u P4u}; do
       # FB=1 (a kernel with console fbdump): the whole panel at full resolution, 8-bit RGB, the first untraced open of each side, for
       # the visual A/B (fbshot.py diff)
       [ "${FB:-0}" = 1 ] && [ $k -le $(( ${#TG[@]} > 0 ? ${#TG[@]} : 1 )) ] && { sleep 1; timeout 90 python3 fbshot.py grab $L logs/$N-fb-$s$sx-$(date +%s).png 2>&1 | sed 's/^/  [fb] /'; }
-      [ "${GTLU:-0}" = 1 ] && c 'gtl dump 500'; sleep 3; tail -n +$m $L > logs/$N-ut-$s$sx-$k-$(date +%s).log
+      [ "${GTLU:-0}" = 1 ] && c "gtl dump ${GTLN:-500}"; sleep 3; tail -n +$m $L > logs/$N-ut-$s$sx-$k-$(date +%s).log
       [ -n "${USTD:-}" ] && tail -n +$m $L | grep -a 'HOUJI USTACK' | cut -c10- > logs/$N-ust-$s-$k.txt
     fi
     c 'swipe 600 2669 600 2000 150'; sleep 8
