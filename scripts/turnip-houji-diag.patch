@@ -25,7 +25,7 @@ index b25b5fb..dbe1fad 100644
  TU_GENX(tu_CmdCopyImage2);
  
 diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
-index f618617..12c16d9 100644
+index f618617..fc9f06f 100644
 --- a/src/freedreno/vulkan/tu_cmd_buffer.cc
 +++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
 @@ -2527,10 +2527,20 @@ tu_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
@@ -80,7 +80,7 @@ index f618617..12c16d9 100644
  
     tu_disable_draw_states(cmd, cs);
  
-@@ -4846,6 +4863,100 @@ tu_cmd_buffer_begin(struct tu_cmd_buffer *cmd_buffer,
+@@ -4846,6 +4863,145 @@ tu_cmd_buffer_begin(struct tu_cmd_buffer *cmd_buffer,
     return VK_SUCCESS;
  }
  
@@ -89,9 +89,9 @@ index f618617..12c16d9 100644
 + * its own ring with the pass ring sequence number it goes with and a tag: kind << 28 (1 a primary's head, before tu_init_hw, beside
 + * its mode 8 entry; 2 a primary's end, after its last packet, beside its mode 7 entry) | its command pool's address >> 4 (28
 + * bits). The ring goes to m2v/cpstamps.bin (16-byte entries: ticks, sequence, tag), at most every 0.5 s, by the render server. */
-+/* houji: the console's "tog N" toggles: the kernel's host name houji-tog-X (X one hex digit), read at most every 50 ms; 0 under any
-+ * other name. Bit 0 pf (metal2vulkan's inline_first), bit 1 C-lite both groups, bit 2 its group A alone, bit 3 its group B alone
-+ * (tu_init_hw, tu_queue.cc). */
++/* houji: the console's "tog N" toggles: the kernel's host name houji-tog-X or houji-tog-XY (one or two hex digits), read at most
++ * every 50 ms; 0 under any other name. Bit 0 pf (metal2vulkan's inline_first), bit 1 C-lite both groups, bit 2 its group A alone,
++ * bit 3 its group B alone (tu_init_hw, tu_queue.cc), bit 4 metal2vulkan's begun-ahead primaries left unused (spares.rs). */
 +#include <unistd.h>
 +static uint32_t
 +tu_houji_toggles(void)
@@ -103,9 +103,11 @@ index f618617..12c16d9 100644
 +      return p_atomic_read(&value);
 +   char name[64] = {};
 +   uint32_t v = 0;
-+   if (!gethostname(name, sizeof(name) - 1) && !strncmp(name, "houji-tog-", 10) && name[10] && !name[11]) {
-+      const char c = name[10];
-+      v = c >= '0' && c <= '9' ? (uint32_t) (c - '0') : c >= 'a' && c <= 'f' ? (uint32_t) (c - 'a' + 10) : 0;
++   if (!gethostname(name, sizeof(name) - 1) && !strncmp(name, "houji-tog-", 10) && name[10] && (!name[11] || !name[12])) {
++      for (unsigned i = 10; name[i]; i++) {
++         const char c = name[i];
++         v = v << 4 | (c >= '0' && c <= '9' ? (uint32_t) (c - '0') : c >= 'a' && c <= 'f' ? (uint32_t) (c - 'a' + 10) : 0);
++      }
 +   }
 +   p_atomic_set(&value, v);
 +   p_atomic_set(&read_ns, now);
@@ -169,6 +171,49 @@ index f618617..12c16d9 100644
 +   return (int) at;
 +}
 +
++/* houji (the trace on): each general primary as it is submitted, a 32-byte record of m2v/cbiova.bin (a ring of 65536, by the render
++ * server, every 512th record where 0.5 s passed): its pass ring entry (mode 7, the CP stamps' sequence), its IB entry count, the
++ * IOVA of its first entry (the head, where the CP stamp of kind 1 is) and the end of its last (where kind 2 is), and the two
++ * entries' BO handles (the kernel client's, low half): whether the CP's jump from one primary to the next crosses BOs or pages
++ * (cpgap.py with the record). */
++#define TU_HOUJI_IOVA_RING 65536
++struct tu_houji_iova_rec {
++   uint32_t seq, entries;
++   uint64_t first_iova, last_end;
++   uint32_t first_bo, last_bo;
++};
++static struct tu_houji_iova_rec tu_houji_iova_ring[TU_HOUJI_IOVA_RING];
++static uint32_t tu_houji_iova_at;
++
++void
++tu_houji_note_iova(const struct tu_cmd_buffer *cmd)
++{
++   if (!tu_pass_trace_on() || !cmd->houji_cb_seq || !cmd->cs.entry_count)
++      return;
++   const struct tu_cs_entry *first = &cmd->cs.entries[0], *last = &cmd->cs.entries[cmd->cs.entry_count - 1];
++   const uint32_t at = p_atomic_inc_return(&tu_houji_iova_at) % TU_HOUJI_IOVA_RING;
++   tu_houji_iova_ring[at] = (struct tu_houji_iova_rec) {
++      .seq = cmd->houji_cb_seq,
++      .entries = cmd->cs.entry_count,
++      .first_iova = first->bo ? first->bo->iova + first->offset : 0,
++      .last_end = last->bo ? last->bo->iova + last->offset + last->size : 0,
++      .first_bo = first->bo ? (uint32_t) first->bo->gem_handle : 0,
++      .last_bo = last->bo ? (uint32_t) last->bo->gem_handle : 0,
++   };
++   static const bool server = getprogname() && !strcmp(getprogname(), "backboardd");
++   static uint64_t written_ns;
++   if (server && !(at & 511)) {
++      const uint64_t now = os_time_get_nano();
++      if (now - p_atomic_read(&written_ns) >= 500000000ull) {
++         p_atomic_set(&written_ns, now);
++         if (FILE *f = fopen("/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/cbiova.bin", "wb")) {
++            fwrite(tu_houji_iova_ring, sizeof(tu_houji_iova_ring[0]), TU_HOUJI_IOVA_RING, f);
++            fclose(f);
++         }
++      }
++   }
++}
++
 +/* houji: name the pass ring entry a CP stamp made before it goes with (the head's, stamped before its RB event). */
 +static void
 +tu_houji_cp_link(int at, uint32_t of)
@@ -181,11 +226,12 @@ index f618617..12c16d9 100644
  VKAPI_ATTR VkResult VKAPI_CALL
  tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                        const VkCommandBufferBeginInfo *pBeginInfo)
-@@ -4854,13 +4965,24 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+@@ -4854,13 +5010,25 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
     VkResult result = tu_cmd_buffer_begin(cmd_buffer, pBeginInfo);
     if (result != VK_SUCCESS)
        return result;
 +   cmd_buffer->houji_skip_bits = 0;
++   cmd_buffer->houji_cb_seq = 0;
  
     /* setup initial configuration into command buffer */
     if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
@@ -207,19 +253,21 @@ index f618617..12c16d9 100644
        default:
           break;
        }
-@@ -5778,6 +5900,11 @@ VKAPI_ATTR VkResult VKAPI_CALL
+@@ -5778,6 +5946,13 @@ VKAPI_ATTR VkResult VKAPI_CALL
  tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
  {
     VK_FROM_HANDLE(tu_cmd_buffer, cmd_buffer, commandBuffer);
 +   /* houji: the primary's own pass ring entry (mode 7), for its end's CP-time stamp (tu_houji_cp_stamp). */
 +   const uint32_t houji_cb = cmd_buffer->houji_op;
-+   /* houji: and the CP before the end's flushes (kind 3). */
-+   if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
++   /* houji: and the CP before the end's flushes (kind 3); the entry kept for the submission's IB record (tu_houji_note_iova). */
++   if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
 +      tu_houji_cp_stamp(cmd_buffer, &cmd_buffer->cs, houji_cb, 3);
++      cmd_buffer->houji_cb_seq = houji_cb;
++   }
  
     /* We currently flush CCU at the end of the command buffer, like
      * what the blob does. There's implicit synchronization around every
-@@ -5814,6 +5941,7 @@ tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
+@@ -5814,6 +5989,7 @@ tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
        trace_end_cmd_buffer(&cmd_buffer->trace, &cmd_buffer->cs, cmd_buffer, addr_preempt_latency, addr_preempt_latency_rp_hash);
  
        cmd_buffer->autotune_ctx.snapshot_preempt_data(&cmd_buffer->cs);
@@ -228,10 +276,21 @@ index f618617..12c16d9 100644
        trace_end_secondary_cmd_buffer(
           cmd_buffer->state.pass ? &cmd_buffer->rp_trace : &cmd_buffer->trace,
 diff --git a/src/freedreno/vulkan/tu_cmd_buffer.h b/src/freedreno/vulkan/tu_cmd_buffer.h
-index afae66f..d65dfb0 100644
+index afae66f..d139224 100644
 --- a/src/freedreno/vulkan/tu_cmd_buffer.h
 +++ b/src/freedreno/vulkan/tu_cmd_buffer.h
-@@ -684,6 +684,13 @@ struct tu_cmd_buffer
+@@ -662,6 +662,10 @@ struct tu_cb_control_point {
+    uint32_t original_value;
+ };
+ 
++struct tu_cmd_buffer;
++/* houji (tu_cmd_buffer.cc): a primary's IB record as it is submitted, with the trace on. */
++void tu_houji_note_iova(const struct tu_cmd_buffer *cmd);
++
+ struct tu_cmd_buffer
+ {
+    struct vk_command_buffer vk;
+@@ -684,6 +688,15 @@ struct tu_cmd_buffer
  
     struct util_dynarray cb_control_points;
  
@@ -241,6 +300,8 @@ index afae66f..d65dfb0 100644
 +    * buffer), and their IB entries [first, last) in cs. 0: recorded as ever. */
 +   uint32_t houji_skip_bits;
 +   uint32_t houji_a[2], houji_b[2];
++   /* houji (the trace on): the primary's own pass ring entry, for its IB record at submission (tu_houji_note_iova). */
++   uint32_t houji_cb_seq;
 +
     VkCommandBufferUsageFlags usage_flags;
  
@@ -378,7 +439,7 @@ index 087b4a9..14eb7ad 100644
     }
  
 diff --git a/src/freedreno/vulkan/tu_queue.cc b/src/freedreno/vulkan/tu_queue.cc
-index ec07654..bce77f7 100644
+index ec07654..27c3ec5 100644
 --- a/src/freedreno/vulkan/tu_queue.cc
 +++ b/src/freedreno/vulkan/tu_queue.cc
 @@ -485,10 +485,19 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
@@ -402,7 +463,7 @@ index ec07654..bce77f7 100644
           tu_submit_begin_command_buffer(device, submit);
  
        if (perf_pass_index != ~0) {
-@@ -498,8 +507,26 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
+@@ -498,8 +507,28 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
           submit_add_entries(device, submit, &dump_cmds, perf_cs_entry, 1);
        }
  
@@ -428,6 +489,8 @@ index ec07654..bce77f7 100644
 +         submit_add_entries(device, submit, &dump_cmds, cs->entries,
 +                            cs->entry_count);
 +      }
++      if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
++         tu_houji_note_iova(cmd_buffer);
  
        if (u_trace_submission_data &&
            u_trace_submission_data->timestamp_copy_data) {

@@ -51,7 +51,7 @@ N, side = sys.argv[1], sys.argv[2]
 base = sys.argv[3] if len(sys.argv) > 3 else '0'
 rows = []
 for f in glob.glob(f'logs/{N}-ut-{side}.t*-*.log'):
-    m = re.search(rf'-ut-{re.escape(side)}\.t([0-9a-f])-(\d+)-(\d+)\.log$', f)
+    m = re.search(rf'-ut-{re.escape(side)}\.t([0-9a-f]{{1,2}})-(\d+)-(\d+)\.log$', f)
     T = open(f, 'rb').read().decode('latin-1')
     r = measure(T)
     if m and r:

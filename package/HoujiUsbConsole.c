@@ -2233,17 +2233,21 @@ static void command_line(void)
         }
     }
     else if (!strncmp(u.command,"tog ",4)) {
-        /* Test toggles, a hex digit 0-f, all off by default: the host name set to houji-tog-X, which metal2vulkan (bit 0 pf,
-         * m2v-houji-pf.patch) and Turnip (bits 1-3 C-lite, turnip-houji-diag.patch) read (gethostname) at most every 50 ms.
-         * It replaces an m2v-fast-N name (the bridge then follows boot argument m2v-fast), as "m2v fast" replaces it. */
+        /* Test toggles, one or two hex digits (00-ff), all off by default: the host name set to houji-tog-X or houji-tog-XY, which
+         * metal2vulkan (bit 0 pf, bit 4 begun-ahead primaries unused: m2v-houji-pf.patch) and Turnip (bits 1-3 C-lite,
+         * turnip-houji-diag.patch) read (gethostname) at most every 50 ms. It replaces an m2v-fast-N name (the bridge then follows
+         * boot argument m2v-fast), as "m2v fast" replaces it. */
         extern char hostname[];extern lck_mtx_t hostname_lock;
-        const char d=u.command[4];
-        if (!((d>='0' && d<='9') || (d>='a' && d<='f')) || u.command[5]) printf("HOUJI TOG: one hex digit 0-f (bit 0 pf, 1 C-lite, 2 its group A, 3 its group B)\n");
+        const char *d=u.command+4;
+#define HOUJI_TOG_HEX(c) (((c)>='0' && (c)<='9') || ((c)>='a' && (c)<='f'))
+        if (!HOUJI_TOG_HEX(d[0]) || (d[1] && (!HOUJI_TOG_HEX(d[1]) || d[2])))
+            printf("HOUJI TOG: one or two hex digits (bit 0 pf, 1 C-lite, 2 its group A, 3 its group B, 4 no begun-ahead primaries)\n");
         else {
-            char name[]="houji-tog-0";name[10]=d;
+            char name[16]="houji-tog-";strlcat(name,d,sizeof name);
             lck_mtx_lock(&hostname_lock);strlcpy(hostname,name,MAXHOSTNAMELEN);lck_mtx_unlock(&hostname_lock);
-            printf("HOUJI TOG %c (host name %s)\n",d,name);
+            printf("HOUJI TOG %s (host name %s)\n",d,name);
         }
+#undef HOUJI_TOG_HEX
     }
     else if (!strcmp(u.command,"l3") || !strncmp(u.command,"l3 vote ",8) || !strncmp(u.command,"l3 perf ",8) || !strncmp(u.command,"l3 mode ",8)) {
         /* HoujiCpuDvfs.cpp houji_cpu_l3: the L3 clock's table and state; "l3 vote N" / "l3 perf N" write row N */
