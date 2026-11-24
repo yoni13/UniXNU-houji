@@ -1211,6 +1211,23 @@ census notes, console `notes`; GPU userspace gpu17, seed leanlc15; `t-census.sh`
     it can (7ebccf52 main body: 216 f32 ALU, 87 `mad.f16`, 58 conversions, 78 compare/select, 11 branches, 6 fetches).
   - Render encoders: 27392 opened fresh, 0 replayed (`m2v/opens.txt`): replay is not why `mj` counted so few.
   - Not verified: the Metal function names (`m2v/shaders.txt` was not written: the pipelines did not pass the frontend's named path).
+- **Lever B's cause, and h16=1 measured** (gpu43 = gpu42 + `m2v-houji-h16.patch` and the attached-level refusal log; seed leanlc41,
+  reset root421; kernel bd9d88e with console `fbdump X Y W H`, the framebuffer's 8-bit pixels through dump's transfers):
+  - *Why the mip-pyramid draws take a copy* (root422, `gtr=1`, 985 bytes, 2 traced opens, hangs 0, faults 0, peak 62.6 C;
+    `m2v/attached.txt`): all 3645 slots kept their copy for `Reaching`, none for another reason. The slot (fragment texture 3) samples
+    through a constexpr sampler (min/mag linear, mip nearest, LOD clamp 0 to 65504, Metal's default) at an explicit level of detail
+    that is no constant, so `SampledLevels::level` has no bound (`sampler levels [None]`). In `df543221`'s SPIR-V all 13 samples
+    take `Lod %58`, the `f32` at byte 0 of the fragment stage's bytes (uniform block set 0 binding 2, its base in the push constant at
+    64, or 0 by spec constant 2; byte 4 scales the taps' offsets): Core Animation passes the source level as a draw constant.
+    The exact fix needs `level_reads` to name such a level of detail by its buffer slot and offset, and the runtime to read it from
+    the draw's bytes (not from a buffer another writer may change).
+  - *h16=1 is neutral* (root423 without, 979 bytes; root424 with, 985 bytes; each Q4u 8 opens, `GTLU=1`, hangs 0, faults 0, no crash,
+    peaks 62.5 / 59.8 C): `gpuwin.py` 9.89 ms (root423, 9.45-10.30) against 9.97 ms (root424, 8.03-10.32); root417 (gpu41) 10.30.
+  - *Its pixels* (`fbshot.py`, the whole panel at 8 bits, first open of each side): two grabs of one boot differ in 0.03 % of pixels
+    by at most 2 levels (the noise); root423 against root424 differ by as much, plus 485 pixels of the status bar's battery icon,
+    whose bolt is white in root423 and grey in root424: the charger's state (`HOUJI BATT STATS` about -430 mA against 0), not the
+    rendering. No other difference.
+  - **Decision: h16=1 not adopted** (no GPU time gained); it stays in the tree, off by default.
 
 ## Faults found on the way
 

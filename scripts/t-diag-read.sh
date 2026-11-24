@@ -6,7 +6,7 @@ cd /mnt/6f99f95d-0b93-4a42-84ea-c848405a2812/unixnu-work/ios27; W=$PWD; D=$W/../
 [ -e /dev/ttyACM0 ] || { echo "no console"; exit 1; }
 c() { timeout 6 python3 $D/phone.py cmd "$1" >/dev/null 2>&1; }
 M=/private/var/mobile/Library/Caches/com.apple.backboardd/m2v
-for f in shaders.txt ir3.txt spirv.bin shadows.txt opens.txt; do
+for f in shaders.txt ir3.txt spirv.bin shadows.txt opens.txt attached.txt; do
   n=$(wc -l < $L); c "readfile $M/$f"; sleep 2
   sz=$(tail -n +$n $L | grep -a "HOUJI READFILE: $M/$f" | tail -1 | sed -n 's/.* \([0-9]*\) bytes.*/\1/p')
   echo "$f: ${sz:-?} bytes"
