@@ -2232,6 +2232,19 @@ static void command_line(void)
             printf("HOUJI M2V fast %c (host name %s)\n",d,name);
         }
     }
+    else if (!strncmp(u.command,"tog ",4)) {
+        /* Test toggles, a hex digit 0-f, all off by default: the host name set to houji-tog-X, which metal2vulkan (bit 0 pf,
+         * m2v-houji-pf.patch) and Turnip (bits 1-3 C-lite, turnip-houji-diag.patch) read (gethostname) at most every 50 ms.
+         * It replaces an m2v-fast-N name (the bridge then follows boot argument m2v-fast), as "m2v fast" replaces it. */
+        extern char hostname[];extern lck_mtx_t hostname_lock;
+        const char d=u.command[4];
+        if (!((d>='0' && d<='9') || (d>='a' && d<='f')) || u.command[5]) printf("HOUJI TOG: one hex digit 0-f (bit 0 pf, 1 C-lite, 2 its group A, 3 its group B)\n");
+        else {
+            char name[]="houji-tog-0";name[10]=d;
+            lck_mtx_lock(&hostname_lock);strlcpy(hostname,name,MAXHOSTNAMELEN);lck_mtx_unlock(&hostname_lock);
+            printf("HOUJI TOG %c (host name %s)\n",d,name);
+        }
+    }
     else if (!strcmp(u.command,"l3") || !strncmp(u.command,"l3 vote ",8) || !strncmp(u.command,"l3 perf ",8) || !strncmp(u.command,"l3 mode ",8)) {
         /* HoujiCpuDvfs.cpp houji_cpu_l3: the L3 clock's table and state; "l3 vote N" / "l3 perf N" write row N */
         extern void houji_cpu_l3(int op,unsigned value);

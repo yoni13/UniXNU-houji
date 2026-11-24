@@ -25,10 +25,62 @@ index b25b5fb..dbe1fad 100644
  TU_GENX(tu_CmdCopyImage2);
  
 diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
-index f618617..da60888 100644
+index f618617..12c16d9 100644
 --- a/src/freedreno/vulkan/tu_cmd_buffer.cc
 +++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
-@@ -4846,6 +4846,67 @@ tu_cmd_buffer_begin(struct tu_cmd_buffer *cmd_buffer,
+@@ -2527,10 +2527,20 @@ tu_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
+    struct tu_device *dev = cmd->device;
+    const struct tu_physical_device *phys_dev = dev->physical_device;
+ 
++   /* houji (C-lite, tu_cmd_buffer::houji_skip_bits): group A (from the invalidates to SP_UPDATE_CNTL's wait) and group B (the
++    * static registers, RB_CCU_CNTL and the VPC attribute buffer) each in IB entries of their own, which a submission leaves out
++    * where the primary follows another general one in it (tu_queue.cc): that one's tu_init_hw ran, the submission's first primary
++    * invalidated every cache after the host's writes, and the barriers the commands record order the primaries' own work. The
++    * CCU's state is then unknown at the start (as a secondary's), so the first use sets it (tu_emit_cache_flush_ccu, which also
++    * sets the VPC attribute buffer); group A's flushes stay pending. */
++   const bool houji_split = CHIP >= A7XX && cmd->houji_skip_bits;
++   extern uint32_t tu_cs_houji_split(struct tu_cs *cs);
+    if (CHIP == A6XX) {
+       tu_emit_event_write<CHIP>(cmd, cs, FD_CACHE_INVALIDATE);
+    } else {
+       tu7_thread_control(cs, CP_SET_THREAD_BOTH);
++      if (houji_split)
++         cmd->houji_a[0] = tu_cs_houji_split(cs);
+ 
+       tu_emit_event_write<CHIP>(cmd, cs, FD_CCU_INVALIDATE_COLOR);
+       tu_emit_event_write<CHIP>(cmd, cs, FD_CCU_INVALIDATE_DEPTH);
+@@ -2554,20 +2564,27 @@ tu_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
+          .gfx_bindless = CHIP == A6XX ? 0x1f : 0xff,));
+ 
+    tu_cs_emit_wfi(cs);
++   if (houji_split)
++      cmd->houji_a[1] = tu_cs_houji_split(cs);
+ 
+    if (dev->dbg_cmdbuf_stomp_cs) {
+       tu_cs_emit_call(cs, dev->dbg_cmdbuf_stomp_cs);
+    }
+ 
+-   cmd->state.cache.pending_flush_bits &=
+-      ~(TU_CMD_FLAG_WAIT_FOR_IDLE | TU_CMD_FLAG_CACHE_INVALIDATE);
++   if (!houji_split)
++      cmd->state.cache.pending_flush_bits &=
++         ~(TU_CMD_FLAG_WAIT_FOR_IDLE | TU_CMD_FLAG_CACHE_INVALIDATE);
+ 
++   if (houji_split)
++      cmd->houji_b[0] = tu_cs_houji_split(cs);
+    tu6_init_static_regs<CHIP>(cmd->device, cs);
+    tu_init_hw_rp<CHIP>(cs);
+ 
+    emit_rb_ccu_cntl<CHIP>(cs, cmd->device, false);
+    emit_vpc_attr_buf<CHIP>(cs, cmd->device, false);
+-   cmd->state.ccu_state = TU_CMD_CCU_SYSMEM;
++   cmd->state.ccu_state = houji_split ? TU_CMD_CCU_UNKNOWN : TU_CMD_CCU_SYSMEM;
++   if (houji_split)
++      cmd->houji_b[1] = tu_cs_houji_split(cs);
+ 
+    tu_disable_draw_states(cmd, cs);
+ 
+@@ -4846,6 +4863,100 @@ tu_cmd_buffer_begin(struct tu_cmd_buffer *cmd_buffer,
     return VK_SUCCESS;
  }
  
@@ -37,16 +89,39 @@ index f618617..da60888 100644
 + * its own ring with the pass ring sequence number it goes with and a tag: kind << 28 (1 a primary's head, before tu_init_hw, beside
 + * its mode 8 entry; 2 a primary's end, after its last packet, beside its mode 7 entry) | its command pool's address >> 4 (28
 + * bits). The ring goes to m2v/cpstamps.bin (16-byte entries: ticks, sequence, tag), at most every 0.5 s, by the render server. */
++/* houji: the console's "tog N" toggles: the kernel's host name houji-tog-X (X one hex digit), read at most every 50 ms; 0 under any
++ * other name. Bit 0 pf (metal2vulkan's inline_first), bit 1 C-lite both groups, bit 2 its group A alone, bit 3 its group B alone
++ * (tu_init_hw, tu_queue.cc). */
++#include <unistd.h>
++static uint32_t
++tu_houji_toggles(void)
++{
++   static uint32_t value;
++   static uint64_t read_ns;
++   const uint64_t now = os_time_get_nano();
++   if (now - p_atomic_read(&read_ns) < 50000000ull)
++      return p_atomic_read(&value);
++   char name[64] = {};
++   uint32_t v = 0;
++   if (!gethostname(name, sizeof(name) - 1) && !strncmp(name, "houji-tog-", 10) && name[10] && !name[11]) {
++      const char c = name[10];
++      v = c >= '0' && c <= '9' ? (uint32_t) (c - '0') : c >= 'a' && c <= 'f' ? (uint32_t) (c - 'a' + 10) : 0;
++   }
++   p_atomic_set(&value, v);
++   p_atomic_set(&read_ns, now);
++   return v;
++}
++
 +#define TU_HOUJI_CP_RING 65536
 +static struct tu_bo *tu_houji_cp_bo;
 +static struct tu_device *tu_houji_cp_dev;
 +static uint32_t tu_houji_cp_seq;
 +
-+static void
++static int
 +tu_houji_cp_stamp(struct tu_cmd_buffer *cmd, struct tu_cs *cs, uint32_t of, uint32_t kind)
 +{
-+   if (!of || !tu_pass_trace_on())
-+      return;
++   if (!tu_pass_trace_on())
++      return -1;
 +   struct tu_device *dev = cmd->device;
 +   struct tu_bo *bo = p_atomic_read(&tu_houji_cp_bo);
 +   if (!bo) {
@@ -68,7 +143,7 @@ index f618617..da60888 100644
 +      bo = p_atomic_read(&tu_houji_cp_bo);
 +   }
 +   if (!bo || tu_houji_cp_dev != dev)
-+      return;
++      return -1;
 +   const uint32_t at = p_atomic_inc_return(&tu_houji_cp_seq) % TU_HOUJI_CP_RING;
 +   uint32_t *entry = (uint32_t *) bo->map + at * 4;
 +   entry[0] = entry[1] = 0;
@@ -91,12 +166,27 @@ index f618617..da60888 100644
 +         }
 +      }
 +   }
++   return (int) at;
++}
++
++/* houji: name the pass ring entry a CP stamp made before it goes with (the head's, stamped before its RB event). */
++static void
++tu_houji_cp_link(int at, uint32_t of)
++{
++   struct tu_bo *bo = p_atomic_read(&tu_houji_cp_bo);
++   if (at >= 0 && bo)
++      ((uint32_t *) bo->map)[at * 4 + 2] = of;
 +}
 +
  VKAPI_ATTR VkResult VKAPI_CALL
  tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                        const VkCommandBufferBeginInfo *pBeginInfo)
-@@ -4858,9 +4919,15 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+@@ -4854,13 +4965,24 @@ tu_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+    VkResult result = tu_cmd_buffer_begin(cmd_buffer, pBeginInfo);
+    if (result != VK_SUCCESS)
+       return result;
++   cmd_buffer->houji_skip_bits = 0;
+ 
     /* setup initial configuration into command buffer */
     if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
        switch (cmd_buffer->queue_family_index) {
@@ -104,8 +194,12 @@ index f618617..da60888 100644
 +      case TU_QUEUE_GENERAL: {
 +         /* houji (the trace on, tu_pass_trace_on): the primary's head, tu_init_hw, stamped as a pass ring entry of mode 8, so the
 +          * gap between two primaries splits into the jump between them and the head. */
++         /* houji: the CP's own time first, then the head's RB stamp (cpgap.py). */
++         const int houji_cp = tu_houji_cp_stamp(cmd_buffer, &cmd_buffer->cs, 0, 1);
 +         const uint32_t houji_head = tu_op_begin(cmd_buffer, &cmd_buffer->cs, 8, 0, 0, 0, 0, 0, 0, 0, 0);
-+         tu_houji_cp_stamp(cmd_buffer, &cmd_buffer->cs, houji_head, 1);
++         tu_houji_cp_link(houji_cp, houji_head);
++         /* houji (C-lite): the toggles when the primary began decide how tu_init_hw records it. */
++         cmd_buffer->houji_skip_bits = tu_houji_toggles() & 0xeu;
           TU_CALLX(cmd_buffer->device, tu_init_hw)(cmd_buffer, &cmd_buffer->cs);
 +         tu_op_end(cmd_buffer, &cmd_buffer->cs, houji_head);
           break;
@@ -113,16 +207,19 @@ index f618617..da60888 100644
        default:
           break;
        }
-@@ -5778,6 +5845,8 @@ VKAPI_ATTR VkResult VKAPI_CALL
+@@ -5778,6 +5900,11 @@ VKAPI_ATTR VkResult VKAPI_CALL
  tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
  {
     VK_FROM_HANDLE(tu_cmd_buffer, cmd_buffer, commandBuffer);
 +   /* houji: the primary's own pass ring entry (mode 7), for its end's CP-time stamp (tu_houji_cp_stamp). */
 +   const uint32_t houji_cb = cmd_buffer->houji_op;
++   /* houji: and the CP before the end's flushes (kind 3). */
++   if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
++      tu_houji_cp_stamp(cmd_buffer, &cmd_buffer->cs, houji_cb, 3);
  
     /* We currently flush CCU at the end of the command buffer, like
      * what the blob does. There's implicit synchronization around every
-@@ -5814,6 +5883,7 @@ tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
+@@ -5814,6 +5941,7 @@ tu_EndCommandBuffer(VkCommandBuffer commandBuffer)
        trace_end_cmd_buffer(&cmd_buffer->trace, &cmd_buffer->cs, cmd_buffer, addr_preempt_latency, addr_preempt_latency_rp_hash);
  
        cmd_buffer->autotune_ctx.snapshot_preempt_data(&cmd_buffer->cs);
@@ -130,6 +227,47 @@ index f618617..da60888 100644
     } else {
        trace_end_secondary_cmd_buffer(
           cmd_buffer->state.pass ? &cmd_buffer->rp_trace : &cmd_buffer->trace,
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.h b/src/freedreno/vulkan/tu_cmd_buffer.h
+index afae66f..d65dfb0 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.h
++++ b/src/freedreno/vulkan/tu_cmd_buffer.h
+@@ -684,6 +684,13 @@ struct tu_cmd_buffer
+ 
+    struct util_dynarray cb_control_points;
+ 
++   /* houji (C-lite, the console's toggles bits 1-3 when the primary began, tu_houji_toggles): which of tu_init_hw's groups a
++    * submission may leave out where the primary follows another general one in it (bit 1 both, bit 2 group A: the cache and CCU/LRZ
++    * invalidates, the waits for idle and SP_UPDATE_CNTL; bit 3 group B: the static registers, RB_CCU_CNTL and the VPC attribute
++    * buffer), and their IB entries [first, last) in cs. 0: recorded as ever. */
++   uint32_t houji_skip_bits;
++   uint32_t houji_a[2], houji_b[2];
++
+    VkCommandBufferUsageFlags usage_flags;
+ 
+    VkQueryPipelineStatisticFlags inherited_pipeline_statistics;
+diff --git a/src/freedreno/vulkan/tu_cs.cc b/src/freedreno/vulkan/tu_cs.cc
+index 47e1939..58ad57d 100644
+--- a/src/freedreno/vulkan/tu_cs.cc
++++ b/src/freedreno/vulkan/tu_cs.cc
+@@ -245,6 +245,18 @@ tu_cs_add_entry(struct tu_cs *cs)
+    cs->start = cs->cur;
+ }
+ 
++/* houji (C-lite, tu_init_hw): end the IB entry in progress at the current packet where it holds any, so the packets emitted next
++ * start an entry of their own; the entry count after it. A caller brackets what it emits between two calls as entries
++ * [first, last), which a submission may leave out whole (tu_queue.cc). */
++uint32_t tu_cs_houji_split(struct tu_cs *cs);
++uint32_t
++tu_cs_houji_split(struct tu_cs *cs)
++{
++   if (cs->mode == TU_CS_MODE_GROW && !tu_cs_is_empty(cs) && tu_cs_reserve_entry(cs) == VK_SUCCESS)
++      tu_cs_add_entry(cs);
++   return cs->entry_count;
++}
++
+ /**
+  * same behavior as tu_cs_emit_call but without the indirect
+  */
 diff --git a/src/freedreno/vulkan/tu_pipeline.cc b/src/freedreno/vulkan/tu_pipeline.cc
 index 087b4a9..14eb7ad 100644
 --- a/src/freedreno/vulkan/tu_pipeline.cc
@@ -239,3 +377,57 @@ index 087b4a9..14eb7ad 100644
        }
     }
  
+diff --git a/src/freedreno/vulkan/tu_queue.cc b/src/freedreno/vulkan/tu_queue.cc
+index ec07654..bce77f7 100644
+--- a/src/freedreno/vulkan/tu_queue.cc
++++ b/src/freedreno/vulkan/tu_queue.cc
+@@ -485,10 +485,19 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
+        * ones tu_insert_dynamic_cmdbufs adds for a suspended render pass
+        * continue the state of the command buffer before them.
+        */
++      /* houji (C-lite, tu_init_hw): a primary recorded with its groups apart that follows another general primary in this
++       * submission leaves them out as its bits ask (bit 1 both, bit 2 group A, bit 3 group B), and is no start the kernel
++       * submission may be cut at (the cut's next half would lack them). */
++      const struct tu_cmd_buffer *houji_prev = i ? cmd_buffers[i - 1] : NULL;
++      const uint32_t houji_bits =
++         houji_prev && houji_prev->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY &&
++         houji_prev->queue_family_index == TU_QUEUE_GENERAL ? cmd_buffer->houji_skip_bits : 0;
++      const bool houji_skip_a = houji_bits & 0x6u, houji_skip_b = houji_bits & 0xau;
+       if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY &&
+           cmd_buffer->queue_family_index == TU_QUEUE_GENERAL &&
+           cmd_buffer->vk.pool !=
+-             vk_command_pool_from_handle(device->dynamic_rendering_pool))
++             vk_command_pool_from_handle(device->dynamic_rendering_pool) &&
++          !houji_skip_a && !houji_skip_b)
+          tu_submit_begin_command_buffer(device, submit);
+ 
+       if (perf_pass_index != ~0) {
+@@ -498,8 +507,26 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
+          submit_add_entries(device, submit, &dump_cmds, perf_cs_entry, 1);
+       }
+ 
+-      submit_add_entries(device, submit, &dump_cmds, cs->entries,
+-                         cs->entry_count);
++      if (houji_skip_a || houji_skip_b) {
++         /* The entries in order, those of the groups left out. */
++         for (uint32_t e = 0; e < cs->entry_count;) {
++            uint32_t end = e;
++            while (end < cs->entry_count &&
++                   !(houji_skip_a && end >= cmd_buffer->houji_a[0] && end < cmd_buffer->houji_a[1]) &&
++                   !(houji_skip_b && end >= cmd_buffer->houji_b[0] && end < cmd_buffer->houji_b[1]))
++               end++;
++            if (end > e)
++               submit_add_entries(device, submit, &dump_cmds, cs->entries + e, end - e);
++            e = end;
++            while (e < cs->entry_count &&
++                   ((houji_skip_a && e >= cmd_buffer->houji_a[0] && e < cmd_buffer->houji_a[1]) ||
++                    (houji_skip_b && e >= cmd_buffer->houji_b[0] && e < cmd_buffer->houji_b[1])))
++               e++;
++         }
++      } else {
++         submit_add_entries(device, submit, &dump_cmds, cs->entries,
++                            cs->entry_count);
++      }
+ 
+       if (u_trace_submission_data &&
+           u_trace_submission_data->timestamp_copy_data) {
