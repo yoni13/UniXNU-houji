@@ -39,20 +39,47 @@ void houji_usb_phy_cold(void) {}
 int houji_ufs_arm_recovery_bcb(void) { return -1; }
 /* Screenshot of the firmware framebuffer the display presents into (PE_current_console): one luminance hex digit per
  * sample, in the console's SHOT format (perf-test/phone.py shot renders it). Read only; mapped once. */
+static vm_offset_t fb_pixels;
+static unsigned fb_width, fb_height, fb_stride;
+/* The firmware framebuffer mapped once, read only: 0, else -1. */
+static int framebuffer_map(void)
+{
+	if (fb_pixels)
+		return 0;
+	PE_Video video = {};
+	if (PE_current_console(&video) || !video.v_baseAddr || video.v_depth != 32 || !video.v_width || !video.v_height ||
+	    video.v_rowBytes < video.v_width * 4)
+		return -1;
+	fb_pixels = ml_io_map(video.v_baseAddr, (vm_size_t)video.v_rowBytes * video.v_height);
+	fb_width = (unsigned)video.v_width; fb_height = (unsigned)video.v_height; fb_stride = (unsigned)video.v_rowBytes;
+	return fb_pixels ? 0 : -1;
+}
+/* fbdump X Y W H (the console's dump path): bytes [at, at + k) of the region's pixels as they lie in the framebuffer (4 bytes each,
+ * BGRA with fb-bgra=1), row after row, W * 4 bytes a row, into `to`. 0, else -1 (no framebuffer, or the region or range outside it). */
+int houji_framebuffer_read(unsigned x0, unsigned y0, unsigned w, unsigned h, uint64_t at, uint8_t *to, unsigned k);
+int houji_framebuffer_read(unsigned x0, unsigned y0, unsigned w, unsigned h, uint64_t at, uint8_t *to, unsigned k)
+{
+	if (framebuffer_map() || !w || !h || x0 + w > fb_width || y0 + h > fb_height || at + k > (uint64_t)w * h * 4)
+		return -1;
+	const uint64_t row_bytes = (uint64_t)w * 4;
+	while (k) {
+		const uint64_t r = at / row_bytes, c = at % row_bytes;
+		const unsigned n = (uint64_t)k < row_bytes - c ? k : (unsigned)(row_bytes - c);
+		const volatile uint8_t *p = (const volatile uint8_t *)(fb_pixels + (y0 + r) * fb_stride + (uint64_t)x0 * 4 + c);
+		for (unsigned i = 0; i < n; i++)
+			to[i] = p[i];
+		to += n; at += n; k -= n;
+	}
+	return 0;
+}
 void houji_framebuffer_shot_region(unsigned x0, unsigned y0, unsigned w, unsigned h, unsigned cols, unsigned rows)
 {
-	static vm_offset_t pixels;
-	static unsigned width, height, stride;
-	if (!pixels) {
-		PE_Video video = {};
-		if (PE_current_console(&video) || !video.v_baseAddr || video.v_depth != 32 || !video.v_width || !video.v_height ||
-		    video.v_rowBytes < video.v_width * 4) {
-			printf("HOUJI SHOT: unavailable\n");
-			return;
-		}
-		pixels = ml_io_map(video.v_baseAddr, (vm_size_t)video.v_rowBytes * video.v_height);
-		width = (unsigned)video.v_width; height = (unsigned)video.v_height; stride = (unsigned)video.v_rowBytes;
+	if (framebuffer_map()) {
+		printf("HOUJI SHOT: unavailable\n");
+		return;
 	}
+	const vm_offset_t pixels = fb_pixels;
+	const unsigned width = fb_width, height = fb_height, stride = fb_stride;
 	if (!pixels || !cols || !rows || cols > 300 || rows > 700 || !w || !h || x0 + w > width || y0 + h > height) {
 		printf("HOUJI SHOT: unavailable\n");
 		return;

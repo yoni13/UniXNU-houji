@@ -423,7 +423,10 @@ static char readfile_path[256];
 static int _Atomic readfile_busy;
 static uint64_t hex_start,hex_length;   /* hex PATH [START [LENGTH]]: hex digits; default 0 and 2 MiB */
 static int readfile_mode;   /* 0 readfile (throughput), 1 cat (text lines, at most 48 KiB), 2 ls (directory entries), 3 hex (at most 8 MiB),
-                               4 sshot, 5 dump (the bytes in bulk transfers, perf-test/capture.py saves them) */
+                               4 sshot, 5 dump (the bytes in bulk transfers, perf-test/capture.py saves them), 6 fbdump X Y W H (a region of
+                               the framebuffer's pixels, 4 bytes each, row after row, through dump's transfers) */
+static unsigned fbdump_region[4];   /* fbdump X Y W H, decimal: the region of the framebuffer (HoujiStage0.c houji_framebuffer_read) */
+extern int houji_framebuffer_read(unsigned x0,unsigned y0,unsigned w,unsigned h,uint64_t at,uint8_t *to,unsigned k);
 /* ls PATH: every entry name with its type (d directory, - file, l link, ? other). */
 static void list_directory(vnode_t vp,vfs_context_t ctx)
 {
@@ -504,8 +507,12 @@ static void readfile_thread(void *arg __unused,wait_result_t result __unused)
     vfs_context_t ctx=vfs_context_kernel();
     vnode_t vp=NULLVP;
     if (readfile_mode==4) { stackshot_process(readfile_path); goto out; }
-    int error=vnode_open(readfile_path,FREAD,0,0,&vp,ctx);
-    if (error) { printf("HOUJI READFILE: open %s error %d\n",readfile_path,error); goto out; }
+    int error=0;
+    /* fbdump reads no file: the framebuffer region, through dump's transfers below (vp stays NULLVP). */
+    if (readfile_mode!=6) {
+        error=vnode_open(readfile_path,FREAD,0,0,&vp,ctx);
+        if (error) { printf("HOUJI READFILE: open %s error %d\n",readfile_path,error); goto out; }
+    }
     if (readfile_mode==2) { list_directory(vp,ctx); vnode_close(vp,FREAD,ctx); goto out; }
     if (readfile_mode==3) {
         /* hex PATH: the file as "HOUJI HEX <offset> <hex>" lines of 64 bytes, for scripts/unhex on the PC. */
@@ -530,7 +537,7 @@ static void readfile_thread(void *arg __unused,wait_result_t result __unused)
         vnode_close(vp,FREAD,ctx);
         goto out;
     }
-    if (readfile_mode==5) {
+    if (readfile_mode==5 || readfile_mode==6) {
         /* houji: "dump PATH [START [LENGTH]]" (hex numbers; default the whole file): the bytes themselves, not hex text through the log
          * ring (hex: about 68 KB/s). A text line "HOUJI DUMP BEGIN start bytes" goes out first, the text ring then drains, and the IN
          * endpoint carries only this (transmit): a 16-byte marker, then the bytes, in transfers of up to DUMP_SIZE straight from the
@@ -539,12 +546,15 @@ static void readfile_thread(void *arg __unused,wait_result_t result __unused)
         static const uint8_t magic[16]={0,'H','O','U','J','I','D','U','M','P',0,0xd5,0x6a,0x3c,0x91,0x7e};
         off_t size=0;
         struct vnode_attr va;
-        VATTR_INIT(&va);VATTR_WANTED(&va,va_data_size);
-        if (!vnode_getattr(vp,&va,ctx) && VATTR_IS_SUPPORTED(&va,va_data_size)) size=(off_t)va.va_data_size;
+        if (readfile_mode==6) size=(off_t)fbdump_region[2]*fbdump_region[3]*4;
+        else {
+            VATTR_INIT(&va);VATTR_WANTED(&va,va_data_size);
+            if (!vnode_getattr(vp,&va,ctx) && VATTR_IS_SUPPORTED(&va,va_data_size)) size=(off_t)va.va_data_size;
+        }
         uint64_t start=hex_start,len=hex_length;
         if (start>(uint64_t)size) start=(uint64_t)size;
         if (len>(uint64_t)size-start) len=(uint64_t)size-start;
-        if (!u.configured || u.failed) { printf("HOUJI DUMP: console not configured\n");vnode_close(vp,FREAD,ctx);goto out; }
+        if (!u.configured || u.failed) { printf("HOUJI DUMP: console not configured\n");if (vp) vnode_close(vp,FREAD,ctx);goto out; }
         printf("HOUJI DUMP BEGIN %llx %llu\n",start,len);
         /* the BEGIN line and everything before it sent, the endpoint idle (at most 2 s), then the endpoint is the dump's */
         for (unsigned i=0;i<4000 && (u.cursor<houji_debug_total() || u.busy[3]);i++) delay(500);
@@ -566,7 +576,9 @@ static void readfile_thread(void *arg __unused,wait_result_t result __unused)
             if (k>1 && !((hdr+k)%u.mps)) k--;
             if (k) {
                 int resid=0;
-                if (vn_rdwr(UIO_READ,vp,(char *)b+hdr,(int)k,(off_t)at,UIO_SYSSPACE,0,vfs_context_ucred(ctx),&resid,vfs_context_proc(ctx)) || resid) {
+                if (readfile_mode==6) {
+                    if (houji_framebuffer_read(fbdump_region[0],fbdump_region[1],fbdump_region[2],fbdump_region[3],at,b+hdr,k)) { err=-2;break; }
+                } else if (vn_rdwr(UIO_READ,vp,(char *)b+hdr,(int)k,(off_t)at,UIO_SYSSPACE,0,vfs_context_ucred(ctx),&resid,vfs_context_proc(ctx)) || resid) {
                     err=-2;break;
                 }
                 crc=crc32(crc,b+hdr,k);
@@ -579,7 +591,7 @@ static void readfile_thread(void *arg __unused,wait_result_t result __unused)
         os_atomic_store(&dump_active,false,release);
         uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time()-t0,&ns);
         printf("HOUJI DUMP: %s %llu bytes from %llx, crc %08x, %llu ms, error %d\n",readfile_path,at-start,start,crc,ns/1000000ull,err);
-        vnode_close(vp,FREAD,ctx);
+        if (vp) vnode_close(vp,FREAD,ctx);
         goto out;
     }
     if (readfile_mode==1) {
@@ -1925,13 +1937,21 @@ static void command_line(void)
     }
     else if (!strcmp(u.command,"fi") || !strncmp(u.command,"fi ",3)) fi_command(u.command);
     else if (!strcmp(u.command,"home") || !strncmp(u.command,"tap ",4) || !strncmp(u.command,"swipe ",6)) gesture_command(u.command);
-    else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6) || !strncmp(u.command,"dump ",5)) {
+    else if (!strncmp(u.command,"readfile ",9) || !strncmp(u.command,"cat ",4) || !strncmp(u.command,"ls ",3) || !strncmp(u.command,"hex ",4) || !strncmp(u.command,"sshot ",6) || !strncmp(u.command,"dump ",5)
+             || !strncmp(u.command,"fbdump ",7)) {
         int expected=0;thread_t th;
         if (!os_atomic_cmpxchg(&readfile_busy,expected,1,acq_rel)) printf("HOUJI READFILE: busy\n");
         else {
-            readfile_mode=u.command[0]=='c'?1:u.command[0]=='l'?2:u.command[0]=='h'?3:u.command[0]=='s'?4:u.command[0]=='d'?5:0;
+            readfile_mode=u.command[0]=='c'?1:u.command[0]=='l'?2:u.command[0]=='h'?3:u.command[0]=='s'?4:u.command[0]=='d'?5:u.command[0]=='f'?6:0;
             strlcpy(readfile_path,u.command+(readfile_mode==1||readfile_mode==3?4:readfile_mode==2?3:readfile_mode==4?6:readfile_mode==5?5:9),sizeof(readfile_path));
-            hex_start=0;hex_length=readfile_mode==5?~0ull:2u<<20;
+            hex_start=0;hex_length=readfile_mode>=5?~0ull:2u<<20;
+            if (readfile_mode==6) {
+                /* fbdump X Y W H (decimal): the region's bytes, all of them (the reader checks the region against the framebuffer). */
+                int r[4]={0,0,0,0};
+                const int n=gesture_numbers(u.command+7,r,4);
+                for (int i=0;i<4;i++) fbdump_region[i]=n==4 && r[i]>0?(unsigned)r[i]:0;
+                strlcpy(readfile_path,"framebuffer",sizeof(readfile_path));
+            }
             if (readfile_mode==3 || readfile_mode==5) {
                 /* Optional trailing hex numbers after the path (paths here have no spaces): START, then LENGTH. */
                 char *space=strchr(readfile_path,' ');
