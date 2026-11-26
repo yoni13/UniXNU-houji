@@ -147,3 +147,34 @@ Findings:
   - `t-launch-ab.sh` warmed up before every arm (a pipe ran its `if` in a subshell); fixed.
 - **Not verified:** whether warm's first frames run at a low *vote* (needs a traced warm launch reading the vote, or a longer touch
   window, `houji_cpu_touch_ms`, 24 boot-line bytes past the base 979); cpu7's lift on a cool phone (skin < 32 C).
+
+## Governor check, traced warm launches (root444) and the cool-phone A/B (root445), 2026-11-26
+
+- **Code (zero build):** the touch floor (`touchpct`) floors every big domain, cpu5-6, cpu7 and cpu2-4 (`apply`, `id && touching`),
+  for `houji_cpu_touch_ms` (boot argument only, default 300; no `dvfs set` knob) after the last touch-down or move: the console's
+  `tap` moves at +60 ms, so to ~+360 ms. The frame floor (`framepct`) floors all four domains once swaps fell in 2 of the last 4
+  samples (40 ms each), for 300 ms after. A warm launch's first frame comes ~20 ms after the tap, so the two floors overlap:
+  a longer touch window has nothing to cover there. root420b's dip came in an unusual launch whose first swap was +816 ms, past
+  the touch window and before any swap: cpu2-4 stepped 2630 -> 2035 -> 1497 -> 844 -> 614 MHz one 40 ms sample at a time while
+  Preferences and backboardd ran on it (a busy domain at a low state: a low vote), the load rule (`want = cur * load / 75 %`, the
+  busiest core's share) on work spread over three cores. `launchclk.py` marks such samples.
+- **root444** (leanlc46, `tt=1 hs=9 gp=0`, `HTC=1`, 979 bytes, skin 30.4-30.8 C, caps 2630; 4 warm launches each under a tl,
+  `t-launch-trace.sh`, governor `loadsum` 0/1/0/1): **no busy domain below 90 % of its top in any phase of any launch** (loadsum 0 and
+  1 alike); the root420b dip did not recur, so `loadsum` has nothing to fix and a longer touch window is not justified. Launches 3
+  and 4 recorded no zoom (one swap after the tap, then the ~100 ms idle cadence: not counted); Preferences was not resident before
+  launches 2-4 (relaunched first). The hitches of launches 1-2 at full clocks: SpringBoard's main thread 74 ms on cpu7 at the first
+  frame (an 86 ms first gap), and background widget extensions and daemons running beside the zoom (PodcastsWidget, WeatherWidget,
+  MusicWidget, chronod 5 threads, biomed, runningboardd; 17-75 ms gaps). Hangs 0, faults 0, no crash.
+- **root445** cool-phone A/B (skin 29.3-30.8 C the whole session, so cpu7's first step applied and `p7cap 3053` engaged: caps
+  logged 3052800 in B and C; arms interleaved, `t-launch-ab.sh`; round 1's A and B launches lost their swap readouts as in root443):
+  | arm | cold first frame (ms) | cold fps | warm first frame (ms) | warm fps | warm <= 9 ms |
+  |---|---|---|---|---|---|
+  | A reference | 370, 342 | 111, 103 | 29, 70 | 90, 97 | 71, 66 % |
+  | B p7cap 3053 | 320, 361, 294 | 113, 113, 103 | 17, 13 | 74, 96 | 64, 69 % |
+  | C B + Preferences main on cpu7 (warm) | 336, 309, 264 | 99, 112, 101 | 0, 20, 7 | 99, 99, 89 | 73, 76, 59 % |
+  The animation does not move (cold 104-110 fps, warm 85-96 in every arm). Cold first frame: the p7cap arms (B and C, the same for
+  a cold launch) 264-361 ms, mean 314 (n 6) against A's 356 (n 2): about 40 ms shorter, consistent with SpringBoard main's
+  first-frame work on a faster cpu7, but A's n is 2. Hangs 0, faults 0, no crash, hottest 42-54 C.
+- **Where Settings stands:** the zoom runs 100-113 fps cold and 85-99 warm with its clocks at top; its missed frames come from
+  SpringBoard main's first-frame work and from the widget/daemon activity a launch sets off, not from the clocks. No zero-build
+  knob reaches 120 fps. `p7cap 3053` while cpu7's first step applies is the one candidate (cold first frame), unconfirmed.
