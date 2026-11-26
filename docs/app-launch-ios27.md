@@ -108,3 +108,42 @@ Findings:
 - The user's open objection stands and is unresolved: sko=4 holds d1-d3 at 2630 MHz through the launch burst while the fresh
   app runs on those domains; native d2/d3 tops are higher. NEVER tested: a higher sko/runtime p-cap during the launch window.
 - Guard at session end: gpuf hangs 0, faults 0 (root420b last read); boot 995 bytes (tte/tt=1 hs=9 gp=0 + prof args) intact.
+
+## Zero-boot audit of the existing traces (2026-11-26) and a 1-boot A/B (root443)
+
+- **The earlier placement arms never bound anything.** The console's `bind PID:NAME` takes a thread *name* (`PID:0` the main
+  thread, `PID:#TID` a tid). Every `30:314` and `30:4021` bind in root420/root420b found no thread (`HOUJI BIND: ... tid 0 ...: 4`,
+  KERN_INVALID_ARGUMENT); only `30:0` (SpringBoard's main, tid 314) bound, and stayed on cpu7. Arms B-F above and "placement of
+  SpringBoard's main thread is not the limiter" are therefore unmeasured. `t-launch.sh WARM_BIND` and `t-launch-ab.sh` use `PID:0`.
+- **SpringBoard's `#4021` is idle during the launch:** in root420b's traced warm launch (tl 30:#4021 + Preferences main) it is in one
+  blocked state for the whole 3 s. Not a frame producer; nothing to pin.
+- **That traced warm launch** (root420b, tl from 1665.7 s; the trace's own reader, kernel_task tid 43443, ran 1.5 s on cpu0-1, so
+  times are inflated): tap at ~365 ms trace time, the first swap at 1182 ms. Before it Preferences main (42931) ran 578 ms, 515 on
+  cpu2 (d3, 2630 MHz); SpringBoard's main did not run. The animation (1182-2708 ms) ran 106 fps, median 8.3 ms, 94 % of gaps
+  <= 9 ms, with hitches of 93, 71, 35, 18 ms. In the 93 ms one (the first gap) d3 (cpu2-4) read 614-844 MHz while backboardd's new
+  thread 43476 ran 41 ms on cpu4 and Preferences' 43458 on cpu2-4: the frame floor only engages after swaps in 2 of 4 samples (40 ms
+  each), so it cannot cover an animation's first frames. Caveat: `TL CLK` is the domains' current state, not the governor's vote
+  (an idle cluster reports its minimum whatever the vote); the 5 s policy lines do not resolve 40 ms steps.
+- **The touch floor held ~50-100 ms, not 300.** The console's `tap` reaches `houji_touch_contact` (down), so `touching` should hold
+  d1-d3 at their caps for `houji_cpu_touch_ms` (default 300) after it; in the trace d1/d2 rose one sample after the tap and read
+  their minimum ~100 ms after it. Not explained (vote against state, above).
+- **The cap question:** domain tops d0 2265.6, d1 (cpu5-6) 2956.8, d2 (cpu7) 3052.8, d3 (cpu2-4) 3148.8 MHz; the stock policy's
+  first step (skin >= 25.0 C) is 2035 / 2630 / 2630 / 2630. `sko=4` adds 4 C to the battery-based skin estimate; recent boots' real
+  skin was 25.6-26.5 C, so even `dvfs set skin 0` keeps the first step. Lifting d3 would need a negative offset (overriding the stock
+  thermal policy: not done). The one sanctioned lift is `dvfs set p7cap` (cpu7 alone, first step only).
+- **`t-launch.sh` first-frame fix:** the tap time is now the tap's own `GESTURE AT` kernel time (the swaps' clock), else the echo's
+  capture time plus the boot-wide median offset ("tap inferred"); the capture side stamps lines in ~50 ms batches, which with a
+  window-only offset (0 where the window lost its line) gave warm launches -18 ms. Replayed on root420b: no negative first frames.
+- **root443 A/B** (leanlc46, `tt=1 hs=9 gp=0`, `HTC=1`, 979 bytes; arms interleaved round by round, `t-launch-ab.sh`): A reference
+  (Q4 binds, SB main cpu7, floors 100 %), B + `p7cap 3053`, C + B with the resident Preferences' main bound to cpu7 for warm
+  launches (`PID:0`, bound: ret 0), D SpringBoard's main unbound (`30:0 cpu-1`, ret 0). Hangs 0, faults 0, no crash, peak 62 C.
+  - **Ran hot:** the skin estimate went 36.4 -> 39.7 C (the battery warm), so the stock steps held cpu7 at 1824 -> 1709 MHz and
+    d1/d3 at 2189 -> 1824/2035 MHz the whole session; `p7cap` applies only at the first step (< 32 C for cpu7): **B lifted nothing.**
+  - Per arm (n 2-3 each; A and B round 1 lost their swap readouts): cold first frame A 292/437, B 307/363, C 389/402/407,
+    D 474/358/453 ms, fps 90-115; warm first frame 0-77 ms, fps A 80/89, B 86/93, C 94/79/89, D 95/80/88. No arm separates.
+  - Across arms: **warm launches pace worse than cold** - gaps <= 9 ms median 68 % warm against 88 % cold (n 10 each; the 9 warm-up
+    launches, cold too, 87 %), fps median 88.5 against 98, first frame 22 against 396 ms. The warm zoom starts within ~20 ms of the
+    tap, from idle clocks, before the frame floor can engage.
+  - `t-launch-ab.sh` warmed up before every arm (a pipe ran its `if` in a subshell); fixed.
+- **Not verified:** whether warm's first frames run at a low *vote* (needs a traced warm launch reading the vote, or a longer touch
+  window, `houji_cpu_touch_ms`, 24 boot-line bytes past the base 979); cpu7's lift on a cool phone (skin < 32 C).
